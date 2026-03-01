@@ -1,0 +1,5 @@
+explainable_ef/ef_model.pth
+explainable_ef/logs/training_*.log
+explainable_ef/__pycache__/*.pyc
+explainable_ef/data/__pycache__/*.pyc
+explainable_ef/models/__pycache__/*.pyc
