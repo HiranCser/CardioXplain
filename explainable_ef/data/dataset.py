@@ -80,7 +80,7 @@ class EchoDataset(Dataset):
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
-        ef = torch.tensor(row["EF"]).float()
+        ef = torch.tensor(row["EF"]).float() / 100.0  # Normalize EF to [0, 1]
 
         video = self.load_video(video_path)
 
