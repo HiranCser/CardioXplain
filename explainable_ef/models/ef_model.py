@@ -3,8 +3,6 @@ import torch.nn as nn
 import torchvision.models.video as models
 from torchvision.models.video import R2Plus1D_18_Weights
 
-
-
 class EFModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -12,8 +10,6 @@ class EFModel(nn.Module):
         backbone = models.r2plus1d_18(
             weights=R2Plus1D_18_Weights.KINETICS400_V1
         )
-
-
         
         self.feature_extractor = nn.Sequential(
             backbone.stem,
