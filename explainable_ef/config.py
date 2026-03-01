@@ -10,13 +10,17 @@ BATCH_SIZE = 20
 NUM_FRAMES = 32  # Reduce to 16 for 2x speedup with minimal quality loss
 IMAGE_SIZE = 112  # Reduce to 64 for 2x speedup, 56 for 3x speedup
 MAX_VIDEOS = None  # None = use all videos, or specify number (e.g., 100)
+PHASE_LOSS_WEIGHT = 0.5  # Balance between EF regression loss and phase classification loss
 
 # Training configuration
-LR = 1e-4
-EPOCHS = 10
+LEARNING_RATE = 1e-4
+EPOCHS = 50
+TOLERANCE = 1
+PATIENCE = 5
 
 # Device configuration - automatically detect CUDA availability
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+CHECKPOINT_PATH = "best_model.pth"
 
 # ============================================================================
 # PERFORMANCE OPTIMIZATION SETTINGS

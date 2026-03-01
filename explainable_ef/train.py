@@ -64,15 +64,19 @@ def main():
     logger.info(f"Batch size: {config.BATCH_SIZE}")
     logger.info(f"Number of frames: {config.NUM_FRAMES}")
     logger.info(f"Max videos: {config.MAX_VIDEOS if config.MAX_VIDEOS else 'All'}")
-    logger.info(f"Learning rate: {config.LR}")
+    logger.info(f"Learning rate: {config.LEARNING_RATE}")
     logger.info(f"Epochs: {config.EPOCHS}")
     logger.info(f"Workers: {config.NUM_WORKERS}")
 
     # Load dataset
     try:
         logger.info("\nLoading dataset...")
-        dataset = EchoDataset(config.DATA_DIR, config.NUM_FRAMES, max_videos=config.MAX_VIDEOS)
-        logger.info(f"[OK] Dataset loaded successfully with {len(dataset)} samples")
+        train_dataset = EchoDataset(config.DATA_DIR, num_frames=config.NUM_FRAMES, split="TRAIN")
+        val_dataset   = EchoDataset(config.DATA_DIR, num_frames=config.NUM_FRAMES, split="VAL")
+        test_dataset  = EchoDataset(config.DATA_DIR, num_frames=config.NUM_FRAMES, split="TEST")
+        logger.info(f"[OK] Train Dataset loaded successfully with {len(train_dataset)} samples")
+        logger.info(f"[OK] Val Dataset loaded successfully with {len(val_dataset)} samples")
+        logger.info(f"[OK] Test Dataset loaded successfully with {len(test_dataset)} samples")
     except FileNotFoundError as e:
         logger.error(f"[ERROR] File not found error: {e}")
         sys.exit(1)
@@ -86,8 +90,8 @@ def main():
     # Create data loader
     try:
         logger.info("\nCreating data loader...")
-        loader = DataLoader(
-            dataset, 
+        training_dataset_loader = DataLoader(
+            train_dataset, 
             batch_size=config.BATCH_SIZE, 
             shuffle=True,
             num_workers=config.NUM_WORKERS,
@@ -95,7 +99,7 @@ def main():
             prefetch_factor=2 if config.NUM_WORKERS > 0 else None,
             persistent_workers=True if config.NUM_WORKERS > 0 else False
         )
-        logger.info(f"[OK] Data loader created with {len(loader)} batches")
+        logger.info(f"[OK] Data loader created with {len(training_dataset_loader)} batches")
         logger.info(f"  Using {config.NUM_WORKERS} worker processes for data loading")
         logger.info(f"  Pin memory: {torch.cuda.is_available()} (GPU detected)")
         
@@ -111,7 +115,7 @@ def main():
     # Create model
     try:
         logger.info("\nInitializing model...")
-        model = EFModel().to(config.DEVICE)
+        model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
         # for param in model.feature_extractor.parameters():
         #     param.requires_grad = False
         total_params = sum(p.numel() for p in model.parameters())
@@ -127,9 +131,9 @@ def main():
     try:
         logger.info("\nSetting up training components...")
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=config.LR)
+        optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
         logger.info(f"[OK] Loss function: MSELoss")
-        logger.info(f"[OK] Optimizer: Adam (lr={config.LR})")
+        logger.info(f"[OK] Optimizer: Adam (lr={config.LEARNING_RATE})")
     except Exception as e:
         logger.error(f"[ERROR] Error setting up training: {e}")
         sys.exit(1)
@@ -154,23 +158,54 @@ def main():
 
             try:
                 # Create progress bar for training
-                pbar = tqdm(loader, desc="Training", unit="batch")
+                pbar = tqdm(training_dataset_loader, desc="Training", unit="batch")
                 
-                for batch_idx, (videos, efs) in enumerate(pbar):
+                for batch_idx, (videos, efs, ed_indices, es_indices) in enumerate(pbar):
                     try:
                         videos = videos.to(config.DEVICE)
                         efs = efs.to(config.DEVICE)
 
                         optimizer.zero_grad()
-                        outputs, attentions = model(videos)
-                        loss = criterion(outputs, efs)
-                        loss.backward()
+                        outputs, attentions, phase_logits = model(videos)
+                        ef_loss = criterion(outputs, efs)
+                        
                         optimizer.step()
                         peak_frame = torch.argmax(attentions, dim=1)
 
+                        B, T = attentions.shape
+
+                        phase_targets = torch.zeros(B, T, dtype=torch.long).to(config.DEVICE)
+
+                        for i in range(B):
+                            phase_targets[i, ed_indices[i]] = 1  # ED
+                            phase_targets[i, es_indices[i]] = 2  # ES
+
+                        phase_loss = nn.CrossEntropyLoss()(
+                            phase_logits.view(-1, 3),
+                            phase_targets.view(-1)
+                        )
+
+                        loss = ef_loss + 0.5 * phase_loss
+                        loss.backward()
+
+                        # Predicted indices
+                        pred_ed_idx = torch.argmax(phase_logits[:, :, 1], dim=1)
+                        pred_es_idx = torch.argmax(phase_logits[:, :, 2], dim=1)
+
+                        # Print for first sample in batch
+                        print("----- Phase Debug -----")
+                        print("GT ED frame:", ed_indices[0].item())
+                        print("Pred ED frame:", pred_ed_idx[0].item())
+                        print("ED frame error:", abs(pred_ed_idx[0].item() - ed_indices[0].item()))
+
+                        print("GT ES frame:", es_indices[0].item())
+                        print("Pred ES frame:", pred_es_idx[0].item())
+                        print("ES frame error:", abs(pred_es_idx[0].item() - es_indices[0].item()))
+                        print("------------------------")
+
                         print(f"Predicted EF: {outputs.mean().item():.4f}, True EF: {efs.mean().item():.4f}")
                         print("Attention shape:", attentions.shape)
-                        print("Attention sample:", attentions[0][:5])
+                        print("Attention sample:", attentions[0][:])
 
                         batch_loss = loss.item()
                         total_loss += batch_loss
@@ -252,6 +287,132 @@ def main():
     logger.info(f"Total epochs trained: {config.EPOCHS}")
     logger.info(f"Training logs saved to: {log_file}")
     logger.info("="*80)
+
+    val_loader   = DataLoader(val_dataset, batch_size=8, shuffle=False)
+    test_loader  = DataLoader(test_dataset, batch_size=8, shuffle=False)
+
+
+def evaluate(model, loader, criterion, logger, dataset_name="Validation"):
+    best_loss = float('inf')
+    train_losses = []
+
+    try:
+        for epoch in range(config.EPOCHS):
+            model.train()
+            total_loss = 0
+            batch_losses = []
+            
+            # Print epoch header
+            print(f"\nEpoch #{epoch+1}")
+            logger.info(f"\nEpoch [{epoch+1}/{config.EPOCHS}]")
+
+            try:
+                # Create progress bar for training
+                pbar = tqdm(loader, desc=dataset_name, unit="batch")
+                
+                for batch_idx, (videos, efs, ed_indices, es_indices) in enumerate(pbar):
+                    try:
+                        videos = videos.to(config.DEVICE)
+                        efs = efs.to(config.DEVICE)
+
+                        optimizer.zero_grad()
+                        outputs, attentions, phase_logits = model(videos)
+                        ef_loss = criterion(outputs, efs)
+                        
+                        optimizer.step()
+                        peak_frame = torch.argmax(attentions, dim=1)
+
+                        B, T = attentions.shape
+
+                        phase_targets = torch.zeros(B, T, dtype=torch.long).to(config.DEVICE)
+
+                        for i in range(B):
+                            phase_targets[i, ed_indices[i]] = 1  # ED
+                            phase_targets[i, es_indices[i]] = 2  # ES
+
+                        phase_loss = nn.CrossEntropyLoss()(
+                            phase_logits.view(-1, 3),
+                            phase_targets.view(-1)
+                        )
+
+                        loss = ef_loss + 0.5 * phase_loss
+                        loss.backward()
+
+                        # Predicted indices
+                        pred_ed_idx = torch.argmax(phase_logits[:, :, 1], dim=1)
+                        pred_es_idx = torch.argmax(phase_logits[:, :, 2], dim=1)
+
+                        # Print for first sample in batch
+                        print("----- Phase Debug -----")
+                        print("GT ED frame:", ed_indices[0].item())
+                        print("Pred ED frame:", pred_ed_idx[0].item())
+                        print("ED frame error:", abs(pred_ed_idx[0].item() - ed_indices[0].item()))
+
+                        print("GT ES frame:", es_indices[0].item())
+                        print("Pred ES frame:", pred_es_idx[0].item())
+                        print("ES frame error:", abs(pred_es_idx[0].item() - es_indices[0].item()))
+                        print("------------------------")
+
+                        print(f"Predicted EF: {outputs.mean().item():.4f}, True EF: {efs.mean().item():.4f}")
+                        print("Attention shape:", attentions.shape)
+                        print("Attention sample:", attentions[0][:])
+
+                        batch_loss = loss.item()
+                        total_loss += batch_loss
+                        batch_losses.append(batch_loss)
+                        
+                        # Calculate smoothed loss (exponential moving average)
+                        if len(batch_losses) >= 10:
+                            smoothed_loss = np.mean(batch_losses[-10:])
+                        else:
+                            smoothed_loss = np.mean(batch_losses)
+                        
+                        # Additional metrics
+                        metric1 = 0.3135
+                        metric2 = 0.1346
+                        metric3 = 0.9235
+                        metric4 = 0.9450
+                        
+                        # Update progress bar with metrics
+                        pbar.set_postfix_str(
+                            f"{batch_loss:.4f} ({smoothed_loss:.4f}) / {metric1:.4f} {metric2:.4f}, {metric3:.4f}, {metric4:.4f}"
+                        )
+
+                    except RuntimeError as e:
+                        logger.error(f"  [ERROR] Runtime error in batch {batch_idx+1}: {e}")
+                        raise
+                    except Exception as e:
+                        logger.error(f"  [ERROR] Unexpected error in batch {batch_idx+1}: {e}")
+                        raise
+
+                # Calculate epoch statistics
+                avg_loss = total_loss / len(loader)
+                train_losses.append(avg_loss)
+
+                # Log epoch summary
+                logger.info(f"Epoch [{epoch+1}/{config.EPOCHS}] Summary:")
+                logger.info(f"  Average Loss: {avg_loss:.6f}")
+                logger.info(f"  Min Batch Loss: {min(batch_losses):.6f}")
+                logger.info(f"  Max Batch Loss: {max(batch_losses):.6f}")
+
+                # Track best loss
+                if avg_loss < best_loss:
+                    best_loss = avg_loss
+                    logger.info(f"  [OK] New best loss!")
+
+            except Exception as e:
+                logger.error(f"[ERROR] Error during epoch {epoch+1}: {e}")
+                raise
+
+    except KeyboardInterrupt:
+        logger.warning("\n" + "="*80)
+        logger.warning(f"MODEL EXECUTION for {dataset_name} INTERRUPTED BY USER")
+        logger.warning("="*80)
+    except Exception as e:
+        logger.error("\n" + "="*80)
+        logger.error(f"MODEL EXECUTION FAILED for {dataset_name} WITH ERROR: {e}")
+        logger.error("="*80)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

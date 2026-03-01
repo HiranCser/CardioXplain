@@ -1,16 +1,19 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.models.video as models
 from torchvision.models.video import R2Plus1D_18_Weights
 
+
 class EFModel(nn.Module):
-    def __init__(self):
+    def __init__(self, num_frames=32):
         super().__init__()
+        self.num_frames = num_frames
 
         backbone = models.r2plus1d_18(
-            weights=R2Plus1D_18_Weights.KINETICS400_V1
+            weights=R2Plus1D_18_Weights.DEFAULT
         )
-        
+        self.phase_classifier = nn.Linear(512, 3)  # 3 classes
         self.feature_extractor = nn.Sequential(
             backbone.stem,
             backbone.layer1,
@@ -19,7 +22,8 @@ class EFModel(nn.Module):
             backbone.layer4
         )
 
-        self.global_pool = nn.AdaptiveAvgPool3d((None, 1, 1))  # keep time
+        self.spatial_pool = nn.AdaptiveAvgPool3d((None, 1, 1))
+
         self.temporal_attention = nn.Linear(512, 1)
         self.regressor = nn.Linear(512, 1)
 
@@ -27,28 +31,34 @@ class EFModel(nn.Module):
         # x: (B, C, T, H, W)
 
         feats = self.feature_extractor(x)
-        # shape: (B, 512, T', H', W')
+        # (B, 512, T', H', W')
 
-        feats = self.global_pool(feats)
-        # shape: (B, 512, T', 1, 1)
+        feats = self.spatial_pool(feats)
+        # (B, 512, T', 1, 1)
 
-        feats = feats.squeeze(-1).squeeze(-1)  
-        # shape: (B, 512, T')
+        feats = feats.squeeze(-1).squeeze(-1)
+        # (B, 512, T')
 
-        feats = feats.permute(0, 2, 1)  
-        # shape: (B, T', 512)
+        # 🔥 Upsample temporal dimension back to original frame count
+        feats = F.interpolate(
+            feats,
+            size=self.num_frames,
+            mode="linear",
+            align_corners=False
+        )
+        # (B, 512, T)
 
-        # Temporal attention
-        attn_scores = self.temporal_attention(feats)  
-        # (B, T', 1)
+        feats = feats.permute(0, 2, 1)
+        # (B, T, 512)
 
+        attn_scores = self.temporal_attention(feats)
         attn_weights = torch.softmax(attn_scores, dim=1)
-        # normalized over time
+        # (B, T, 1)
 
         weighted_feats = feats * attn_weights
         pooled = weighted_feats.sum(dim=1)
         # (B, 512)
 
         ef = self.regressor(pooled)
-
-        return ef.squeeze(1), attn_weights.squeeze(-1)
+        phase_logits = self.phase_classifier(feats)  # (B, T, 3)
+        return ef.squeeze(1), attn_weights.squeeze(-1), phase_logits

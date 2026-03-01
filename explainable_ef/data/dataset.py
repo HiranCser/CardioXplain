@@ -6,7 +6,7 @@ import numpy as np
 from torch.utils.data import Dataset
 
 class EchoDataset(Dataset):
-    def __init__(self, data_dir, num_frames=32, frame_size=(112, 112), max_videos=None, transform=None):
+    def __init__(self, data_dir, num_frames=32, frame_size=(112, 112), split="TRAIN", max_videos=None, transform=None):
         self.data_dir = data_dir
         self.num_frames = num_frames
         self.frame_size = frame_size
@@ -21,9 +21,15 @@ class EchoDataset(Dataset):
         filelist_path = os.path.join(data_dir, "FileList.csv")
         if not os.path.exists(filelist_path):
             raise FileNotFoundError(f"FileList.csv not found in {data_dir}")
+
+        volume_filelist_path = os.path.join(data_dir, "VolumeTracings.csv")
+        if not os.path.exists(volume_filelist_path):
+            raise FileNotFoundError(f"VolumeTracings.csv not found in {data_dir}")
         
         self.filelist = pd.read_csv(filelist_path)
-        self.filelist = self.filelist[self.filelist["Split"] == "TRAIN"]
+        self.filelist = self.filelist[self.filelist["Split"] == split]
+
+        self.volume_tracing = pd.read_csv(volume_filelist_path)
         
         # Limit to max_videos if specified
         if max_videos is not None and max_videos > 0:
@@ -31,6 +37,40 @@ class EchoDataset(Dataset):
         
         if len(self.filelist) == 0:
             raise ValueError("No training samples found in FileList.csv")
+
+        self.phase_dict = {}
+
+        for video_name in self.filelist["FileName"].unique():
+            file_name_with_extension = video_name + ".avi"
+            video_rows = self.volume_tracing[self.volume_tracing["FileName"] == file_name_with_extension]
+
+            frame_ids = video_rows["Frame"].unique()
+
+            areas = []
+
+            for f in frame_ids:
+                frame_rows = video_rows[video_rows["Frame"] == f]
+
+                points = []
+                for _, row in frame_rows.iterrows():
+                    points.append([row["X1"], row["Y1"]])
+                    points.append([row["X2"], row["Y2"]])
+
+                points = np.unique(np.array(points), axis=0)
+                area = cv2.contourArea(points.astype(np.float32))
+                areas.append(area)
+
+            ed_frame = -1
+            es_frame = -1
+
+            if len(frame_ids) > 0:
+                ed_frame = frame_ids[np.argmax(areas)]
+                es_frame = frame_ids[np.argmin(areas)]
+
+            self.phase_dict[file_name_with_extension] = {
+                "ed": ed_frame,
+                "es": es_frame
+            }
 
     def __len__(self):
         return len(self.filelist)
@@ -75,13 +115,23 @@ class EchoDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.filelist.iloc[idx]
-        video_path = os.path.join(self.data_dir, "Videos", row["FileName"] + ".avi")
-        
+        file_name_with_extension = row["FileName"] + ".avi"
+        video_path = os.path.join(self.data_dir, "Videos", file_name_with_extension)
+        total_frames = self.filelist.iloc[idx]["NumberOfFrames"]
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
+        ed_original = self.phase_dict[file_name_with_extension]["ed"]
+        es_original = self.phase_dict[file_name_with_extension]["es"]
+
+        ed_idx = int(ed_original / total_frames * self.num_frames)
+        es_idx = int(es_original / total_frames * self.num_frames)
+
+        ed_idx = min(ed_idx, self.num_frames - 1)
+        es_idx = min(es_idx, self.num_frames - 1)
+
         ef = torch.tensor(row["EF"]).float() / 100.0  # Normalize EF to [0, 1]
 
         video = self.load_video(video_path)
 
-        return video, ef
+        return video, ef, ed_idx, es_idx
