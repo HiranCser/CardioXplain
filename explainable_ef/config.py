@@ -9,7 +9,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "dynamic", "a4c-v
 BATCH_SIZE = 20
 NUM_FRAMES = 32  # Reduce to 16 for 2x speedup with minimal quality loss
 IMAGE_SIZE = 112  # Reduce to 64 for 2x speedup, 56 for 3x speedup
-MAX_VIDEOS = 100  # None = use all videos, or specify number (e.g., 100)
+MAX_VIDEOS = None  # None = use all videos, or specify number (e.g., 100)
 
 # Training configuration
 LR = 1e-4

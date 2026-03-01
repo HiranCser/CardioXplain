@@ -112,6 +112,8 @@ def main():
     try:
         logger.info("\nInitializing model...")
         model = EFModel().to(config.DEVICE)
+        # for param in model.feature_extractor.parameters():
+        #     param.requires_grad = False
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.info(f"[OK] Model loaded successfully")
@@ -160,12 +162,15 @@ def main():
                         efs = efs.to(config.DEVICE)
 
                         optimizer.zero_grad()
-                        outputs = model(videos)
+                        outputs, attentions = model(videos)
                         loss = criterion(outputs, efs)
                         loss.backward()
                         optimizer.step()
+                        peak_frame = torch.argmax(attentions, dim=1)
 
                         print(f"Predicted EF: {outputs.mean().item():.4f}, True EF: {efs.mean().item():.4f}")
+                        print("Attention shape:", attentions.shape)
+                        print("Attention sample:", attentions[0][:5])
 
                         batch_loss = loss.item()
                         total_loss += batch_loss
