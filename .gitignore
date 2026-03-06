@@ -7,3 +7,5 @@ explainable_ef/best_model.pth
 logs/*.log
 explainable_ef/**/*.pyc
 explainable_ef/visualization/outputs/*
+explainable_ef/best_model_smoke_cli_test.pth
+explainable_ef/best_model_smoke.pth
