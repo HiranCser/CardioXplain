@@ -5,3 +5,5 @@ explainable_ef/data/__pycache__/*.pyc
 explainable_ef/models/__pycache__/*.pyc
 explainable_ef/best_model.pth
 logs/*.log
+explainable_ef/**/*.pyc
+explainable_ef/visualization/outputs/*
