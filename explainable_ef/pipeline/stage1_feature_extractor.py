@@ -6,8 +6,9 @@ from torchvision.models.video import R2Plus1D_18_Weights
 class Stage1FeatureExtractor(nn.Module):
     """Stage 1: spatial feature extraction from echo clips."""
 
-    def __init__(self, weights=R2Plus1D_18_Weights.DEFAULT):
+    def __init__(self, use_pretrained=True):
         super().__init__()
+        weights = R2Plus1D_18_Weights.DEFAULT if use_pretrained else None
         backbone = models.r2plus1d_18(weights=weights)
 
         # Preserve more temporal detail for phase localization:

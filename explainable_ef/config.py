@@ -10,6 +10,7 @@ BATCH_SIZE = 20
 NUM_FRAMES = 32  # Increase to 48/64 for finer phase localization
 IMAGE_SIZE = 112
 MAX_VIDEOS = None  # None = use all videos
+USE_PRETRAINED_BACKBONE = True  # Set False for offline runs (no torchvision weight download)
 PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss
 PHASE_LABEL_SMOOTHING = 0.0  # Label smoothing for hard CE on ED/ES temporal indices
 PHASE_ONLY = False  # If True, disable EF loss and optimize only phase detection
@@ -57,4 +58,3 @@ GRADIENT_ACCUMULATION_STEPS = 1
 
 # Cache decoded frames in memory (requires more RAM)
 CACHE_FRAMES = False
-

@@ -64,6 +64,15 @@ Outputs:
 - Checkpoint: `best_model.pth`
 - Logs: `logs/training_*.log`
 
+
+If you are in a restricted/offline environment and torchvision cannot download backbone weights, run with:
+
+```powershell
+python model_execution.py --phase-only --phase-loss-weight 1.0 --no-use-pretrained-backbone --checkpoint best_model_phase.pth
+```
+
+This disables online pretrained-weight download for Stage 1 and trains from random initialization.
+
 ## 5. One-Command Smoke Test
 
 Run a tiny end-to-end smoke run (small data + few epochs):

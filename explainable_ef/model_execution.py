@@ -56,6 +56,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
+    parser.add_argument("--use-pretrained-backbone", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable pretrained torchvision backbone weights")
     return parser.parse_args(argv)
 
 
@@ -121,6 +122,8 @@ def apply_runtime_overrides(args, logger):
         overrides["WEIGHT_DECAY"] = args.weight_decay
     if args.max_grad_norm is not None:
         overrides["MAX_GRAD_NORM"] = args.max_grad_norm
+    if args.use_pretrained_backbone is not None:
+        overrides["USE_PRETRAINED_BACKBONE"] = args.use_pretrained_backbone
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -311,7 +314,10 @@ def build_optimizer(model, logger):
 
 def build_model_stack(logger):
     """Create model, optimizer and losses."""
-    model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
+    model = EFModel(
+        num_frames=config.NUM_FRAMES,
+        use_pretrained_backbone=bool(getattr(config, "USE_PRETRAINED_BACKBONE", True)),
+    ).to(config.DEVICE)
 
     maybe_freeze_ef_head(model, logger)
 
