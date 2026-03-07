@@ -18,3 +18,5 @@ explainable_ef/validation/outputs/ed_es_validation_vs_voltracings_v2.csv
 explainable_ef/validation/outputs/ed_es_validation_vs_voltracings.csv
 explainable_ef/best_model_phasefix_smoke2.pth
 explainable_ef/best_model_phasefix_smoke.pth
+explainable_ef/best_model_phasefix_temporal_smoke.pth
+dynamic

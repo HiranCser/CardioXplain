@@ -9,6 +9,13 @@ class Stage1FeatureExtractor(nn.Module):
     def __init__(self, weights=R2Plus1D_18_Weights.DEFAULT):
         super().__init__()
         backbone = models.r2plus1d_18(weights=weights)
+
+        # Preserve more temporal detail for phase localization:
+        # default backbone uses temporal stride=2 in layer4 block0, which makes T' too small.
+        layer4_block0 = backbone.layer4[0]
+        layer4_block0.conv1[0][3].stride = (1, 1, 1)
+        layer4_block0.downsample[0].stride = (1, 2, 2)
+
         self.feature_extractor = nn.Sequential(
             backbone.stem,
             backbone.layer1,
