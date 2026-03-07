@@ -50,9 +50,11 @@ NON_BLOCKING_TRANSFER = True
 USE_MIXED_PRECISION = True
 ENABLE_TF32 = True
 CUDNN_BENCHMARK = True
+NORMALIZE_INPUT = True
 
 # Use gradient accumulation (slower but uses less memory)
 GRADIENT_ACCUMULATION_STEPS = 1
 
 # Cache decoded frames in memory (requires more RAM)
 CACHE_FRAMES = False
+

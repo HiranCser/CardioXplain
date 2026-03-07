@@ -1,26 +1,41 @@
 import os
-import torch
-import pandas as pd
 import cv2
 import numpy as np
+import pandas as pd
+import torch
 from torch.utils.data import Dataset
 
 from data.phase_ground_truth import compute_ed_es_from_video_rows
 
 
+KINETICS_MEAN = (0.43216, 0.394666, 0.37645)
+KINETICS_STD = (0.22803, 0.22145, 0.216989)
+
+
 class EchoDataset(Dataset):
-    def __init__(self, data_dir, num_frames=32, frame_size=(112, 112), split="TRAIN", max_videos=None, transform=None):
+    def __init__(
+        self,
+        data_dir,
+        num_frames=32,
+        frame_size=(112, 112),
+        split="TRAIN",
+        max_videos=None,
+        transform=None,
+        normalize_input=True,
+    ):
         self.data_dir = data_dir
         self.num_frames = num_frames
         self.frame_size = frame_size
         self.max_videos = max_videos
         self.transform = transform
+        self.normalize_input = bool(normalize_input)
 
-        # Check if data directory exists
+        self._mean = torch.tensor(KINETICS_MEAN, dtype=torch.float32).view(3, 1, 1, 1)
+        self._std = torch.tensor(KINETICS_STD, dtype=torch.float32).view(3, 1, 1, 1)
+
         if not os.path.exists(data_dir):
             raise FileNotFoundError(f"Data directory not found: {data_dir}")
 
-        # Load the file list
         filelist_path = os.path.join(data_dir, "FileList.csv")
         if not os.path.exists(filelist_path):
             raise FileNotFoundError(f"FileList.csv not found in {data_dir}")
@@ -34,7 +49,6 @@ class EchoDataset(Dataset):
 
         self.volume_tracing = pd.read_csv(volume_filelist_path)
 
-        # Limit to max_videos if specified
         if max_videos is not None and max_videos > 0:
             self.filelist = self.filelist.iloc[:max_videos]
 
@@ -73,11 +87,9 @@ class EchoDataset(Dataset):
         if len(frames) == 0:
             raise ValueError(f"No frames loaded from video: {path}")
 
-        # Convert list of numpy arrays to single numpy array (num_total_frames, H, W, C)
         frames_array = np.array(frames, dtype=np.uint8)
         total_video_frames = len(frames_array)
 
-        # Sample frames uniformly across the full video so phase labels and inputs align.
         if total_video_frames >= self.num_frames:
             sampled_indices = np.linspace(0, total_video_frames - 1, self.num_frames).round().astype(np.int32)
             sampled_frames = frames_array[sampled_indices]
@@ -88,14 +100,20 @@ class EchoDataset(Dataset):
                 frames_array,
                 ((0, padding), (0, 0), (0, 0), (0, 0)),
                 mode="constant",
-                constant_values=0
+                constant_values=0,
             )
             if padding > 0:
                 pad_indices = np.full((padding,), total_video_frames - 1, dtype=np.int32)
                 sampled_indices = np.concatenate([sampled_indices, pad_indices], axis=0)
 
-        # Convert (num_frames, height, width, channels) to (channels, num_frames, height, width)
         frames_tensor = torch.from_numpy(sampled_frames).permute(3, 0, 1, 2).float() / 255.0
+
+        if self.normalize_input:
+            frames_tensor = (frames_tensor - self._mean) / self._std
+
+        if self.transform is not None:
+            frames_tensor = self.transform(frames_tensor)
+
         return frames_tensor, sampled_indices
 
     def __getitem__(self, idx):
@@ -108,11 +126,10 @@ class EchoDataset(Dataset):
         ed_original = self.phase_dict[file_name_with_extension]["ed"]
         es_original = self.phase_dict[file_name_with_extension]["es"]
 
-        ef = torch.tensor(row["EF"]).float() / 100.0  # Normalize EF to [0, 1]
+        ef = torch.tensor(row["EF"]).float() / 100.0
 
         video, sampled_indices = self.load_video(video_path)
 
-        # Map original traced frame ids to nearest sampled frame index.
         if ed_original >= 0:
             ed_idx = int(np.argmin(np.abs(sampled_indices - int(ed_original))))
         else:
