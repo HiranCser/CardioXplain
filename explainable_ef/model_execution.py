@@ -49,8 +49,12 @@ def parse_args(argv=None):
     parser.add_argument("--backbone-lr-mult", type=float, default=None, help="Override config.BACKBONE_LR_MULT")
     parser.add_argument("--phase-soft-sigma", type=float, default=None, help="Override config.PHASE_SOFT_SIGMA")
     parser.add_argument("--phase-soft-radius", type=int, default=None, help="Override config.PHASE_SOFT_RADIUS")
+    parser.add_argument("--phase-hard-index-weight", type=float, default=None, help="Override config.PHASE_HARD_INDEX_WEIGHT")
     parser.add_argument("--phase-frame-ce-weight", type=float, default=None, help="Override config.PHASE_FRAME_CE_WEIGHT")
     parser.add_argument("--phase-frame-radius", type=int, default=None, help="Override config.PHASE_FRAME_RADIUS")
+    parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
+    parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
+    parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
     return parser.parse_args(argv)
 
 
@@ -102,10 +106,18 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_SOFT_SIGMA"] = args.phase_soft_sigma
     if args.phase_soft_radius is not None:
         overrides["PHASE_SOFT_RADIUS"] = args.phase_soft_radius
+    if args.phase_hard_index_weight is not None:
+        overrides["PHASE_HARD_INDEX_WEIGHT"] = args.phase_hard_index_weight
     if args.phase_frame_ce_weight is not None:
         overrides["PHASE_FRAME_CE_WEIGHT"] = args.phase_frame_ce_weight
     if args.phase_frame_radius is not None:
         overrides["PHASE_FRAME_RADIUS"] = args.phase_frame_radius
+    if args.phase_unfreeze_lr_mult is not None:
+        overrides["PHASE_UNFREEZE_LR_MULT"] = args.phase_unfreeze_lr_mult
+    if args.weight_decay is not None:
+        overrides["WEIGHT_DECAY"] = args.weight_decay
+    if args.max_grad_norm is not None:
+        overrides["MAX_GRAD_NORM"] = args.max_grad_norm
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -282,11 +294,12 @@ def build_optimizer(model, logger):
     if not param_groups:
         raise RuntimeError("No trainable parameters found for optimizer")
 
-    optimizer = torch.optim.Adam(param_groups)
+    weight_decay = float(getattr(config, "WEIGHT_DECAY", 0.0))
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
 
     group_sizes = [sum(p.numel() for p in g["params"]) for g in param_groups]
     group_lrs = [g["lr"] for g in param_groups]
-    logger.info("Optimizer param groups | sizes=%s | lrs=%s", group_sizes, group_lrs)
+    logger.info("Optimizer param groups | sizes=%s | lrs=%s | weight_decay=%s", group_sizes, group_lrs, weight_decay)
     return optimizer
 
 
@@ -371,14 +384,21 @@ def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
 
     sigma = float(getattr(config, "PHASE_SOFT_SIGMA", 0.0))
     radius = int(getattr(config, "PHASE_SOFT_RADIUS", 0))
+    hard_weight = float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0))
+    hard_weight = min(1.0, max(0.0, hard_weight))
 
     if sigma > 0.0:
         num_frames = ed_logits.shape[1]
         ed_target = build_soft_temporal_targets(ed_idx, num_frames, ed_logits.device, sigma, radius)
         es_target = build_soft_temporal_targets(es_idx, num_frames, es_logits.device, sigma, radius)
 
-        ed_loss = F.kl_div(F.log_softmax(ed_logits, dim=1), ed_target, reduction="batchmean")
-        es_loss = F.kl_div(F.log_softmax(es_logits, dim=1), es_target, reduction="batchmean")
+        ed_soft_loss = F.kl_div(F.log_softmax(ed_logits, dim=1), ed_target, reduction="batchmean")
+        es_soft_loss = F.kl_div(F.log_softmax(es_logits, dim=1), es_target, reduction="batchmean")
+        ed_hard_loss = phase_index_loss_fn(ed_logits, ed_idx)
+        es_hard_loss = phase_index_loss_fn(es_logits, es_idx)
+
+        ed_loss = (1.0 - hard_weight) * ed_soft_loss + hard_weight * ed_hard_loss
+        es_loss = (1.0 - hard_weight) * es_soft_loss + hard_weight * es_hard_loss
     else:
         ed_loss = phase_index_loss_fn(ed_logits, ed_idx)
         es_loss = phase_index_loss_fn(es_logits, es_idx)
@@ -538,6 +558,12 @@ def train_one_epoch(
 
         should_step = ((batch_idx + 1) % accumulation_steps == 0) or (batch_idx + 1 == num_batches)
         if should_step:
+            max_grad_norm = float(getattr(config, "MAX_GRAD_NORM", 0.0))
+            if max_grad_norm > 0.0:
+                if amp_enabled:
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
             if amp_enabled:
                 scaler.step(optimizer)
                 scaler.update()
@@ -617,6 +643,10 @@ def log_header(logger, amp_enabled):
     logger.info("Phase soft radius: %d", int(getattr(config, "PHASE_SOFT_RADIUS", 0)))
     logger.info("Phase frame CE weight: %.3f", float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0)))
     logger.info("Phase frame radius: %d", int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
+    logger.info("Phase hard index weight: %.3f", float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0)))
+    logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
+    logger.info("Weight decay: %s", getattr(config, "WEIGHT_DECAY", 0.0))
+    logger.info("Max grad norm: %s", getattr(config, "MAX_GRAD_NORM", 0.0))
 
 
 def main(argv=None):
@@ -647,6 +677,10 @@ def main(argv=None):
         if phase_only and freeze_epochs > 0 and epoch == freeze_epochs:
             if set_backbone_trainable(model, True):
                 logger.info("Unfreezing Stage1 backbone at epoch %d", epoch + 1)
+                unfreeze_lr_mult = float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0))
+                if unfreeze_lr_mult > 0 and unfreeze_lr_mult != 1.0:
+                    config.LEARNING_RATE = float(config.LEARNING_RATE) * unfreeze_lr_mult
+                    logger.info("Applying LR multiplier at unfreeze: x%.3f -> LR=%s", unfreeze_lr_mult, config.LEARNING_RATE)
                 optimizer = build_optimizer(model, logger)
 
         epoch_start = time.perf_counter()

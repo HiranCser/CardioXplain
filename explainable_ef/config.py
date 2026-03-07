@@ -19,11 +19,15 @@ PHASE_BACKBONE_FREEZE_EPOCHS = 5  # Freeze stage1 backbone for early phase-only 
 BACKBONE_LR_MULT = 0.2  # Backbone LR = LEARNING_RATE * BACKBONE_LR_MULT
 PHASE_SOFT_SIGMA = 1.5  # >0 enables soft temporal targets (Gaussian around GT index)
 PHASE_SOFT_RADIUS = 4  # Optional radius for soft target support; <=0 means no clipping
+PHASE_HARD_INDEX_WEIGHT = 0.5  # Mix hard CE with soft index loss when soft targets are enabled
 PHASE_FRAME_CE_WEIGHT = 0.35  # Mix ratio for frame-wise CE in phase loss
 PHASE_FRAME_RADIUS = 2  # Radius around ED/ES used for frame-wise supervision
+PHASE_UNFREEZE_LR_MULT = 0.5  # Multiply LR when unfreezing stage1 in phase-only mode
 
 # Training configuration
 LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 1e-4
+MAX_GRAD_NORM = 1.0  # 0 disables gradient clipping
 EPOCHS = 50
 TOLERANCE = 1
 PATIENCE = 10
