@@ -7,6 +7,7 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 import config
@@ -29,6 +30,7 @@ def parse_args(argv=None):
     parser.add_argument("--smoke", action="store_true", help="Run a tiny smoke test configuration.")
     parser.add_argument("--max-videos", type=int, default=None, help="Override config.MAX_VIDEOS")
     parser.add_argument("--epochs", type=int, default=None, help="Override config.EPOCHS")
+    parser.add_argument("--learning-rate", "--lr", dest="learning_rate", type=float, default=None, help="Override config.LEARNING_RATE")
     parser.add_argument("--batch-size", type=int, default=None, help="Override config.BATCH_SIZE")
     parser.add_argument("--num-frames", type=int, default=None, help="Override config.NUM_FRAMES")
     parser.add_argument("--checkpoint", type=str, default=None, help="Override config.CHECKPOINT_PATH")
@@ -43,6 +45,12 @@ def parse_args(argv=None):
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
+    parser.add_argument("--phase-backbone-freeze-epochs", type=int, default=None, help="Override config.PHASE_BACKBONE_FREEZE_EPOCHS")
+    parser.add_argument("--backbone-lr-mult", type=float, default=None, help="Override config.BACKBONE_LR_MULT")
+    parser.add_argument("--phase-soft-sigma", type=float, default=None, help="Override config.PHASE_SOFT_SIGMA")
+    parser.add_argument("--phase-soft-radius", type=int, default=None, help="Override config.PHASE_SOFT_RADIUS")
+    parser.add_argument("--phase-frame-ce-weight", type=float, default=None, help="Override config.PHASE_FRAME_CE_WEIGHT")
+    parser.add_argument("--phase-frame-radius", type=int, default=None, help="Override config.PHASE_FRAME_RADIUS")
     return parser.parse_args(argv)
 
 
@@ -56,6 +64,8 @@ def apply_runtime_overrides(args, logger):
         overrides["MAX_VIDEOS"] = args.max_videos
     if args.epochs is not None:
         overrides["EPOCHS"] = args.epochs
+    if args.learning_rate is not None:
+        overrides["LEARNING_RATE"] = args.learning_rate
     if args.batch_size is not None:
         overrides["BATCH_SIZE"] = args.batch_size
     if args.num_frames is not None:
@@ -84,6 +94,18 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
     if args.phase_only is not None:
         overrides["PHASE_ONLY"] = args.phase_only
+    if args.phase_backbone_freeze_epochs is not None:
+        overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = args.phase_backbone_freeze_epochs
+    if args.backbone_lr_mult is not None:
+        overrides["BACKBONE_LR_MULT"] = args.backbone_lr_mult
+    if args.phase_soft_sigma is not None:
+        overrides["PHASE_SOFT_SIGMA"] = args.phase_soft_sigma
+    if args.phase_soft_radius is not None:
+        overrides["PHASE_SOFT_RADIUS"] = args.phase_soft_radius
+    if args.phase_frame_ce_weight is not None:
+        overrides["PHASE_FRAME_CE_WEIGHT"] = args.phase_frame_ce_weight
+    if args.phase_frame_radius is not None:
+        overrides["PHASE_FRAME_RADIUS"] = args.phase_frame_radius
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -209,15 +231,26 @@ def build_dataloaders():
     return train_loader, val_loader, test_loader
 
 
+def get_pipeline(model):
+    return model.pipeline if hasattr(model, "pipeline") else model
+
+
+def set_backbone_trainable(model, trainable):
+    pipeline = get_pipeline(model)
+    if not hasattr(pipeline, "stage1"):
+        return False
+
+    for p in pipeline.stage1.parameters():
+        p.requires_grad = trainable
+    return True
+
+
 def maybe_freeze_ef_head(model, logger):
     if not is_phase_only_mode():
         return
 
-    ef_head = None
-    if hasattr(model, "pipeline") and hasattr(model.pipeline, "ef_regressor"):
-        ef_head = model.pipeline.ef_regressor
-    elif hasattr(model, "ef_regressor"):
-        ef_head = model.ef_regressor
+    pipeline = get_pipeline(model)
+    ef_head = pipeline.ef_regressor if hasattr(pipeline, "ef_regressor") else None
 
     if ef_head is None:
         logger.info("Phase-only mode enabled, but EF head was not found for freezing")
@@ -228,13 +261,46 @@ def maybe_freeze_ef_head(model, logger):
     logger.info("Phase-only mode: EF head frozen")
 
 
+def build_optimizer(model, logger):
+    base_lr = float(config.LEARNING_RATE)
+    backbone_mult = float(getattr(config, "BACKBONE_LR_MULT", 1.0))
+    pipeline = get_pipeline(model)
+
+    param_groups = []
+    used_ids = set()
+
+    if hasattr(pipeline, "stage1"):
+        backbone_params = [p for p in pipeline.stage1.parameters() if p.requires_grad]
+        if backbone_params:
+            param_groups.append({"params": backbone_params, "lr": base_lr * backbone_mult})
+            used_ids.update(id(p) for p in backbone_params)
+
+    head_params = [p for p in model.parameters() if p.requires_grad and id(p) not in used_ids]
+    if head_params:
+        param_groups.append({"params": head_params, "lr": base_lr})
+
+    if not param_groups:
+        raise RuntimeError("No trainable parameters found for optimizer")
+
+    optimizer = torch.optim.Adam(param_groups)
+
+    group_sizes = [sum(p.numel() for p in g["params"]) for g in param_groups]
+    group_lrs = [g["lr"] for g in param_groups]
+    logger.info("Optimizer param groups | sizes=%s | lrs=%s", group_sizes, group_lrs)
+    return optimizer
+
+
 def build_model_stack(logger):
     """Create model, optimizer and losses."""
     model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
+
     maybe_freeze_ef_head(model, logger)
 
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.Adam(trainable_params, lr=config.LEARNING_RATE)
+    if is_phase_only_mode() and int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)) > 0:
+        if set_backbone_trainable(model, False):
+            logger.info("Phase-only mode: Stage1 backbone frozen for warmup epochs")
+
+    optimizer = build_optimizer(model, logger)
 
     mse_loss = nn.MSELoss()
     phase_index_loss = nn.CrossEntropyLoss(
@@ -246,19 +312,100 @@ def build_model_stack(logger):
     return model, optimizer, mse_loss, phase_index_loss, amp_enabled, scaler
 
 
+def build_soft_temporal_targets(indices, num_frames, device, sigma, radius):
+    """Build Gaussian-like soft targets centered at ground-truth indices."""
+    positions = torch.arange(num_frames, device=device, dtype=torch.float32).unsqueeze(0)
+    centers = indices.to(device=device, dtype=torch.float32).unsqueeze(1)
+    dist = torch.abs(positions - centers)
+
+    weights = torch.exp(-(dist ** 2) / (2.0 * sigma * sigma))
+
+    if radius is not None and radius > 0:
+        weights = weights * (dist <= float(radius)).to(weights.dtype)
+
+    sums = weights.sum(dim=1, keepdim=True)
+    fallback = (sums.squeeze(1) <= 0)
+    if fallback.any():
+        weights[fallback] = 0.0
+        weights[fallback, indices[fallback]] = 1.0
+        sums = weights.sum(dim=1, keepdim=True)
+
+    return weights / sums.clamp_min(1e-8)
+
+
+def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
+    """Build per-frame 3-class targets: 0=background, 1=ED neighborhood, 2=ES neighborhood."""
+    positions = torch.arange(num_frames, device=ed_idx.device).unsqueeze(0)
+    ed_dist = torch.abs(positions - ed_idx.unsqueeze(1))
+    es_dist = torch.abs(positions - es_idx.unsqueeze(1))
+
+    targets = torch.zeros((ed_idx.shape[0], num_frames), dtype=torch.long, device=ed_idx.device)
+    ed_mask = ed_dist <= radius
+    es_mask = es_dist <= radius
+
+    targets[ed_mask & ~es_mask] = 1
+    targets[es_mask & ~ed_mask] = 2
+
+    overlap = ed_mask & es_mask
+    if overlap.any():
+        choose_ed = ed_dist[overlap] <= es_dist[overlap]
+        targets[overlap] = torch.where(
+            choose_ed,
+            torch.ones_like(targets[overlap]),
+            torch.full_like(targets[overlap], 2),
+        )
+
+    return targets
+
+
 def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
     """
     Train phase detection as two temporal index tasks:
     - ED index from ED score curve (phase_logits[:, :, 1])
     - ES index from ES score curve (phase_logits[:, :, 2])
+
+    Optional stabilizer: frame-wise CE over {background, ED, ES} neighborhoods.
     """
     ed_logits = phase_logits[:, :, 1]  # (B, T)
     es_logits = phase_logits[:, :, 2]  # (B, T)
 
-    ed_loss = phase_index_loss_fn(ed_logits, ed_idx)
-    es_loss = phase_index_loss_fn(es_logits, es_idx)
-    phase_loss = 0.5 * (ed_loss + es_loss)
-    return phase_loss, ed_loss, es_loss
+    sigma = float(getattr(config, "PHASE_SOFT_SIGMA", 0.0))
+    radius = int(getattr(config, "PHASE_SOFT_RADIUS", 0))
+
+    if sigma > 0.0:
+        num_frames = ed_logits.shape[1]
+        ed_target = build_soft_temporal_targets(ed_idx, num_frames, ed_logits.device, sigma, radius)
+        es_target = build_soft_temporal_targets(es_idx, num_frames, es_logits.device, sigma, radius)
+
+        ed_loss = F.kl_div(F.log_softmax(ed_logits, dim=1), ed_target, reduction="batchmean")
+        es_loss = F.kl_div(F.log_softmax(es_logits, dim=1), es_target, reduction="batchmean")
+    else:
+        ed_loss = phase_index_loss_fn(ed_logits, ed_idx)
+        es_loss = phase_index_loss_fn(es_logits, es_idx)
+
+    index_loss = 0.5 * (ed_loss + es_loss)
+
+    frame_weight = float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0))
+    frame_weight = min(1.0, max(0.0, frame_weight))
+
+    if frame_weight > 0.0:
+        frame_radius = max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
+        frame_targets = build_frame_phase_targets(
+            ed_idx=ed_idx,
+            es_idx=es_idx,
+            num_frames=phase_logits.shape[1],
+            radius=frame_radius,
+        )
+        frame_loss = F.cross_entropy(
+            phase_logits.reshape(-1, phase_logits.shape[-1]),
+            frame_targets.reshape(-1),
+        )
+        phase_loss = (1.0 - frame_weight) * index_loss + frame_weight * frame_loss
+    else:
+        frame_loss = torch.zeros_like(index_loss)
+        phase_loss = index_loss
+
+    return phase_loss, ed_loss, es_loss, frame_loss
 
 
 def move_batch_to_device(videos, efs, ed_idx, es_idx):
@@ -374,7 +521,7 @@ def train_one_epoch(
             else:
                 ef_loss = mse_loss(ef_pred, efs)
 
-            phase_loss, ed_phase_loss, es_phase_loss = compute_phase_index_loss(
+            phase_loss, ed_phase_loss, es_phase_loss, frame_phase_loss = compute_phase_index_loss(
                 phase_logits=phase_logits,
                 ed_idx=ed_idx,
                 es_idx=es_idx,
@@ -404,13 +551,14 @@ def train_one_epoch(
         if batch_idx == 0:
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
             logger.info(
-                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 ef_loss.item(),
                 phase_loss.item(),
                 ed_phase_loss.item(),
                 es_phase_loss.item(),
+                frame_phase_loss.item(),
                 ed_idx[0].item(),
                 es_idx[0].item(),
                 pred_ed_idx[0].item(),
@@ -463,6 +611,12 @@ def log_header(logger, amp_enabled):
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
     logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
     logger.info("Phase-only mode: %s", is_phase_only_mode())
+    logger.info("Phase backbone freeze epochs: %d", int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
+    logger.info("Backbone LR multiplier: %.3f", float(getattr(config, "BACKBONE_LR_MULT", 1.0)))
+    logger.info("Phase soft sigma: %.3f", float(getattr(config, "PHASE_SOFT_SIGMA", 0.0)))
+    logger.info("Phase soft radius: %d", int(getattr(config, "PHASE_SOFT_RADIUS", 0)))
+    logger.info("Phase frame CE weight: %.3f", float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0)))
+    logger.info("Phase frame radius: %d", int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
 
 
 def main(argv=None):
@@ -477,10 +631,11 @@ def main(argv=None):
     log_header(logger, amp_enabled)
 
     phase_only = is_phase_only_mode()
+    freeze_epochs = max(0, int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
 
     if phase_only:
         best_monitor = -float("inf")
-        monitor_name = "phase_joint_acc"
+        monitor_name = "phase_score_joint_minus_mae"
     else:
         best_monitor = float("inf")
         monitor_name = "ef_mae"
@@ -489,6 +644,11 @@ def main(argv=None):
     validate_every = max(1, int(getattr(config, "VALIDATE_EVERY", 1)))
 
     for epoch in range(config.EPOCHS):
+        if phase_only and freeze_epochs > 0 and epoch == freeze_epochs:
+            if set_backbone_trainable(model, True):
+                logger.info("Unfreezing Stage1 backbone at epoch %d", epoch + 1)
+                optimizer = build_optimizer(model, logger)
+
         epoch_start = time.perf_counter()
 
         train_metrics = train_one_epoch(
@@ -524,7 +684,10 @@ def main(argv=None):
                     val_metrics["es_mae_frames"],
                 )
 
-                current_monitor = val_metrics["joint_acc"]
+                phase_score = val_metrics["joint_acc"] - 0.01 * (
+                    val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
+                )
+                current_monitor = phase_score
                 improved = current_monitor > best_monitor
             else:
                 logger.info(
@@ -562,7 +725,12 @@ def main(argv=None):
                 logger.info("Early stopping triggered")
                 break
         else:
-            logger.info("Epoch [%d/%d] | Train Loss: %.4f | Validation skipped", epoch + 1, config.EPOCHS, train_metrics["train_loss"])
+            logger.info(
+                "Epoch [%d/%d] | Train Loss: %.4f | Validation skipped",
+                epoch + 1,
+                config.EPOCHS,
+                train_metrics["train_loss"],
+            )
 
         epoch_duration = time.perf_counter() - epoch_start
         train_duration = max(1e-9, train_metrics["data_time"] + train_metrics["compute_time"])
@@ -607,3 +775,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
