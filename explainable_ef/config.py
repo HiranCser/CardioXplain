@@ -3,7 +3,7 @@ import os
 
 # Data configuration
 # Points to ../../dynamic/a4c-video-dir (from cx/explainable_ef to CardioXplain/dynamic)
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "dynamic", "a4c-video-dir")
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
 
 # Model configuration
 BATCH_SIZE = 20
