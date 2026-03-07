@@ -49,7 +49,14 @@ def load_reference_table(path, sheet_name=None):
     raise ValueError(f"Unsupported reference file extension: {ext}")
 
 
-def build_computed_table(data_dir, split=None, max_videos=None):
+def build_computed_table(
+    data_dir,
+    split=None,
+    max_videos=None,
+    detector="curve",
+    smooth_window=5,
+    enforce_es_after_ed=True,
+):
     filelist_path = os.path.join(data_dir, "FileList.csv")
     tracings_path = os.path.join(data_dir, "VolumeTracings.csv")
 
@@ -68,7 +75,12 @@ def build_computed_table(data_dir, split=None, max_videos=None):
         fname_ext = f"{fname}.avi"
 
         vr = tracings[tracings["FileName"] == fname_ext]
-        phase_info = compute_ed_es_from_video_rows(vr)
+        phase_info = compute_ed_es_from_video_rows(
+            vr,
+            method=detector,
+            smooth_window=smooth_window,
+            enforce_es_after_ed=enforce_es_after_ed,
+        )
 
         rows.append(
             {
@@ -80,6 +92,9 @@ def build_computed_table(data_dir, split=None, max_videos=None):
                 "ed_area": phase_info["ed_area"],
                 "es_area": phase_info["es_area"],
                 "num_traced_frames": phase_info["num_traced_frames"],
+                "detector": detector,
+                "smooth_window": int(smooth_window),
+                "enforce_es_after_ed": bool(enforce_es_after_ed),
             }
         )
 
@@ -99,7 +114,7 @@ def build_reference_from_volume_tracings(reference_df):
 
     rows = []
     for file_name, group in df.groupby("FileName"):
-        phase_info = compute_ed_es_from_video_rows(group)
+        phase_info = compute_ed_es_from_video_rows(group, method="global_extrema")
         rows.append(
             {
                 "file_name_ref": normalize_filename(file_name),
@@ -133,7 +148,6 @@ def prepare_reference_table(reference_df, args):
     if mode == "volume_tracings":
         return build_reference_from_volume_tracings(reference_df), "volume_tracings"
 
-    # auto
     try:
         return try_build_reference_frame_table(reference_df, args), "frame_table"
     except Exception:
@@ -195,17 +209,22 @@ def validate_against_reference(computed_df, reference_prepared_df, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate computed ED/ES frame GT against reference Excel/CSV frame numbers.")
+    parser = argparse.ArgumentParser(description="Validate detected ED/ES frame indices against expert/reference frame numbers.")
     parser.add_argument("--data-dir", type=str, default=config.DATA_DIR, help="Path containing FileList.csv and VolumeTracings.csv")
     parser.add_argument("--split", type=str, default=None, help="Optional split filter: TRAIN/VAL/TEST")
     parser.add_argument("--max-videos", type=int, default=None, help="Optional cap for quick checks")
-    parser.add_argument("--reference", type=str, default=None, help="Path to reference CSV/XLSX/XLS with frame numbers")
+    parser.add_argument("--detector", type=str, default="curve", choices=["curve", "global_extrema"], help="ED/ES detector from traced areas")
+    parser.add_argument("--smooth-window", type=int, default=5, help="Moving-average window for curve detector")
+    parser.add_argument("--enforce-es-after-ed", action=argparse.BooleanOptionalAction, default=True, help="Enforce ES to be after ED in curve detector")
+
+    parser.add_argument("--reference", type=str, default=None, help="Path to reference CSV/XLSX/XLS with expert frame numbers")
     parser.add_argument("--reference-mode", type=str, default="auto", help="auto | frame_table | volume_tracings")
     parser.add_argument("--sheet", type=str, default=None, help="Excel sheet name (optional)")
     parser.add_argument("--file-col", type=str, default=None, help="Reference filename column name")
     parser.add_argument("--ed-col", type=str, default=None, help="Reference ED frame column name")
     parser.add_argument("--es-col", type=str, default=None, help="Reference ES frame column name")
     parser.add_argument("--tolerance", type=int, default=0, help="Tolerance in frames for within-tolerance rates")
+
     parser.add_argument(
         "--output",
         type=str,
@@ -227,16 +246,21 @@ def main():
         data_dir=args.data_dir,
         split=args.split,
         max_videos=args.max_videos,
+        detector=args.detector,
+        smooth_window=args.smooth_window,
+        enforce_es_after_ed=bool(args.enforce_es_after_ed),
     )
 
     if not args.reference:
         computed_df.to_csv(args.output, index=False)
         print("=" * 72)
-        print("ED/ES COMPUTED TABLE EXPORTED")
+        print("ED/ES DETECTED TABLE EXPORTED")
         print("=" * 72)
+        print(f"Detector:      {args.detector}")
+        print(f"Smooth window: {int(args.smooth_window)}")
         print(f"Rows:          {len(computed_df)}")
         print(f"Output:        {os.path.abspath(args.output)}")
-        print("Tip: pass --reference <excel_or_csv> to compare against your annotated frame numbers.")
+        print("Tip: pass --reference <excel_or_csv> to compare against expert frame numbers.")
         print("=" * 72)
         return
 
@@ -248,12 +272,19 @@ def main():
     mismatches = matched_df[~matched_df["joint_within_tol"]].copy()
     mismatches.to_csv(args.mismatch_output, index=False)
 
+    traced_min = int(computed_df["num_traced_frames"].min()) if len(computed_df) else 0
+    traced_max = int(computed_df["num_traced_frames"].max()) if len(computed_df) else 0
+
     print("=" * 72)
     print("ED/ES REFERENCE VALIDATION SUMMARY")
     print("=" * 72)
+    print(f"Detector:                 {args.detector}")
+    print(f"Smooth window:            {int(args.smooth_window)}")
+    print(f"Enforce ES after ED:      {bool(args.enforce_es_after_ed)}")
     print(f"Reference mode:           {detected_mode}")
     print(f"Computed rows:            {summary['rows_computed']}")
     print(f"Matched rows:             {summary['rows_matched']}")
+    print(f"Traced frames per video:  min={traced_min}, max={traced_max}")
     print(f"Tolerance:                +/-{summary['tolerance']} frames")
     print(f"ED MAE (frames):          {summary['ed_mae']:.3f}")
     print(f"ES MAE (frames):          {summary['es_mae']:.3f}")
@@ -265,6 +296,8 @@ def main():
     print(f"Joint within tolerance:   {summary['joint_within_tol_rate'] * 100:.2f}%")
     print(f"Detailed output:          {os.path.abspath(args.output)}")
     print(f"Mismatch output:          {os.path.abspath(args.mismatch_output)}")
+    if traced_max <= 2:
+        print("Note: reference tracings include only two annotated frames per video; full-cycle curve behavior cannot be validated from this file alone.")
     print("=" * 72)
 
 
