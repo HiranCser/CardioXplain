@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 from torch.utils.data import Dataset
 
+from data.phase_ground_truth import compute_ed_es_from_video_rows
+
 
 class EchoDataset(Dataset):
     def __init__(self, data_dir, num_frames=32, frame_size=(112, 112), split="TRAIN", max_videos=None, transform=None):
@@ -45,42 +47,11 @@ class EchoDataset(Dataset):
             file_name_with_extension = video_name + ".avi"
             video_rows = self.volume_tracing[self.volume_tracing["FileName"] == file_name_with_extension]
 
-            frame_ids = video_rows["Frame"].unique()
-            areas = []
-
-            for f in frame_ids:
-                frame_rows = video_rows[video_rows["Frame"] == f]
-                area = self._compute_lv_area(frame_rows)
-                areas.append(area)
-
-            ed_frame = -1
-            es_frame = -1
-
-            if len(frame_ids) > 0:
-                ed_frame = int(frame_ids[np.argmax(areas)])
-                es_frame = int(frame_ids[np.argmin(areas)])
-
+            phase_info = compute_ed_es_from_video_rows(video_rows)
             self.phase_dict[file_name_with_extension] = {
-                "ed": ed_frame,
-                "es": es_frame
+                "ed": phase_info["ed_frame"],
+                "es": phase_info["es_frame"],
             }
-
-    @staticmethod
-    def _compute_lv_area(frame_rows):
-        """
-        Build a closed LV contour from tracing pairs and compute polygon area.
-        X1/Y1 form one wall in order; X2/Y2 form the opposite wall in reverse order.
-        """
-        if frame_rows.empty:
-            return 0.0
-
-        left_wall = frame_rows[["X1", "Y1"]].to_numpy(dtype=np.float32)
-        right_wall = frame_rows[["X2", "Y2"]].to_numpy(dtype=np.float32)[::-1]
-        contour = np.concatenate([left_wall, right_wall], axis=0)
-
-        if contour.shape[0] < 3:
-            return 0.0
-        return float(cv2.contourArea(contour))
 
     def __len__(self):
         return len(self.filelist)

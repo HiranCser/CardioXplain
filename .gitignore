@@ -10,4 +10,11 @@ explainable_ef/visualization/outputs/*
 explainable_ef/best_model_smoke_cli_test.pth
 explainable_ef/best_model_smoke.pth
 explainable_ef/best_model_perf_patch_smoke.pth
-explainable_ef/best_model_perf_patch_smoke3.pth
+explainable_ef/best_model_perf_patch_smoke*.pth
+explainable_ef/validation/outputs/ed_es_computed_val20.csv
+explainable_ef/validation/outputs/ed_es_mismatches_vs_voltracings_v2.csv
+explainable_ef/validation/outputs/ed_es_mismatches_vs_voltracings.csv
+explainable_ef/validation/outputs/ed_es_validation_vs_voltracings_v2.csv
+explainable_ef/validation/outputs/ed_es_validation_vs_voltracings.csv
+explainable_ef/best_model_phasefix_smoke2.pth
+explainable_ef/best_model_phasefix_smoke.pth

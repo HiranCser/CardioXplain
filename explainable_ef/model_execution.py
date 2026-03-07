@@ -40,6 +40,8 @@ def parse_args(argv=None):
     parser.add_argument("--persistent-workers", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable DataLoader persistent_workers")
     parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable TF32 matmul/cuDNN")
     parser.add_argument("--benchmark", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable cuDNN benchmark")
+    parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
+    parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     return parser.parse_args(argv)
 
 
@@ -75,6 +77,10 @@ def apply_runtime_overrides(args, logger):
         overrides["ENABLE_TF32"] = args.tf32
     if args.benchmark is not None:
         overrides["CUDNN_BENCHMARK"] = args.benchmark
+    if args.phase_loss_weight is not None:
+        overrides["PHASE_LOSS_WEIGHT"] = args.phase_loss_weight
+    if args.phase_label_smoothing is not None:
+        overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -201,21 +207,28 @@ def build_model_stack():
     model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     mse_loss = nn.MSELoss()
-    ce_loss = nn.CrossEntropyLoss()
+    phase_index_loss = nn.CrossEntropyLoss(
+        label_smoothing=float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0))
+    )
 
     amp_enabled = bool(getattr(config, "USE_MIXED_PRECISION", False)) and is_cuda_runtime()
     scaler = make_grad_scaler(amp_enabled)
-    return model, optimizer, mse_loss, ce_loss, amp_enabled, scaler
+    return model, optimizer, mse_loss, phase_index_loss, amp_enabled, scaler
 
 
-def build_phase_targets(ed_idx, es_idx, num_frames, device):
-    """Create per-frame phase target tensor with classes: 0=none, 1=ED, 2=ES."""
-    batch_size = ed_idx.shape[0]
-    phase_targets = torch.zeros(batch_size, num_frames, dtype=torch.long, device=device)
-    for i in range(batch_size):
-        phase_targets[i, ed_idx[i]] = 1
-        phase_targets[i, es_idx[i]] = 2
-    return phase_targets
+def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
+    """
+    Train phase detection as two temporal index tasks:
+    - ED index from ED score curve (phase_logits[:, :, 1])
+    - ES index from ES score curve (phase_logits[:, :, 2])
+    """
+    ed_logits = phase_logits[:, :, 1]  # (B, T)
+    es_logits = phase_logits[:, :, 2]  # (B, T)
+
+    ed_loss = phase_index_loss_fn(ed_logits, ed_idx)
+    es_loss = phase_index_loss_fn(es_logits, es_idx)
+    phase_loss = 0.5 * (ed_loss + es_loss)
+    return phase_loss, ed_loss, es_loss
 
 
 def move_batch_to_device(videos, efs, ed_idx, es_idx):
@@ -265,7 +278,17 @@ def evaluate(model, loader, amp_enabled):
     return metrics
 
 
-def train_one_epoch(model, loader, optimizer, mse_loss, ce_loss, logger, epoch_idx, amp_enabled, scaler):
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    mse_loss,
+    phase_index_loss_fn,
+    logger,
+    epoch_idx,
+    amp_enabled,
+    scaler,
+):
     """Run one training epoch and return loss + timing breakdown."""
     model.train()
     total_train_loss = 0.0
@@ -293,9 +316,12 @@ def train_one_epoch(model, loader, optimizer, mse_loss, ce_loss, logger, epoch_i
             ef_pred, attention, phase_logits = model(videos)
 
             ef_loss = mse_loss(ef_pred, efs)
-            _, num_frames, _ = phase_logits.shape
-            phase_targets = build_phase_targets(ed_idx, es_idx, num_frames, config.DEVICE)
-            phase_loss = ce_loss(phase_logits.view(-1, 3), phase_targets.view(-1))
+            phase_loss, ed_phase_loss, es_phase_loss = compute_phase_index_loss(
+                phase_logits=phase_logits,
+                ed_idx=ed_idx,
+                es_idx=es_idx,
+                phase_index_loss_fn=phase_index_loss_fn,
+            )
 
             loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
             loss_for_backward = loss / accumulation_steps
@@ -320,11 +346,13 @@ def train_one_epoch(model, loader, optimizer, mse_loss, ce_loss, logger, epoch_i
         if batch_idx == 0:
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
             logger.info(
-                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 ef_loss.item(),
                 phase_loss.item(),
+                ed_phase_loss.item(),
+                es_phase_loss.item(),
                 ed_idx[0].item(),
                 es_idx[0].item(),
                 pred_ed_idx[0].item(),
@@ -372,6 +400,8 @@ def log_header(logger, amp_enabled):
     logger.info("Prefetch factor: %s", getattr(config, "PREFETCH_FACTOR", None))
     logger.info("AMP enabled: %s", amp_enabled)
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
+    logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
+    logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
 
 
 def main(argv=None):
@@ -381,7 +411,7 @@ def main(argv=None):
     setup_performance_backends(logger)
 
     train_loader, val_loader, test_loader = build_dataloaders()
-    model, optimizer, mse_loss, ce_loss, amp_enabled, scaler = build_model_stack()
+    model, optimizer, mse_loss, phase_index_loss_fn, amp_enabled, scaler = build_model_stack()
 
     log_header(logger, amp_enabled)
 
@@ -397,7 +427,7 @@ def main(argv=None):
             loader=train_loader,
             optimizer=optimizer,
             mse_loss=mse_loss,
-            ce_loss=ce_loss,
+            phase_index_loss_fn=phase_index_loss_fn,
             logger=logger,
             epoch_idx=epoch,
             amp_enabled=amp_enabled,
@@ -472,3 +502,8 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+
+
+
+

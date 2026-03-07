@@ -10,13 +10,13 @@ BATCH_SIZE = 20
 NUM_FRAMES = 32  # Reduce to 16 for 2x speedup with minimal quality loss
 IMAGE_SIZE = 112  # Reduce to 64 for 2x speedup, 56 for 3x speedup
 MAX_VIDEOS = None  # None = use all videos, or specify number (e.g., 100)
-PHASE_LOSS_WEIGHT = 0.5  # Balance between EF regression loss and phase classification loss
+PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss`r`nPHASE_LABEL_SMOOTHING = 0.0  # Label smoothing for ED/ES temporal index CE
 
 # Training configuration
 LEARNING_RATE = 1e-4
 EPOCHS = 50
 TOLERANCE = 1
-PATIENCE = 5
+PATIENCE = 10
 VALIDATE_EVERY = 1  # Run validation every N epochs
 
 # Device configuration - automatically detect CUDA availability
@@ -46,3 +46,4 @@ GRADIENT_ACCUMULATION_STEPS = 1
 # Cache decoded frames in memory (requires more RAM but much faster training)
 # Only enable if you have >16GB RAM
 CACHE_FRAMES = False
+
