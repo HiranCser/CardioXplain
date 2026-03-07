@@ -9,9 +9,9 @@ from pipeline.stage45_pipeline import Stage45Pipeline
 class EchoPipeline(nn.Module):
     """Orchestrates Stage 1-5 and EF regression head."""
 
-    def __init__(self, num_frames=32, feature_dim=512):
+    def __init__(self, num_frames=32, feature_dim=512, use_pretrained_backbone=True):
         super().__init__()
-        self.stage1 = Stage1FeatureExtractor()
+        self.stage1 = Stage1FeatureExtractor(use_pretrained=use_pretrained_backbone)
         self.stage2 = Stage2TemporalModel(num_frames=num_frames, feature_dim=feature_dim)
         self.stage3 = Stage3PhaseDetector(feature_dim=feature_dim, num_classes=3)
         self.stage45 = Stage45Pipeline()
