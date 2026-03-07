@@ -42,6 +42,7 @@ def parse_args(argv=None):
     parser.add_argument("--benchmark", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable cuDNN benchmark")
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
+    parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
     return parser.parse_args(argv)
 
 
@@ -81,6 +82,8 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_LOSS_WEIGHT"] = args.phase_loss_weight
     if args.phase_label_smoothing is not None:
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
+    if args.phase_only is not None:
+        overrides["PHASE_ONLY"] = args.phase_only
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -91,6 +94,10 @@ def apply_runtime_overrides(args, logger):
 
 def is_cuda_runtime():
     return torch.cuda.is_available() and str(config.DEVICE).startswith("cuda")
+
+
+def is_phase_only_mode():
+    return bool(getattr(config, "PHASE_ONLY", False))
 
 
 def make_grad_scaler(amp_enabled):
@@ -202,10 +209,33 @@ def build_dataloaders():
     return train_loader, val_loader, test_loader
 
 
-def build_model_stack():
+def maybe_freeze_ef_head(model, logger):
+    if not is_phase_only_mode():
+        return
+
+    ef_head = None
+    if hasattr(model, "pipeline") and hasattr(model.pipeline, "ef_regressor"):
+        ef_head = model.pipeline.ef_regressor
+    elif hasattr(model, "ef_regressor"):
+        ef_head = model.ef_regressor
+
+    if ef_head is None:
+        logger.info("Phase-only mode enabled, but EF head was not found for freezing")
+        return
+
+    for p in ef_head.parameters():
+        p.requires_grad = False
+    logger.info("Phase-only mode: EF head frozen")
+
+
+def build_model_stack(logger):
     """Create model, optimizer and losses."""
     model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
+    maybe_freeze_ef_head(model, logger)
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.Adam(trainable_params, lr=config.LEARNING_RATE)
+
     mse_loss = nn.MSELoss()
     phase_index_loss = nn.CrossEntropyLoss(
         label_smoothing=float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0))
@@ -249,6 +279,11 @@ def evaluate(model, loader, amp_enabled):
     total_mse = 0.0
     total_ed_correct = 0
     total_es_correct = 0
+    total_joint_correct = 0
+    total_ed_abs_err = 0.0
+    total_es_abs_err = 0.0
+
+    phase_only = is_phase_only_mode()
 
     with torch.no_grad():
         for videos, efs, ed_idx, es_idx in loader:
@@ -259,21 +294,39 @@ def evaluate(model, loader, amp_enabled):
 
             batch_size = videos.size(0)
 
-            mae = torch.abs(ef_pred - efs).mean()
-            mse = torch.mean((ef_pred - efs) ** 2)
-            total_mae += mae.item() * batch_size
-            total_mse += mse.item() * batch_size
+            if not phase_only:
+                mae = torch.abs(ef_pred - efs).mean()
+                mse = torch.mean((ef_pred - efs) ** 2)
+                total_mae += mae.item() * batch_size
+                total_mse += mse.item() * batch_size
 
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
-            total_ed_correct += (torch.abs(pred_ed_idx - ed_idx) <= config.TOLERANCE).sum().item()
-            total_es_correct += (torch.abs(pred_es_idx - es_idx) <= config.TOLERANCE).sum().item()
+
+            ed_abs = torch.abs(pred_ed_idx - ed_idx)
+            es_abs = torch.abs(pred_es_idx - es_idx)
+
+            total_ed_abs_err += ed_abs.sum().item()
+            total_es_abs_err += es_abs.sum().item()
+
+            ed_ok = ed_abs <= config.TOLERANCE
+            es_ok = es_abs <= config.TOLERANCE
+
+            total_ed_correct += ed_ok.sum().item()
+            total_es_correct += es_ok.sum().item()
+            total_joint_correct += (ed_ok & es_ok).sum().item()
             total_samples += batch_size
 
+    if total_samples == 0:
+        raise RuntimeError("No samples found during evaluation")
+
     metrics = {
-        "ef_mae": total_mae / total_samples,
-        "ef_rmse": (total_mse / total_samples) ** 0.5,
+        "ef_mae": (total_mae / total_samples) if not phase_only else float("nan"),
+        "ef_rmse": ((total_mse / total_samples) ** 0.5) if not phase_only else float("nan"),
         "ed_acc": total_ed_correct / total_samples,
         "es_acc": total_es_correct / total_samples,
+        "joint_acc": total_joint_correct / total_samples,
+        "ed_mae_frames": total_ed_abs_err / total_samples,
+        "es_mae_frames": total_es_abs_err / total_samples,
     }
     return metrics
 
@@ -302,6 +355,7 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
 
     num_batches = len(loader)
+    phase_only = is_phase_only_mode()
 
     for batch_idx, (videos, efs, ed_idx, es_idx) in enumerate(loader):
         data_time += time.perf_counter() - loop_end
@@ -315,7 +369,11 @@ def train_one_epoch(
         with autocast_context(amp_enabled):
             ef_pred, attention, phase_logits = model(videos)
 
-            ef_loss = mse_loss(ef_pred, efs)
+            if phase_only:
+                ef_loss = torch.zeros((), device=videos.device)
+            else:
+                ef_loss = mse_loss(ef_pred, efs)
+
             phase_loss, ed_phase_loss, es_phase_loss = compute_phase_index_loss(
                 phase_logits=phase_logits,
                 ed_idx=ed_idx,
@@ -371,11 +429,13 @@ def train_one_epoch(
     return metrics
 
 
-def save_checkpoint(model, optimizer, val_mae, epoch):
+def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_mae=None):
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "monitor_name": monitor_name,
+            "monitor_value": monitor_value,
             "val_mae": val_mae,
             "epoch": epoch,
         },
@@ -402,6 +462,7 @@ def log_header(logger, amp_enabled):
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
     logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
+    logger.info("Phase-only mode: %s", is_phase_only_mode())
 
 
 def main(argv=None):
@@ -411,11 +472,19 @@ def main(argv=None):
     setup_performance_backends(logger)
 
     train_loader, val_loader, test_loader = build_dataloaders()
-    model, optimizer, mse_loss, phase_index_loss_fn, amp_enabled, scaler = build_model_stack()
+    model, optimizer, mse_loss, phase_index_loss_fn, amp_enabled, scaler = build_model_stack(logger)
 
     log_header(logger, amp_enabled)
 
-    best_val_mae = float("inf")
+    phase_only = is_phase_only_mode()
+
+    if phase_only:
+        best_monitor = -float("inf")
+        monitor_name = "phase_joint_acc"
+    else:
+        best_monitor = float("inf")
+        monitor_name = "ef_mae"
+
     epochs_without_improvement = 0
     validate_every = max(1, int(getattr(config, "VALIDATE_EVERY", 1)))
 
@@ -442,21 +511,48 @@ def main(argv=None):
             val_metrics = evaluate(model, val_loader, amp_enabled=amp_enabled)
             val_duration = time.perf_counter() - val_start
 
-            logger.info(
-                "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%% | Val ED Acc: %.2f%% | Val ES Acc: %.2f%%",
-                epoch + 1,
-                config.EPOCHS,
-                train_metrics["train_loss"],
-                val_metrics["ef_mae"] * 100,
-                val_metrics["ef_rmse"] * 100,
-                val_metrics["ed_acc"] * 100,
-                val_metrics["es_acc"] * 100,
-            )
+            if phase_only:
+                logger.info(
+                    "Epoch [%d/%d] | Train Loss: %.4f | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%% | Val ED MAE(fr): %.3f | Val ES MAE(fr): %.3f",
+                    epoch + 1,
+                    config.EPOCHS,
+                    train_metrics["train_loss"],
+                    val_metrics["ed_acc"] * 100,
+                    val_metrics["es_acc"] * 100,
+                    val_metrics["joint_acc"] * 100,
+                    val_metrics["ed_mae_frames"],
+                    val_metrics["es_mae_frames"],
+                )
 
-            if val_metrics["ef_mae"] < best_val_mae:
-                best_val_mae = val_metrics["ef_mae"]
+                current_monitor = val_metrics["joint_acc"]
+                improved = current_monitor > best_monitor
+            else:
+                logger.info(
+                    "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%% | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%%",
+                    epoch + 1,
+                    config.EPOCHS,
+                    train_metrics["train_loss"],
+                    val_metrics["ef_mae"] * 100,
+                    val_metrics["ef_rmse"] * 100,
+                    val_metrics["ed_acc"] * 100,
+                    val_metrics["es_acc"] * 100,
+                    val_metrics["joint_acc"] * 100,
+                )
+
+                current_monitor = val_metrics["ef_mae"]
+                improved = current_monitor < best_monitor
+
+            if improved:
+                best_monitor = current_monitor
                 epochs_without_improvement = 0
-                save_checkpoint(model, optimizer, val_metrics["ef_mae"], epoch)
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    monitor_name=monitor_name,
+                    monitor_value=current_monitor,
+                    epoch=epoch,
+                    val_mae=val_metrics["ef_mae"] if not phase_only else None,
+                )
                 logger.info("Saving best model to %s", config.CHECKPOINT_PATH)
             else:
                 epochs_without_improvement += 1
@@ -484,7 +580,10 @@ def main(argv=None):
     logger.info("Loading best model for final testing")
     checkpoint = torch.load(config.CHECKPOINT_PATH, map_location=config.DEVICE)
     model.load_state_dict(checkpoint["model_state_dict"])
-    logger.info("Best Validation MAE: %.2f%%", checkpoint["val_mae"] * 100)
+
+    monitor_name_ckpt = checkpoint.get("monitor_name", "val_mae")
+    monitor_value_ckpt = checkpoint.get("monitor_value", checkpoint.get("val_mae", float("nan")))
+    logger.info("Best checkpoint monitor: %s = %s", monitor_name_ckpt, monitor_value_ckpt)
 
     test_start = time.perf_counter()
     test_metrics = evaluate(model, test_loader, amp_enabled=amp_enabled)
@@ -492,18 +591,19 @@ def main(argv=None):
 
     logger.info("=" * 80)
     logger.info("FINAL TEST RESULTS")
-    logger.info("Test EF MAE: %.2f%%", test_metrics["ef_mae"] * 100)
-    logger.info("Test EF RMSE: %.2f%%", test_metrics["ef_rmse"] * 100)
+    if not phase_only:
+        logger.info("Test EF MAE: %.2f%%", test_metrics["ef_mae"] * 100)
+        logger.info("Test EF RMSE: %.2f%%", test_metrics["ef_rmse"] * 100)
+    else:
+        logger.info("Test EF metrics: N/A (phase-only mode)")
     logger.info("Test ED Accuracy: %.2f%%", test_metrics["ed_acc"] * 100)
     logger.info("Test ES Accuracy: %.2f%%", test_metrics["es_acc"] * 100)
+    logger.info("Test Joint Accuracy: %.2f%%", test_metrics["joint_acc"] * 100)
+    logger.info("Test ED MAE (frames): %.3f", test_metrics["ed_mae_frames"])
+    logger.info("Test ES MAE (frames): %.3f", test_metrics["es_mae_frames"])
     logger.info("Test duration: %.2fs", test_duration)
     logger.info("=" * 80)
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
