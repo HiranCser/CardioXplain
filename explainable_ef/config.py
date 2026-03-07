@@ -17,6 +17,7 @@ LEARNING_RATE = 1e-4
 EPOCHS = 50
 TOLERANCE = 1
 PATIENCE = 5
+VALIDATE_EVERY = 1  # Run validation every N epochs
 
 # Device configuration - automatically detect CUDA availability
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -27,13 +28,17 @@ CHECKPOINT_PATH = "best_model.pth"
 # ============================================================================
 # Adjust these for faster training
 
-# DataLoader workers - parallel data loading
-# 0 = single process (simpler, no multiprocessing overhead)
-# 2-4 = use multiple cores for data loading (may add overhead on older systems)
-NUM_WORKERS = 0  # Set to 0 for single-process data loading
+# DataLoader workers - increase for fast storage + many CPU cores
+NUM_WORKERS = 8
+PIN_MEMORY = True
+PERSISTENT_WORKERS = True
+PREFETCH_FACTOR = 4
+NON_BLOCKING_TRANSFER = True
 
-# Enable mixed precision training (requires GPU)
-USE_MIXED_PRECISION = False  # Only works with CUDA
+# GPU compute acceleration
+USE_MIXED_PRECISION = True  # Only active when DEVICE is CUDA
+ENABLE_TF32 = True
+CUDNN_BENCHMARK = True
 
 # Use gradient accumulation (slower but uses less memory)
 GRADIENT_ACCUMULATION_STEPS = 1
