@@ -1,4 +1,4 @@
-import torch
+﻿import torch
 import os
 
 # Data configuration
@@ -23,6 +23,8 @@ PHASE_HARD_INDEX_WEIGHT = 0.5  # Mix hard CE with soft index loss when soft targ
 PHASE_FRAME_CE_WEIGHT = 0.35  # Mix ratio for frame-wise CE in phase loss
 PHASE_FRAME_RADIUS = 2  # Radius around ED/ES used for frame-wise supervision
 PHASE_UNFREEZE_LR_MULT = 0.5  # Multiply LR when unfreezing stage1 in phase-only mode
+PHASE_TEMPORAL_WINDOW_MODE = "full"  # "full" (entire clip) or "tracing" (crop around traced ED/ES)
+PHASE_TEMPORAL_WINDOW_MARGIN_MULT = 1.5  # Extra margin (in ED-ES span units) on both sides in tracing mode
 
 # Training configuration
 LEARNING_RATE = 1e-4
@@ -30,7 +32,7 @@ WEIGHT_DECAY = 1e-4
 MAX_GRAD_NORM = 1.0  # 0 disables gradient clipping
 EPOCHS = 50
 TOLERANCE = 1
-PATIENCE = 10
+PATIENCE = 5
 VALIDATE_EVERY = 1  # Run validation every N epochs
 
 # Device configuration
@@ -57,4 +59,3 @@ GRADIENT_ACCUMULATION_STEPS = 1
 
 # Cache decoded frames in memory (requires more RAM)
 CACHE_FRAMES = False
-

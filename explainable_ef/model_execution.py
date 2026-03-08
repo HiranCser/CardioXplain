@@ -56,6 +56,8 @@ def parse_args(argv=None):
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
+    parser.add_argument("--phase-temporal-window-mode", type=str, choices=["full", "tracing"], default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MODE")
+    parser.add_argument("--phase-temporal-window-margin-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MARGIN_MULT")
     return parser.parse_args(argv)
 
 
@@ -121,6 +123,10 @@ def apply_runtime_overrides(args, logger):
         overrides["WEIGHT_DECAY"] = args.weight_decay
     if args.max_grad_norm is not None:
         overrides["MAX_GRAD_NORM"] = args.max_grad_norm
+    if args.phase_temporal_window_mode is not None:
+        overrides["PHASE_TEMPORAL_WINDOW_MODE"] = args.phase_temporal_window_mode
+    if args.phase_temporal_window_margin_mult is not None:
+        overrides["PHASE_TEMPORAL_WINDOW_MARGIN_MULT"] = args.phase_temporal_window_margin_mult
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -221,12 +227,17 @@ def dataloader_kwargs(shuffle):
 
 def build_dataloaders():
     """Create train/val/test dataloaders."""
+    temporal_window_mode = str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full"))
+    temporal_window_margin_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5))
+
     train_dataset = EchoDataset(
         config.DATA_DIR,
         split="TRAIN",
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        temporal_window_mode=temporal_window_mode,
+        temporal_window_margin_mult=temporal_window_margin_mult,
     )
     val_dataset = EchoDataset(
         config.DATA_DIR,
@@ -234,6 +245,8 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        temporal_window_mode=temporal_window_mode,
+        temporal_window_margin_mult=temporal_window_margin_mult,
     )
     test_dataset = EchoDataset(
         config.DATA_DIR,
@@ -241,6 +254,8 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        temporal_window_mode=temporal_window_mode,
+        temporal_window_margin_mult=temporal_window_margin_mult,
     )
 
     train_loader = DataLoader(train_dataset, **dataloader_kwargs(shuffle=True))
@@ -654,6 +669,8 @@ def log_header(logger, amp_enabled):
     logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
     logger.info("Weight decay: %s", getattr(config, "WEIGHT_DECAY", 0.0))
     logger.info("Max grad norm: %s", getattr(config, "MAX_GRAD_NORM", 0.0))
+    logger.info("Phase temporal window mode: %s", str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")))
+    logger.info("Phase temporal window margin mult: %.3f", float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)))
 
 
 def main(argv=None):
@@ -816,4 +833,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

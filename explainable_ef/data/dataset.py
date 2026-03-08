@@ -22,6 +22,8 @@ class EchoDataset(Dataset):
         max_videos=None,
         transform=None,
         normalize_input=True,
+        temporal_window_mode="full",
+        temporal_window_margin_mult=1.5,
     ):
         self.data_dir = data_dir
         self.num_frames = num_frames
@@ -29,6 +31,8 @@ class EchoDataset(Dataset):
         self.max_videos = max_videos
         self.transform = transform
         self.normalize_input = bool(normalize_input)
+        self.temporal_window_mode = str(temporal_window_mode).strip().lower()
+        self.temporal_window_margin_mult = float(max(0.0, temporal_window_margin_mult))
 
         self._mean = torch.tensor(KINETICS_MEAN, dtype=torch.float32).view(3, 1, 1, 1)
         self._std = torch.tensor(KINETICS_STD, dtype=torch.float32).view(3, 1, 1, 1)
@@ -70,7 +74,30 @@ class EchoDataset(Dataset):
     def __len__(self):
         return len(self.filelist)
 
-    def load_video(self, path):
+    def _focused_sample_indices(self, total_video_frames, ed_original, es_original):
+        if self.temporal_window_mode != "tracing":
+            return None
+        if total_video_frames <= self.num_frames:
+            return None
+        if ed_original < 0 or es_original < 0:
+            return None
+
+        ed_frame = int(ed_original)
+        es_frame = int(es_original)
+        left = min(ed_frame, es_frame)
+        right = max(ed_frame, es_frame)
+        span = max(1, right - left)
+
+        margin = int(round(self.temporal_window_margin_mult * span))
+        start = max(0, left - margin)
+        end = min(total_video_frames - 1, right + margin)
+
+        if end <= start:
+            return None
+
+        return np.linspace(start, end, self.num_frames).round().astype(np.int32)
+
+    def load_video(self, path, ed_original=-1, es_original=-1):
         cap = cv2.VideoCapture(path)
         frames = []
 
@@ -90,8 +117,13 @@ class EchoDataset(Dataset):
         frames_array = np.array(frames, dtype=np.uint8)
         total_video_frames = len(frames_array)
 
+        focused_indices = self._focused_sample_indices(total_video_frames, ed_original, es_original)
+
         if total_video_frames >= self.num_frames:
-            sampled_indices = np.linspace(0, total_video_frames - 1, self.num_frames).round().astype(np.int32)
+            if focused_indices is not None:
+                sampled_indices = focused_indices
+            else:
+                sampled_indices = np.linspace(0, total_video_frames - 1, self.num_frames).round().astype(np.int32)
             sampled_frames = frames_array[sampled_indices]
         else:
             sampled_indices = np.arange(total_video_frames, dtype=np.int32)
@@ -128,7 +160,11 @@ class EchoDataset(Dataset):
 
         ef = torch.tensor(row["EF"]).float() / 100.0
 
-        video, sampled_indices = self.load_video(video_path)
+        video, sampled_indices = self.load_video(
+            video_path,
+            ed_original=ed_original,
+            es_original=es_original,
+        )
 
         if ed_original >= 0:
             ed_idx = int(np.argmin(np.abs(sampled_indices - int(ed_original))))
