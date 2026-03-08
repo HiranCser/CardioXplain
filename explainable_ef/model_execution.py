@@ -62,6 +62,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-temporal-window-jitter-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_JITTER_MULT")
     parser.add_argument("--warm-start-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Warm-start model weights from existing checkpoint path if available")
     parser.add_argument("--protect-best-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Do not overwrite checkpoint unless monitor improves over existing checkpoint")
+    parser.add_argument("--train-stage123", action=argparse.BooleanOptionalAction, default=False, help="Train Stage1+Stage2+Stage3 end-to-end using phase supervision")
     return parser.parse_args(argv)
 
 
@@ -133,6 +134,12 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_TEMPORAL_WINDOW_MARGIN_MULT"] = args.phase_temporal_window_margin_mult
     if args.phase_temporal_window_jitter_mult is not None:
         overrides["PHASE_TEMPORAL_WINDOW_JITTER_MULT"] = args.phase_temporal_window_jitter_mult
+
+    if bool(getattr(args, "train_stage123", False)):
+        logger.info("Enabled Stage1-3 end-to-end training profile")
+        overrides["PHASE_ONLY"] = True
+        overrides["PHASE_LOSS_WEIGHT"] = 1.0
+        overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = 0
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -364,6 +371,21 @@ def build_model_stack(logger):
     amp_enabled = bool(getattr(config, "USE_MIXED_PRECISION", False)) and is_cuda_runtime()
     scaler = make_grad_scaler(amp_enabled)
     return model, optimizer, mse_loss, phase_index_loss, amp_enabled, scaler
+
+
+def log_stage_trainability(model, logger):
+    """Log total/trainable params for Stage1/2/3 and EF head."""
+    pipeline = get_pipeline(model)
+
+    for name in ("stage1", "stage2", "stage3", "ef_regressor"):
+        module = getattr(pipeline, name, None)
+        if module is None:
+            logger.info("%s: not present", name)
+            continue
+
+        total = sum(p.numel() for p in module.parameters())
+        trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+        logger.info("%s params | trainable=%d / total=%d", name, trainable, total)
 
 
 def build_soft_temporal_targets(indices, num_frames, device, sigma, radius):
@@ -790,6 +812,14 @@ def main(argv=None):
 
     maybe_warm_start_from_checkpoint(model, logger, enabled=warm_start_enabled)
 
+    if bool(getattr(args, "train_stage123", False)):
+        set_backbone_trainable(model, True)
+        freeze_epochs = 0
+        optimizer = build_optimizer(model, logger)
+        logger.info("Stage1-3 mode active: Stage1/Stage2/Stage3 will be trained jointly")
+
+    log_stage_trainability(model, logger)
+
     if protect_checkpoint_enabled:
         baseline_monitor = load_existing_monitor_baseline(logger, expected_monitor_name=monitor_name)
         if baseline_monitor is not None:
@@ -799,6 +829,7 @@ def main(argv=None):
                 best_monitor = min(best_monitor, baseline_monitor)
 
     log_header(logger, amp_enabled)
+    logger.info("Train Stage1+Stage2+Stage3 mode: %s", bool(getattr(args, "train_stage123", False)))
 
     epochs_without_improvement = 0
     validate_every = max(1, int(getattr(config, "VALIDATE_EVERY", 1)))
