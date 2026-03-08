@@ -911,7 +911,7 @@ def main(argv=None):
 
     logger.info("Loading best model for final testing")
     checkpoint = torch.load(config.CHECKPOINT_PATH, map_location=config.DEVICE)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
 
     monitor_name_ckpt = checkpoint.get("monitor_name", "val_mae")
     monitor_value_ckpt = checkpoint.get("monitor_value", checkpoint.get("val_mae", float("nan")))
