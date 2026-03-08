@@ -8,7 +8,12 @@ class Stage1FeatureExtractor(nn.Module):
 
     def __init__(self, weights=R2Plus1D_18_Weights.DEFAULT):
         super().__init__()
-        backbone = models.r2plus1d_18(weights=weights)
+        try:
+            backbone = models.r2plus1d_18(weights=weights)
+        except Exception:
+            # Fallback for offline/runtime environments where pretrained weights
+            # are unavailable; checkpoint loading will still populate weights.
+            backbone = models.r2plus1d_18(weights=None)
 
         # Preserve more temporal detail for phase localization:
         # default backbone uses temporal stride=2 in layer4 block0, which makes T' too small.
