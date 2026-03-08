@@ -8,13 +8,22 @@ class Stage45Pipeline:
     @staticmethod
     def tracing_to_contour(frame_rows):
         """
-        Build a closed LV contour from tracing pairs.
-        X1/Y1 are ordered along one wall, X2/Y2 along the opposite wall.
+        Build an EchoNet-compatible closed LV contour from tracing pairs.
+        This mirrors the logic from dynamic/echonet/datasets/echo.py:
+        x = concat(x1[1:], flip(x2[1:])), y = concat(y1[1:], flip(y2[1:])).
         """
-        left_wall = frame_rows[["X1", "Y1"]].to_numpy(dtype=np.float32)
-        right_wall = frame_rows[["X2", "Y2"]].to_numpy(dtype=np.float32)[::-1]
-        contour = np.concatenate([left_wall, right_wall], axis=0)
-        return contour
+        if frame_rows.empty:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        t = frame_rows.sort_index()[["X1", "Y1", "X2", "Y2"]].to_numpy(dtype=np.float32)
+        if t.shape[0] < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        x1, y1, x2, y2 = t[:, 0], t[:, 1], t[:, 2], t[:, 3]
+        x = np.concatenate((x1[1:], np.flip(x2[1:])))
+        y = np.concatenate((y1[1:], np.flip(y2[1:])))
+        contour = np.stack([x, y], axis=1)
+        return contour.astype(np.float32)
 
     @staticmethod
     def tracing_to_mask(frame_rows, height, width):

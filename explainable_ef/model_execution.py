@@ -62,7 +62,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-temporal-window-jitter-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_JITTER_MULT")
     parser.add_argument("--warm-start-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Warm-start model weights from existing checkpoint path if available")
     parser.add_argument("--protect-best-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Do not overwrite checkpoint unless monitor improves over existing checkpoint")
-    parser.add_argument("--train-stage123", action=argparse.BooleanOptionalAction, default=False, help="Train Stage1+Stage2+Stage3 end-to-end using phase supervision")
+    parser.add_argument("--train-stage123", action=argparse.BooleanOptionalAction, default=False, help="Train Stage1+Stage2+Stage3 end-to-end with joint EF+phase supervision")
     return parser.parse_args(argv)
 
 
@@ -136,9 +136,11 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_TEMPORAL_WINDOW_JITTER_MULT"] = args.phase_temporal_window_jitter_mult
 
     if bool(getattr(args, "train_stage123", False)):
-        logger.info("Enabled Stage1-3 end-to-end training profile")
-        overrides["PHASE_ONLY"] = True
-        overrides["PHASE_LOSS_WEIGHT"] = 1.0
+        logger.info("Enabled Stage1-3 end-to-end training profile (joint EF + phase)")
+        # Stage1/2/3 should train jointly without disabling EF regression.
+        # Respect explicit --phase-only/--no-phase-only if user provided it.
+        if args.phase_only is None:
+            overrides["PHASE_ONLY"] = False
         overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = 0
 
     for key, value in overrides.items():
@@ -501,7 +503,7 @@ def move_batch_to_device(videos, efs, ed_idx, es_idx):
 
 
 def evaluate(model, loader, amp_enabled):
-    """Evaluate EF regression and phase localization metrics."""
+    """Evaluate EF regression, phase localization, and stage-wise diagnostics."""
     model.eval()
 
     total_samples = 0
@@ -513,6 +515,25 @@ def evaluate(model, loader, amp_enabled):
     total_ed_abs_err = 0.0
     total_es_abs_err = 0.0
 
+    # Stage 1 diagnostics
+    stage1_feat_norm_sum = 0.0
+    stage1_temp_std_sum = 0.0
+    stage1_tokens_sum = 0.0
+    stage1_count = 0
+
+    # Stage 2 diagnostics
+    stage2_attn_entropy_sum = 0.0
+    stage2_attn_peak_sum = 0.0
+    stage2_peak_to_event_sum = 0.0
+    stage2_ed_es_feat_dist_sum = 0.0
+    stage2_tokens_sum = 0.0
+    stage2_attn_count = 0
+    stage2_feat_count = 0
+
+    # Stage 3 diagnostics
+    stage3_ed_ce_sum = 0.0
+    stage3_es_ce_sum = 0.0
+
     phase_only = is_phase_only_mode()
 
     with torch.no_grad():
@@ -520,7 +541,13 @@ def evaluate(model, loader, amp_enabled):
             videos, efs, ed_idx, es_idx = move_batch_to_device(videos, efs, ed_idx, es_idx)
 
             with autocast_context(amp_enabled):
-                ef_pred, _, phase_logits = model(videos)
+                model_out = model(videos, return_stage_outputs=True)
+
+            if isinstance(model_out, tuple) and len(model_out) == 4:
+                ef_pred, attention, phase_logits, stage_outputs = model_out
+            else:
+                ef_pred, attention, phase_logits = model_out
+                stage_outputs = {}
 
             batch_size = videos.size(0)
 
@@ -544,6 +571,69 @@ def evaluate(model, loader, amp_enabled):
             total_ed_correct += ed_ok.sum().item()
             total_es_correct += es_ok.sum().item()
             total_joint_correct += (ed_ok & es_ok).sum().item()
+
+            # Stage 1: feature magnitude and temporal variation
+            stage1_features = stage_outputs.get("stage1_features")
+            if stage1_features is not None:
+                s1 = stage1_features.float()
+                feat_norm = torch.linalg.vector_norm(s1.flatten(start_dim=1), dim=1)
+                temp_std = s1.std(dim=2, unbiased=False).mean(dim=1)
+                stage1_feat_norm_sum += feat_norm.sum().item()
+                stage1_temp_std_sum += temp_std.sum().item()
+                stage1_tokens_sum += float(s1.shape[2]) * batch_size
+                stage1_count += batch_size
+
+            # Stage 2: temporal attention diagnostics
+            stage2_attention = stage_outputs.get("stage2_attention", attention)
+            if stage2_attention is not None:
+                attn = stage2_attention.float()
+                if attn.ndim == 3 and attn.shape[-1] == 1:
+                    attn = attn.squeeze(-1)
+
+                if attn.ndim == 2 and attn.shape[1] > 0:
+                    peak_vals, peak_idx = attn.max(dim=1)
+                    stage2_attn_peak_sum += peak_vals.sum().item()
+
+                    peak_to_event = torch.minimum(
+                        torch.abs(peak_idx - ed_idx),
+                        torch.abs(peak_idx - es_idx),
+                    )
+                    stage2_peak_to_event_sum += peak_to_event.sum().item()
+
+                    if attn.shape[1] > 1:
+                        attn_safe = torch.clamp(attn, min=1e-8)
+                        attn_entropy = -(attn_safe * torch.log(attn_safe)).sum(dim=1) / math.log(attn.shape[1])
+                    else:
+                        attn_entropy = torch.zeros(batch_size, device=attn.device)
+                    stage2_attn_entropy_sum += attn_entropy.sum().item()
+                    stage2_tokens_sum += float(attn.shape[1]) * batch_size
+                    stage2_attn_count += batch_size
+
+            stage2_temporal_features = stage_outputs.get("stage2_temporal_features")
+            if stage2_temporal_features is not None:
+                tf = stage2_temporal_features.float()  # (B, T, F)
+                if tf.ndim == 3 and tf.shape[1] > 0:
+                    t = tf.shape[1]
+                    fdim = tf.shape[2]
+                    ed_safe = ed_idx.clamp(0, t - 1)
+                    es_safe = es_idx.clamp(0, t - 1)
+
+                    ed_gather = ed_safe.view(batch_size, 1, 1).expand(-1, 1, fdim)
+                    es_gather = es_safe.view(batch_size, 1, 1).expand(-1, 1, fdim)
+
+                    ed_feat = tf.gather(1, ed_gather).squeeze(1)
+                    es_feat = tf.gather(1, es_gather).squeeze(1)
+                    ed_es_dist = torch.linalg.vector_norm(ed_feat - es_feat, dim=1)
+
+                    stage2_ed_es_feat_dist_sum += ed_es_dist.sum().item()
+                    stage2_feat_count += batch_size
+
+            # Stage 3: ED/ES index CE (diagnostic only)
+            ed_ce = F.cross_entropy(phase_logits[:, :, 0], ed_idx, reduction="sum")
+            es_ce = F.cross_entropy(phase_logits[:, :, 1], es_idx, reduction="sum")
+            stage3_ed_ce_sum += ed_ce.item()
+            stage3_es_ce_sum += es_ce.item()
+
             total_samples += batch_size
 
     if total_samples == 0:
@@ -557,9 +647,18 @@ def evaluate(model, loader, amp_enabled):
         "joint_acc": total_joint_correct / total_samples,
         "ed_mae_frames": total_ed_abs_err / total_samples,
         "es_mae_frames": total_es_abs_err / total_samples,
+        "stage1_feature_norm": (stage1_feat_norm_sum / stage1_count) if stage1_count > 0 else float("nan"),
+        "stage1_temporal_std": (stage1_temp_std_sum / stage1_count) if stage1_count > 0 else float("nan"),
+        "stage1_temporal_tokens": (stage1_tokens_sum / stage1_count) if stage1_count > 0 else float("nan"),
+        "stage2_attention_entropy": (stage2_attn_entropy_sum / stage2_attn_count) if stage2_attn_count > 0 else float("nan"),
+        "stage2_attention_peak": (stage2_attn_peak_sum / stage2_attn_count) if stage2_attn_count > 0 else float("nan"),
+        "stage2_peak_to_event_mae_frames": (stage2_peak_to_event_sum / stage2_attn_count) if stage2_attn_count > 0 else float("nan"),
+        "stage2_temporal_tokens": (stage2_tokens_sum / stage2_attn_count) if stage2_attn_count > 0 else float("nan"),
+        "stage2_ed_es_feature_distance": (stage2_ed_es_feat_dist_sum / stage2_feat_count) if stage2_feat_count > 0 else float("nan"),
+        "stage3_ed_index_ce": stage3_ed_ce_sum / total_samples,
+        "stage3_es_index_ce": stage3_es_ce_sum / total_samples,
     }
     return metrics
-
 
 def train_one_epoch(
     model,
@@ -900,6 +999,20 @@ def main(argv=None):
                 current_monitor = val_metrics["ef_mae"]
                 improved = current_monitor < best_monitor
 
+            logger.info(
+                "Stage diagnostics | S1(T'~%.1f) feat-norm: %.3f temp-std: %.3f | S2(T~%.1f) attn-entropy: %.3f peak-w: %.3f peak->ED/ES MAE(fr): %.3f ED-ES feat-dist: %.3f | S3 index CE (ED/ES): %.3f / %.3f",
+                val_metrics["stage1_temporal_tokens"],
+                val_metrics["stage1_feature_norm"],
+                val_metrics["stage1_temporal_std"],
+                val_metrics["stage2_temporal_tokens"],
+                val_metrics["stage2_attention_entropy"],
+                val_metrics["stage2_attention_peak"],
+                val_metrics["stage2_peak_to_event_mae_frames"],
+                val_metrics["stage2_ed_es_feature_distance"],
+                val_metrics["stage3_ed_index_ce"],
+                val_metrics["stage3_es_index_ce"],
+            )
+
             if improved:
                 best_monitor = current_monitor
                 epochs_without_improvement = 0
@@ -964,6 +1077,19 @@ def main(argv=None):
     logger.info("Test Joint Accuracy: %.2f%%", test_metrics["joint_acc"] * 100)
     logger.info("Test ED MAE (frames): %.3f", test_metrics["ed_mae_frames"])
     logger.info("Test ES MAE (frames): %.3f", test_metrics["es_mae_frames"])
+    logger.info(
+        "Stage diagnostics (test) | S1(T'~%.1f) feat-norm: %.3f temp-std: %.3f | S2(T~%.1f) attn-entropy: %.3f peak-w: %.3f peak->ED/ES MAE(fr): %.3f ED-ES feat-dist: %.3f | S3 index CE (ED/ES): %.3f / %.3f",
+        test_metrics["stage1_temporal_tokens"],
+        test_metrics["stage1_feature_norm"],
+        test_metrics["stage1_temporal_std"],
+        test_metrics["stage2_temporal_tokens"],
+        test_metrics["stage2_attention_entropy"],
+        test_metrics["stage2_attention_peak"],
+        test_metrics["stage2_peak_to_event_mae_frames"],
+        test_metrics["stage2_ed_es_feature_distance"],
+        test_metrics["stage3_ed_index_ce"],
+        test_metrics["stage3_es_index_ce"],
+    )
     logger.info("Test duration: %.2fs", test_duration)
     logger.info("=" * 80)
 
