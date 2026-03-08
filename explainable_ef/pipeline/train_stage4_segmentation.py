@@ -1,0 +1,433 @@
+import argparse
+import contextlib
+import os
+import sys
+import time
+
+import cv2
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+import config
+from data.stage4_segmentation_dataset import Stage4SegmentationDataset
+from models.stage4_segmentation_model import build_stage4_segmentation_model
+
+
+def extract_logits(model_output):
+    if isinstance(model_output, dict):
+        if "out" not in model_output:
+            raise ValueError("Segmentation model output dict does not contain 'out'")
+        return model_output["out"]
+    return model_output
+
+
+def autocast_context(device, amp_enabled):
+    if amp_enabled and str(device).startswith("cuda") and torch.cuda.is_available():
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    return contextlib.nullcontext()
+
+
+def dice_from_logits(logits, targets, eps=1e-6):
+    probs = torch.sigmoid(logits)
+    preds = (probs >= 0.5).float()
+    inter = (preds * targets).sum(dim=(1, 2, 3))
+    union = preds.sum(dim=(1, 2, 3)) + targets.sum(dim=(1, 2, 3))
+    return ((2.0 * inter + eps) / (union + eps)).mean()
+
+
+def segmentation_loss(logits, targets, dice_weight=1.0):
+    bce = F.binary_cross_entropy_with_logits(logits, targets)
+    probs = torch.sigmoid(logits)
+    inter = (probs * targets).sum(dim=(1, 2, 3))
+    union = probs.sum(dim=(1, 2, 3)) + targets.sum(dim=(1, 2, 3))
+    dice = (2.0 * inter + 1e-6) / (union + 1e-6)
+    dice_loss = 1.0 - dice.mean()
+    return bce + float(dice_weight) * dice_loss
+
+
+def dataloader_kwargs(batch_size, workers, shuffle, device):
+    use_cuda = str(device).startswith("cuda") and torch.cuda.is_available()
+    kwargs = {
+        "batch_size": int(batch_size),
+        "shuffle": bool(shuffle),
+        "num_workers": int(max(0, workers)),
+        "pin_memory": use_cuda,
+    }
+    if int(max(0, workers)) > 0:
+        kwargs["persistent_workers"] = True
+        kwargs["prefetch_factor"] = 2
+    return kwargs
+
+
+def build_loaders(args, device):
+    normalize = args.normalize
+    if normalize == "auto":
+        normalize = "imagenet" if args.pretrained else "none"
+
+    train_ds = Stage4SegmentationDataset(
+        data_dir=args.data_dir,
+        split="TRAIN",
+        image_size=args.image_size,
+        max_videos=args.max_videos,
+        normalize=normalize,
+    )
+    val_ds = Stage4SegmentationDataset(
+        data_dir=args.data_dir,
+        split="VAL",
+        image_size=args.image_size,
+        max_videos=args.max_videos,
+        normalize=normalize,
+    )
+    test_ds = Stage4SegmentationDataset(
+        data_dir=args.data_dir,
+        split="TEST",
+        image_size=args.image_size,
+        max_videos=args.max_videos,
+        normalize=normalize,
+    )
+
+    train_loader = DataLoader(train_ds, **dataloader_kwargs(args.batch_size, args.workers, True, device))
+    val_loader = DataLoader(val_ds, **dataloader_kwargs(args.batch_size, args.workers, False, device))
+    test_loader = DataLoader(test_ds, **dataloader_kwargs(args.batch_size, args.workers, False, device))
+    return train_loader, val_loader, test_loader, normalize
+
+
+def summarize_area_rows(rows, csv_path):
+    df = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    df.to_csv(csv_path, index=False)
+
+    video_summary = (
+        df.groupby("file_name", as_index=False)
+        .agg(
+            frames=("frame_id", "count"),
+            gt_area_mean=("gt_area", "mean"),
+            pred_area_mean=("pred_area", "mean"),
+            abs_error_mean=("abs_error", "mean"),
+            pct_error_mean=("pct_error", "mean"),
+        )
+        .sort_values("file_name")
+    )
+    video_summary.to_csv(csv_path.replace(".csv", "_video_summary.csv"), index=False)
+
+
+def evaluate(model, loader, device, amp_enabled, dice_weight, csv_path=None):
+    model.eval()
+
+    total_loss = 0.0
+    total_dice = 0.0
+    n_batches = 0
+
+    area_abs_errors = []
+    area_pct_errors = []
+    rows = []
+
+    with torch.no_grad():
+        for batch in loader:
+            images = batch["image"].to(device)
+            masks = batch["mask"].to(device)
+
+            with autocast_context(device, amp_enabled):
+                logits = extract_logits(model(images))
+                loss = segmentation_loss(logits, masks, dice_weight=dice_weight)
+
+            dice = dice_from_logits(logits, masks)
+            total_loss += float(loss.item())
+            total_dice += float(dice.item())
+            n_batches += 1
+
+            pred_masks = (torch.sigmoid(logits) >= 0.5).to(torch.uint8).cpu().numpy()
+
+            for i in range(pred_masks.shape[0]):
+                pred_small = pred_masks[i, 0]
+                h = int(batch["frame_height"][i])
+                w = int(batch["frame_width"][i])
+
+                pred_orig = cv2.resize(pred_small, (w, h), interpolation=cv2.INTER_NEAREST)
+                pred_area = float(pred_orig.sum())
+                gt_area = float(batch["gt_area_orig"][i])
+
+                abs_err = abs(pred_area - gt_area)
+                pct_err = (abs_err / gt_area) if gt_area > 0 else 0.0
+
+                area_abs_errors.append(abs_err)
+                area_pct_errors.append(pct_err)
+
+                rows.append(
+                    {
+                        "file_name": str(batch["file_name"][i]),
+                        "file_name_ext": str(batch["file_name_ext"][i]),
+                        "frame_id": int(batch["frame_id"][i]),
+                        "gt_area": float(gt_area),
+                        "pred_area": float(pred_area),
+                        "abs_error": float(abs_err),
+                        "pct_error": float(pct_err),
+                    }
+                )
+
+    frame_area_mae = float(np.mean(area_abs_errors)) if area_abs_errors else float("nan")
+    frame_area_mape = float(np.mean(area_pct_errors)) if area_pct_errors else float("nan")
+
+    if csv_path is not None and rows:
+        summarize_area_rows(rows, csv_path)
+
+    return {
+        "loss": total_loss / max(1, n_batches),
+        "dice": total_dice / max(1, n_batches),
+        "frame_area_mae": frame_area_mae,
+        "frame_area_mape": frame_area_mape,
+        "samples": len(area_abs_errors),
+    }
+
+
+def train_one_epoch(model, loader, optimizer, device, amp_enabled, dice_weight):
+    model.train()
+
+    total_loss = 0.0
+    total_dice = 0.0
+    n_batches = 0
+
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+
+    for batch in loader:
+        images = batch["image"].to(device)
+        masks = batch["mask"].to(device)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        with autocast_context(device, amp_enabled):
+            logits = extract_logits(model(images))
+            loss = segmentation_loss(logits, masks, dice_weight=dice_weight)
+
+        if amp_enabled:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        dice = dice_from_logits(logits, masks)
+        total_loss += float(loss.item())
+        total_dice += float(dice.item())
+        n_batches += 1
+
+    return {
+        "loss": total_loss / max(1, n_batches),
+        "dice": total_dice / max(1, n_batches),
+    }
+
+
+def count_parameters(model):
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total, trainable
+
+
+def build_optimizer(args, model):
+    if args.optimizer == "sgd":
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=args.learning_rate,
+            momentum=0.9,
+            weight_decay=args.weight_decay,
+        )
+    return torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train Stage-4 LV segmentation and validate area against VolumeTracings.")
+    parser.add_argument("--data-dir", type=str, default=config.DATA_DIR)
+    parser.add_argument("--image-size", type=int, default=112)
+    parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--max-videos", type=int, default=None)
+    parser.add_argument("--dice-weight", type=float, default=1.0)
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--checkpoint", type=str, default="best_stage4_segmentation.pth")
+    parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage4"))
+    parser.add_argument("--device", type=str, default=("cuda" if torch.cuda.is_available() else "cpu"))
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=42)
+
+    parser.add_argument("--model-name", type=str, default="deeplabv3_resnet50")
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--base-channels", type=int, default=32, help="Used only when model-name=unet")
+    parser.add_argument("--optimizer", type=str, choices=["sgd", "adamw"], default="sgd")
+    parser.add_argument("--lr-step-period", type=int, default=15, help="<=0 disables step scheduler")
+    parser.add_argument("--lr-gamma", type=float, default=0.1)
+    parser.add_argument("--normalize", type=str, choices=["auto", "none", "imagenet"], default="auto")
+    return parser.parse_args()
+
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def main():
+    args = parse_args()
+    set_seed(args.seed)
+
+    device = args.device
+    amp_enabled = bool(args.amp) and str(device).startswith("cuda") and torch.cuda.is_available()
+
+    train_loader, val_loader, test_loader, normalize_mode = build_loaders(args, device)
+
+    model = build_stage4_segmentation_model(
+        model_name=args.model_name,
+        pretrained=args.pretrained,
+        in_channels=3,
+        base_channels=args.base_channels,
+    ).to(device)
+
+    optimizer = build_optimizer(args, model)
+    scheduler = None
+    if int(args.lr_step_period) > 0:
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(args.lr_step_period), gamma=float(args.lr_gamma))
+
+    total_params, trainable_params = count_parameters(model)
+
+    print("=" * 96)
+    print("STAGE 4 TRAINING (LV SEGMENTATION)")
+    print("=" * 96)
+    print(f"Device: {device} | AMP: {amp_enabled}")
+    print(f"Data dir: {args.data_dir}")
+    print(f"Image size: {args.image_size}")
+    print(f"Batch size: {args.batch_size} | Epochs: {args.epochs}")
+    print(f"Model: {args.model_name} | Pretrained: {args.pretrained} | Normalize: {normalize_mode}")
+    print(f"Optimizer: {args.optimizer} | LR: {args.learning_rate} | WD: {args.weight_decay}")
+    if scheduler is not None:
+        print(f"LR scheduler: StepLR(step={args.lr_step_period}, gamma={args.lr_gamma})")
+    else:
+        print("LR scheduler: disabled")
+    print(f"Workers: {args.workers} | Max videos: {args.max_videos if args.max_videos else 'All'}")
+    print(f"Checkpoint: {args.checkpoint}")
+    print(f"Output dir: {args.output_dir}")
+    print(f"Train samples: {len(train_loader.dataset)} | Val samples: {len(val_loader.dataset)} | Test samples: {len(test_loader.dataset)}")
+    print(f"Parameters: total={total_params:,} | trainable={trainable_params:,}")
+    print("=" * 96)
+
+    best_val_mae = float("inf")
+    epochs_without_improvement = 0
+
+    for epoch in range(1, args.epochs + 1):
+        t0 = time.perf_counter()
+
+        train_metrics = train_one_epoch(
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            device=device,
+            amp_enabled=amp_enabled,
+            dice_weight=args.dice_weight,
+        )
+
+        val_csv = os.path.join(args.output_dir, f"val_epoch{epoch:03d}_frame_areas.csv")
+        val_metrics = evaluate(
+            model=model,
+            loader=val_loader,
+            device=device,
+            amp_enabled=amp_enabled,
+            dice_weight=args.dice_weight,
+            csv_path=val_csv,
+        )
+
+        if scheduler is not None:
+            scheduler.step()
+
+        improved = val_metrics["frame_area_mae"] < best_val_mae
+        if improved:
+            best_val_mae = val_metrics["frame_area_mae"]
+            epochs_without_improvement = 0
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "epoch": epoch,
+                    "val_frame_area_mae": best_val_mae,
+                    "args": vars(args),
+                },
+                args.checkpoint,
+            )
+            save_msg = "saved"
+        else:
+            epochs_without_improvement += 1
+            save_msg = f"no-improve {epochs_without_improvement}/{args.patience}"
+
+        dt = time.perf_counter() - t0
+        print(
+            f"Epoch {epoch:03d}/{args.epochs} | "
+            f"Train loss {train_metrics['loss']:.4f} dice {train_metrics['dice']:.4f} | "
+            f"Val loss {val_metrics['loss']:.4f} dice {val_metrics['dice']:.4f} | "
+            f"Val frame area MAE {val_metrics['frame_area_mae']:.2f} px | "
+            f"Val frame area MAPE {val_metrics['frame_area_mape']*100:.2f}% | {save_msg} | {dt:.1f}s"
+        )
+
+        if epochs_without_improvement >= args.patience:
+            print("Early stopping triggered")
+            break
+
+    if not os.path.exists(args.checkpoint):
+        raise RuntimeError("No checkpoint saved. Training did not produce a valid model.")
+
+    ckpt = torch.load(args.checkpoint, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
+
+    val_best_csv = os.path.join(args.output_dir, "val_best_frame_areas.csv")
+    val_best_metrics = evaluate(
+        model=model,
+        loader=val_loader,
+        device=device,
+        amp_enabled=amp_enabled,
+        dice_weight=args.dice_weight,
+        csv_path=val_best_csv,
+    )
+
+    test_csv = os.path.join(args.output_dir, "test_frame_areas.csv")
+    test_metrics = evaluate(
+        model=model,
+        loader=test_loader,
+        device=device,
+        amp_enabled=amp_enabled,
+        dice_weight=args.dice_weight,
+        csv_path=test_csv,
+    )
+
+    print("=" * 96)
+    print("STAGE 4 FINAL EVALUATION")
+    print("=" * 96)
+    print(f"Best checkpoint epoch: {ckpt.get('epoch')}")
+    print(f"Best val frame area MAE (during training): {ckpt.get('val_frame_area_mae'):.2f} px")
+    print(
+        f"Val(best) -> loss: {val_best_metrics['loss']:.4f} | dice: {val_best_metrics['dice']:.4f} | "
+        f"area MAE: {val_best_metrics['frame_area_mae']:.2f} px | "
+        f"area MAPE: {val_best_metrics['frame_area_mape']*100:.2f}%"
+    )
+    print(
+        f"Test -> loss: {test_metrics['loss']:.4f} | dice: {test_metrics['dice']:.4f} | "
+        f"area MAE: {test_metrics['frame_area_mae']:.2f} px | "
+        f"area MAPE: {test_metrics['frame_area_mape']*100:.2f}%"
+    )
+    print(f"Test samples: {test_metrics['samples']}")
+    print(f"Val frame-level CSV: {os.path.abspath(val_best_csv)}")
+    print(f"Val video-level CSV: {os.path.abspath(val_best_csv.replace('.csv', '_video_summary.csv'))}")
+    print(f"Test frame-level CSV: {os.path.abspath(test_csv)}")
+    print(f"Test video-level CSV: {os.path.abspath(test_csv.replace('.csv', '_video_summary.csv'))}")
+    print("=" * 96)
+
+
+if __name__ == "__main__":
+    main()
