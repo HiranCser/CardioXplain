@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime
 import logging
+import math
 import os
 import sys
 import time
@@ -59,6 +60,8 @@ def parse_args(argv=None):
     parser.add_argument("--phase-temporal-window-mode", type=str, choices=["full", "tracing"], default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MODE")
     parser.add_argument("--phase-temporal-window-margin-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MARGIN_MULT")
     parser.add_argument("--phase-temporal-window-jitter-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_JITTER_MULT")
+    parser.add_argument("--warm-start-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Warm-start model weights from existing checkpoint path if available")
+    parser.add_argument("--protect-best-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Do not overwrite checkpoint unless monitor improves over existing checkpoint")
     return parser.parse_args(argv)
 
 
@@ -134,6 +137,16 @@ def apply_runtime_overrides(args, logger):
     for key, value in overrides.items():
         setattr(config, key, value)
         logger.info("Runtime override: %s=%s", key, value)
+
+    jitter_key = "PHASE_TEMPORAL_WINDOW_JITTER_MULT"
+    if hasattr(config, jitter_key):
+        jitter_value = float(getattr(config, jitter_key, 0.0))
+        if jitter_value < 0.0:
+            setattr(config, jitter_key, 0.0)
+            logger.warning("Clamped %s from %.3f to 0.000", jitter_key, jitter_value)
+        elif jitter_value > 0.10:
+            setattr(config, jitter_key, 0.10)
+            logger.warning("Clamped %s from %.3f to 0.100 to avoid over-augmentation", jitter_key, jitter_value)
 
     return overrides
 
@@ -645,6 +658,78 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
     )
 
 
+def maybe_warm_start_from_checkpoint(model, logger, enabled=True):
+    """Optionally initialize model weights from existing checkpoint path."""
+    if not enabled:
+        return False
+
+    ckpt_path = str(getattr(config, "CHECKPOINT_PATH", "")).strip()
+    if not ckpt_path or not os.path.exists(ckpt_path):
+        return False
+
+    try:
+        checkpoint = torch.load(ckpt_path, map_location=config.DEVICE)
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        missing = list(getattr(incompatible, "missing_keys", []))
+        unexpected = list(getattr(incompatible, "unexpected_keys", []))
+
+        if missing or unexpected:
+            logger.warning(
+                "Warm-start loaded with key mismatch | missing=%d unexpected=%d",
+                len(missing),
+                len(unexpected),
+            )
+
+        logger.info("Warm-started model from checkpoint: %s", ckpt_path)
+        return True
+    except Exception as exc:
+        logger.warning("Warm-start skipped (failed to load checkpoint %s): %s", ckpt_path, exc)
+        return False
+
+
+def load_existing_monitor_baseline(logger, expected_monitor_name):
+    """Read monitor value from existing checkpoint for no-regression protection."""
+    ckpt_path = str(getattr(config, "CHECKPOINT_PATH", "")).strip()
+    if not ckpt_path or not os.path.exists(ckpt_path):
+        return None
+
+    try:
+        checkpoint = torch.load(ckpt_path, map_location=config.DEVICE)
+    except Exception as exc:
+        logger.warning("Checkpoint protection skipped (failed to read %s): %s", ckpt_path, exc)
+        return None
+
+    monitor_name = checkpoint.get("monitor_name")
+    monitor_value = checkpoint.get("monitor_value", checkpoint.get("val_mae", None))
+
+    if monitor_name != expected_monitor_name:
+        logger.info(
+            "Checkpoint protection: monitor mismatch (existing=%s expected=%s), ignoring baseline",
+            monitor_name,
+            expected_monitor_name,
+        )
+        return None
+
+    try:
+        monitor_value = float(monitor_value)
+    except Exception:
+        logger.info("Checkpoint protection: invalid existing monitor value, ignoring baseline")
+        return None
+
+    if not math.isfinite(monitor_value):
+        logger.info("Checkpoint protection: non-finite existing monitor value, ignoring baseline")
+        return None
+
+    logger.info(
+        "Checkpoint protection baseline loaded from %s | %s=%s",
+        ckpt_path,
+        monitor_name,
+        monitor_value,
+    )
+    return monitor_value
+
+
 def log_header(logger, amp_enabled):
     logger.info("=" * 80)
     logger.info("TRAINING SCRIPT STARTED")
@@ -690,8 +775,6 @@ def main(argv=None):
     train_loader, val_loader, test_loader = build_dataloaders()
     model, optimizer, mse_loss, phase_index_loss_fn, amp_enabled, scaler = build_model_stack(logger)
 
-    log_header(logger, amp_enabled)
-
     phase_only = is_phase_only_mode()
     freeze_epochs = max(0, int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
 
@@ -701,6 +784,21 @@ def main(argv=None):
     else:
         best_monitor = float("inf")
         monitor_name = "ef_mae"
+
+    warm_start_enabled = bool(getattr(args, "warm_start_checkpoint", True))
+    protect_checkpoint_enabled = bool(getattr(args, "protect_best_checkpoint", True))
+
+    maybe_warm_start_from_checkpoint(model, logger, enabled=warm_start_enabled)
+
+    if protect_checkpoint_enabled:
+        baseline_monitor = load_existing_monitor_baseline(logger, expected_monitor_name=monitor_name)
+        if baseline_monitor is not None:
+            if phase_only:
+                best_monitor = max(best_monitor, baseline_monitor)
+            else:
+                best_monitor = min(best_monitor, baseline_monitor)
+
+    log_header(logger, amp_enabled)
 
     epochs_without_improvement = 0
     validate_every = max(1, int(getattr(config, "VALIDATE_EVERY", 1)))
