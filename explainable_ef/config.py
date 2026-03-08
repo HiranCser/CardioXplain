@@ -25,6 +25,7 @@ PHASE_FRAME_RADIUS = 2  # Radius around ED/ES used for frame-wise supervision
 PHASE_UNFREEZE_LR_MULT = 0.5  # Multiply LR when unfreezing stage1 in phase-only mode
 PHASE_TEMPORAL_WINDOW_MODE = "full"  # "full" (entire clip) or "tracing" (crop around traced ED/ES)
 PHASE_TEMPORAL_WINDOW_MARGIN_MULT = 1.5  # Extra margin (in ED-ES span units) on both sides in tracing mode
+PHASE_TEMPORAL_WINDOW_JITTER_MULT = 0.0  # Train-only random shift (in ED-ES span units) within tracing window
 
 # Training configuration
 LEARNING_RATE = 1e-4

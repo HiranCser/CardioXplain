@@ -58,6 +58,7 @@ def parse_args(argv=None):
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
     parser.add_argument("--phase-temporal-window-mode", type=str, choices=["full", "tracing"], default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MODE")
     parser.add_argument("--phase-temporal-window-margin-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MARGIN_MULT")
+    parser.add_argument("--phase-temporal-window-jitter-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_JITTER_MULT")
     return parser.parse_args(argv)
 
 
@@ -127,6 +128,8 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_TEMPORAL_WINDOW_MODE"] = args.phase_temporal_window_mode
     if args.phase_temporal_window_margin_mult is not None:
         overrides["PHASE_TEMPORAL_WINDOW_MARGIN_MULT"] = args.phase_temporal_window_margin_mult
+    if args.phase_temporal_window_jitter_mult is not None:
+        overrides["PHASE_TEMPORAL_WINDOW_JITTER_MULT"] = args.phase_temporal_window_jitter_mult
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -229,6 +232,7 @@ def build_dataloaders():
     """Create train/val/test dataloaders."""
     temporal_window_mode = str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full"))
     temporal_window_margin_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5))
+    temporal_window_jitter_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0))
 
     train_dataset = EchoDataset(
         config.DATA_DIR,
@@ -238,6 +242,7 @@ def build_dataloaders():
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         temporal_window_mode=temporal_window_mode,
         temporal_window_margin_mult=temporal_window_margin_mult,
+        temporal_window_jitter_mult=temporal_window_jitter_mult,
     )
     val_dataset = EchoDataset(
         config.DATA_DIR,
@@ -247,6 +252,7 @@ def build_dataloaders():
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         temporal_window_mode=temporal_window_mode,
         temporal_window_margin_mult=temporal_window_margin_mult,
+        temporal_window_jitter_mult=temporal_window_jitter_mult,
     )
     test_dataset = EchoDataset(
         config.DATA_DIR,
@@ -256,6 +262,7 @@ def build_dataloaders():
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         temporal_window_mode=temporal_window_mode,
         temporal_window_margin_mult=temporal_window_margin_mult,
+        temporal_window_jitter_mult=temporal_window_jitter_mult,
     )
 
     train_loader = DataLoader(train_dataset, **dataloader_kwargs(shuffle=True))
@@ -671,6 +678,7 @@ def log_header(logger, amp_enabled):
     logger.info("Max grad norm: %s", getattr(config, "MAX_GRAD_NORM", 0.0))
     logger.info("Phase temporal window mode: %s", str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")))
     logger.info("Phase temporal window margin mult: %.3f", float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)))
+    logger.info("Phase temporal window jitter mult: %.3f", float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)))
 
 
 def main(argv=None):

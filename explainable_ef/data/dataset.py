@@ -24,6 +24,7 @@ class EchoDataset(Dataset):
         normalize_input=True,
         temporal_window_mode="full",
         temporal_window_margin_mult=1.5,
+        temporal_window_jitter_mult=0.0,
     ):
         self.data_dir = data_dir
         self.num_frames = num_frames
@@ -31,8 +32,10 @@ class EchoDataset(Dataset):
         self.max_videos = max_videos
         self.transform = transform
         self.normalize_input = bool(normalize_input)
+        self.split = str(split).strip().upper()
         self.temporal_window_mode = str(temporal_window_mode).strip().lower()
         self.temporal_window_margin_mult = float(max(0.0, temporal_window_margin_mult))
+        self.temporal_window_jitter_mult = float(max(0.0, temporal_window_jitter_mult))
 
         self._mean = torch.tensor(KINETICS_MEAN, dtype=torch.float32).view(3, 1, 1, 1)
         self._std = torch.tensor(KINETICS_STD, dtype=torch.float32).view(3, 1, 1, 1)
@@ -91,6 +94,16 @@ class EchoDataset(Dataset):
         margin = int(round(self.temporal_window_margin_mult * span))
         start = max(0, left - margin)
         end = min(total_video_frames - 1, right + margin)
+
+        if self.split == "TRAIN" and self.temporal_window_jitter_mult > 0.0:
+            jitter = int(round(self.temporal_window_jitter_mult * span))
+            if jitter > 0:
+                shift_low = max(-jitter, -margin, -start)
+                shift_high = min(jitter, margin, (total_video_frames - 1) - end)
+                if shift_high >= shift_low:
+                    shift = int(np.random.randint(shift_low, shift_high + 1))
+                    start += shift
+                    end += shift
 
         if end <= start:
             return None
