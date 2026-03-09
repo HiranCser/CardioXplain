@@ -565,6 +565,7 @@ def run_case(
                     ed_frame_rgb,
                     image_size=int(meta4["image_size"]),
                     normalize_mode=meta4["normalize"],
+                    pretrained_flag=bool(meta4.get("pretrained", False)),
                     device=device,
                 )
                 pred_es_mask, pred_es_area = _predict_mask_stage4(
@@ -572,6 +573,7 @@ def run_case(
                     es_frame_rgb,
                     image_size=int(meta4["image_size"]),
                     normalize_mode=meta4["normalize"],
+                    pretrained_flag=bool(meta4.get("pretrained", False)),
                     device=device,
                 )
 
@@ -753,7 +755,7 @@ def main():
     with st.expander("Animated fallback preview (GIF)", expanded=not bool(playable_video_path)):
         gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
         if gif_bytes:
-            st.image(gif_bytes, caption="Animated fallback preview", use_column_width=True)
+            st.image(gif_bytes, caption="Animated fallback preview", use_container_width=True)
         else:
             st.caption(f"GIF fallback unavailable: {gif_err}")
 
@@ -767,7 +769,7 @@ def main():
         )
         src_frame, src_idx = _frame_from_list(result["full_frames"], src_idx)
         if src_frame is not None:
-            st.image(src_frame, caption=f"Source frame {src_idx}", use_column_width=True)
+            st.image(src_frame, caption=f"Source frame {src_idx}", use_container_width=True)
 
     st.subheader("Key Metrics")
     c1, c2, c3, c4 = st.columns(4)
@@ -859,7 +861,7 @@ def main():
     st.subheader("Frames and Overlays")
     view_idx = st.slider("Inspect original frame", 0, len(result["full_frames"]) - 1, int(result["pred_ed_orig"]))
     frame_view, _ = _frame_from_list(result["full_frames"], view_idx)
-    st.image(frame_view, caption=f"Original frame {view_idx}", use_column_width=True)
+    st.image(frame_view, caption=f"Original frame {view_idx}", use_container_width=True)
 
     st.subheader("Stage 4 + Stage 5")
     if not result["stage4"].get("enabled"):
@@ -876,12 +878,12 @@ def main():
         col_ed.image(
             _overlay_mask_rgb(pred_ed_frame_rgb, s4["pred_ed_mask"], color=(0, 255, 0), alpha=0.35),
             caption=f"Pred ED frame {s4['pred_ed_frame_idx']} + predicted mask",
-            use_column_width=True,
+            use_container_width=True,
         )
         col_es.image(
             _overlay_mask_rgb(pred_es_frame_rgb, s4["pred_es_mask"], color=(255, 165, 0), alpha=0.35),
             caption=f"Pred ES frame {s4['pred_es_frame_idx']} + predicted mask",
-            use_column_width=True,
+            use_container_width=True,
         )
 
         stage45_table = pd.DataFrame(
@@ -912,3 +914,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

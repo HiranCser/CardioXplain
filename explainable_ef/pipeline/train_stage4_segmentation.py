@@ -3,6 +3,7 @@ import contextlib
 import os
 import sys
 import time
+import shutil
 
 import cv2
 import numpy as np
@@ -320,6 +321,68 @@ def train_one_epoch(
     }
 
 
+def _bytes_to_human(num_bytes):
+    if num_bytes is None:
+        return "unknown"
+    value = float(num_bytes)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if value < 1024.0 or unit == "TB":
+            return f"{value:.2f} {unit}"
+        value /= 1024.0
+    return f"{value:.2f} TB"
+
+
+def _disk_free_bytes(path):
+    try:
+        base = os.path.dirname(os.path.abspath(path)) or "."
+        return int(shutil.disk_usage(base).free)
+    except Exception:
+        return None
+
+
+def _atomic_torch_save(obj, path, use_new_zip=True):
+    abs_path = os.path.abspath(path)
+    save_dir = os.path.dirname(abs_path)
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    tmp_path = abs_path + ".tmp"
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    except OSError:
+        pass
+
+    torch.save(obj, tmp_path, _use_new_zipfile_serialization=bool(use_new_zip))
+    os.replace(tmp_path, abs_path)
+
+
+def _save_checkpoint_resilient(checkpoint_path, checkpoint_payload):
+    payload_slim = dict(checkpoint_payload)
+    payload_slim.pop("optimizer_state_dict", None)
+
+    attempts = [
+        ("full_zip", checkpoint_payload, True),
+        ("full_legacy", checkpoint_payload, False),
+        ("slim_zip", payload_slim, True),
+        ("slim_legacy", payload_slim, False),
+    ]
+
+    last_error = None
+    for save_mode, payload, use_new_zip in attempts:
+        try:
+            _atomic_torch_save(payload, checkpoint_path, use_new_zip=use_new_zip)
+            return save_mode
+        except Exception as exc:
+            last_error = exc
+
+    free_bytes = _disk_free_bytes(checkpoint_path)
+    free_text = _bytes_to_human(free_bytes)
+    raise RuntimeError(
+        f"Checkpoint save failed after fallbacks at '{checkpoint_path}'. "
+        f"Free disk near checkpoint: {free_text}. Last error: {last_error}"
+    )
+
 def count_parameters(model):
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -461,18 +524,19 @@ def main():
         if improved:
             best_val_mae = val_metrics["frame_area_mae"]
             epochs_without_improvement = 0
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "val_frame_area_mae": best_val_mae,
-                    "eval_threshold": float(args.eval_threshold),
-                    "args": vars(args),
-                },
-                args.checkpoint,
+            checkpoint_payload = {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "epoch": epoch,
+                "val_frame_area_mae": best_val_mae,
+                "eval_threshold": float(args.eval_threshold),
+                "args": vars(args),
+            }
+            save_variant = _save_checkpoint_resilient(
+                checkpoint_path=args.checkpoint,
+                checkpoint_payload=checkpoint_payload,
             )
-            save_msg = "saved"
+            save_msg = f"saved ({save_variant})"
         else:
             epochs_without_improvement += 1
             save_msg = f"no-improve {epochs_without_improvement}/{args.patience}"
@@ -558,3 +622,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
