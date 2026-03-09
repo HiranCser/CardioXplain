@@ -34,22 +34,39 @@ def autocast_context(device, amp_enabled):
     return contextlib.nullcontext()
 
 
-def dice_from_logits(logits, targets, eps=1e-6):
+def dice_from_logits(logits, targets, eps=1e-6, threshold=0.5, soft=False):
     probs = torch.sigmoid(logits)
-    preds = (probs >= 0.5).float()
+    preds = probs if soft else (probs >= float(threshold)).float()
     inter = (preds * targets).sum(dim=(1, 2, 3))
     union = preds.sum(dim=(1, 2, 3)) + targets.sum(dim=(1, 2, 3))
     return ((2.0 * inter + eps) / (union + eps)).mean()
 
 
-def segmentation_loss(logits, targets, dice_weight=1.0):
-    bce = F.binary_cross_entropy_with_logits(logits, targets)
+def _resolve_pos_weight(targets, manual_pos_weight=None, pos_weight_max=20.0):
+    if manual_pos_weight is not None:
+        v = max(1.0, float(manual_pos_weight))
+        return torch.tensor(v, device=targets.device, dtype=targets.dtype)
+
+    pos = targets.sum()
+    total = torch.tensor(float(targets.numel()), device=targets.device, dtype=targets.dtype)
+    neg = total - pos
+    ratio = torch.sqrt(neg / (pos + 1e-6))
+    ratio = torch.clamp(ratio, min=1.0, max=float(pos_weight_max))
+    return ratio.detach()
+
+
+def segmentation_loss(logits, targets, dice_weight=1.0, manual_pos_weight=None, pos_weight_max=20.0):
+    pos_weight = _resolve_pos_weight(targets, manual_pos_weight=manual_pos_weight, pos_weight_max=pos_weight_max)
+    bce = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight)
+
     probs = torch.sigmoid(logits)
     inter = (probs * targets).sum(dim=(1, 2, 3))
     union = probs.sum(dim=(1, 2, 3)) + targets.sum(dim=(1, 2, 3))
     dice = (2.0 * inter + 1e-6) / (union + 1e-6)
     dice_loss = 1.0 - dice.mean()
-    return bce + float(dice_weight) * dice_loss
+
+    loss = bce + float(dice_weight) * dice_loss
+    return loss, bce.detach(), dice_loss.detach(), float(pos_weight.item())
 
 
 def dataloader_kwargs(batch_size, workers, shuffle, device):
@@ -118,11 +135,27 @@ def summarize_area_rows(rows, csv_path):
     video_summary.to_csv(csv_path.replace(".csv", "_video_summary.csv"), index=False)
 
 
-def evaluate(model, loader, device, amp_enabled, dice_weight, csv_path=None):
+def evaluate(
+    model,
+    loader,
+    device,
+    amp_enabled,
+    dice_weight,
+    eval_threshold,
+    manual_pos_weight,
+    pos_weight_max,
+    csv_path=None,
+):
     model.eval()
 
     total_loss = 0.0
-    total_dice = 0.0
+    total_bce = 0.0
+    total_dice_loss = 0.0
+    total_dice_hard = 0.0
+    total_dice_soft = 0.0
+    total_pos_weight = 0.0
+    total_pred_fg_frac = 0.0
+    total_gt_fg_frac = 0.0
     n_batches = 0
 
     area_abs_errors = []
@@ -136,14 +169,29 @@ def evaluate(model, loader, device, amp_enabled, dice_weight, csv_path=None):
 
             with autocast_context(device, amp_enabled):
                 logits = extract_logits(model(images))
-                loss = segmentation_loss(logits, masks, dice_weight=dice_weight)
+                loss, bce, dice_loss, pos_weight_value = segmentation_loss(
+                    logits,
+                    masks,
+                    dice_weight=dice_weight,
+                    manual_pos_weight=manual_pos_weight,
+                    pos_weight_max=pos_weight_max,
+                )
 
-            dice = dice_from_logits(logits, masks)
+            dice_hard = dice_from_logits(logits, masks, threshold=eval_threshold, soft=False)
+            dice_soft = dice_from_logits(logits, masks, threshold=eval_threshold, soft=True)
+
+            probs = torch.sigmoid(logits)
+            pred_masks = (probs >= float(eval_threshold)).to(torch.uint8).cpu().numpy()
+
             total_loss += float(loss.item())
-            total_dice += float(dice.item())
+            total_bce += float(bce.item())
+            total_dice_loss += float(dice_loss.item())
+            total_dice_hard += float(dice_hard.item())
+            total_dice_soft += float(dice_soft.item())
+            total_pos_weight += float(pos_weight_value)
+            total_pred_fg_frac += float(pred_masks.mean())
+            total_gt_fg_frac += float(masks.detach().float().mean().item())
             n_batches += 1
-
-            pred_masks = (torch.sigmoid(logits) >= 0.5).to(torch.uint8).cpu().numpy()
 
             for i in range(pred_masks.shape[0]):
                 pred_small = pred_masks[i, 0]
@@ -169,6 +217,7 @@ def evaluate(model, loader, device, amp_enabled, dice_weight, csv_path=None):
                         "pred_area": float(pred_area),
                         "abs_error": float(abs_err),
                         "pct_error": float(pct_err),
+                        "eval_threshold": float(eval_threshold),
                     }
                 )
 
@@ -180,18 +229,40 @@ def evaluate(model, loader, device, amp_enabled, dice_weight, csv_path=None):
 
     return {
         "loss": total_loss / max(1, n_batches),
-        "dice": total_dice / max(1, n_batches),
+        "bce": total_bce / max(1, n_batches),
+        "dice_loss": total_dice_loss / max(1, n_batches),
+        "dice_hard": total_dice_hard / max(1, n_batches),
+        "dice_soft": total_dice_soft / max(1, n_batches),
+        "avg_pos_weight": total_pos_weight / max(1, n_batches),
+        "pred_fg_frac": total_pred_fg_frac / max(1, n_batches),
+        "gt_fg_frac": total_gt_fg_frac / max(1, n_batches),
         "frame_area_mae": frame_area_mae,
         "frame_area_mape": frame_area_mape,
         "samples": len(area_abs_errors),
     }
 
 
-def train_one_epoch(model, loader, optimizer, device, amp_enabled, dice_weight):
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    device,
+    amp_enabled,
+    dice_weight,
+    eval_threshold,
+    manual_pos_weight,
+    pos_weight_max,
+):
     model.train()
 
     total_loss = 0.0
-    total_dice = 0.0
+    total_bce = 0.0
+    total_dice_loss = 0.0
+    total_dice_hard = 0.0
+    total_dice_soft = 0.0
+    total_pos_weight = 0.0
+    total_pred_fg_frac = 0.0
+    total_gt_fg_frac = 0.0
     n_batches = 0
 
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
@@ -204,7 +275,13 @@ def train_one_epoch(model, loader, optimizer, device, amp_enabled, dice_weight):
 
         with autocast_context(device, amp_enabled):
             logits = extract_logits(model(images))
-            loss = segmentation_loss(logits, masks, dice_weight=dice_weight)
+            loss, bce, dice_loss, pos_weight_value = segmentation_loss(
+                logits,
+                masks,
+                dice_weight=dice_weight,
+                manual_pos_weight=manual_pos_weight,
+                pos_weight_max=pos_weight_max,
+            )
 
         if amp_enabled:
             scaler.scale(loss).backward()
@@ -214,14 +291,32 @@ def train_one_epoch(model, loader, optimizer, device, amp_enabled, dice_weight):
             loss.backward()
             optimizer.step()
 
-        dice = dice_from_logits(logits, masks)
+        probs = torch.sigmoid(logits)
+        pred_masks = (probs >= float(eval_threshold)).float()
+
+        dice_hard = ((2.0 * (pred_masks * masks).sum(dim=(1, 2, 3)) + 1e-6) /
+                     (pred_masks.sum(dim=(1, 2, 3)) + masks.sum(dim=(1, 2, 3)) + 1e-6)).mean()
+        dice_soft = dice_from_logits(logits, masks, threshold=eval_threshold, soft=True)
+
         total_loss += float(loss.item())
-        total_dice += float(dice.item())
+        total_bce += float(bce.item())
+        total_dice_loss += float(dice_loss.item())
+        total_dice_hard += float(dice_hard.item())
+        total_dice_soft += float(dice_soft.item())
+        total_pos_weight += float(pos_weight_value)
+        total_pred_fg_frac += float(pred_masks.detach().mean().item())
+        total_gt_fg_frac += float(masks.detach().mean().item())
         n_batches += 1
 
     return {
         "loss": total_loss / max(1, n_batches),
-        "dice": total_dice / max(1, n_batches),
+        "bce": total_bce / max(1, n_batches),
+        "dice_loss": total_dice_loss / max(1, n_batches),
+        "dice_hard": total_dice_hard / max(1, n_batches),
+        "dice_soft": total_dice_soft / max(1, n_batches),
+        "avg_pos_weight": total_pos_weight / max(1, n_batches),
+        "pred_fg_frac": total_pred_fg_frac / max(1, n_batches),
+        "gt_fg_frac": total_gt_fg_frac / max(1, n_batches),
     }
 
 
@@ -248,11 +343,14 @@ def parse_args():
     parser.add_argument("--image-size", type=int, default=112)
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--max-videos", type=int, default=None)
     parser.add_argument("--dice-weight", type=float, default=1.0)
+    parser.add_argument("--eval-threshold", type=float, default=0.5)
+    parser.add_argument("--pos-weight", type=float, default=None, help="Manual positive-class BCE weight; if omitted, auto-computed per batch")
+    parser.add_argument("--pos-weight-max", type=float, default=8.0)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--checkpoint", type=str, default="best_stage4_segmentation.pth")
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage4"))
@@ -263,7 +361,7 @@ def parse_args():
     parser.add_argument("--model-name", type=str, default="deeplabv3_resnet50")
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--base-channels", type=int, default=32, help="Used only when model-name=unet")
-    parser.add_argument("--optimizer", type=str, choices=["sgd", "adamw"], default="sgd")
+    parser.add_argument("--optimizer", type=str, choices=["sgd", "adamw"], default="adamw")
     parser.add_argument("--lr-step-period", type=int, default=15, help="<=0 disables step scheduler")
     parser.add_argument("--lr-gamma", type=float, default=0.1)
     parser.add_argument("--normalize", type=str, choices=["auto", "none", "imagenet"], default="auto")
@@ -309,6 +407,11 @@ def main():
     print(f"Batch size: {args.batch_size} | Epochs: {args.epochs}")
     print(f"Model: {args.model_name} | Pretrained: {args.pretrained} | Normalize: {normalize_mode}")
     print(f"Optimizer: {args.optimizer} | LR: {args.learning_rate} | WD: {args.weight_decay}")
+    print(f"Dice weight: {args.dice_weight} | Eval threshold: {args.eval_threshold}")
+    if args.pos_weight is None:
+        print(f"BCE pos_weight: auto (clamped to <= {args.pos_weight_max})")
+    else:
+        print(f"BCE pos_weight: fixed {args.pos_weight}")
     if scheduler is not None:
         print(f"LR scheduler: StepLR(step={args.lr_step_period}, gamma={args.lr_gamma})")
     else:
@@ -333,6 +436,9 @@ def main():
             device=device,
             amp_enabled=amp_enabled,
             dice_weight=args.dice_weight,
+            eval_threshold=float(args.eval_threshold),
+            manual_pos_weight=args.pos_weight,
+            pos_weight_max=float(args.pos_weight_max),
         )
 
         val_csv = os.path.join(args.output_dir, f"val_epoch{epoch:03d}_frame_areas.csv")
@@ -342,6 +448,9 @@ def main():
             device=device,
             amp_enabled=amp_enabled,
             dice_weight=args.dice_weight,
+            eval_threshold=float(args.eval_threshold),
+            manual_pos_weight=args.pos_weight,
+            pos_weight_max=float(args.pos_weight_max),
             csv_path=val_csv,
         )
 
@@ -358,6 +467,7 @@ def main():
                     "optimizer_state_dict": optimizer.state_dict(),
                     "epoch": epoch,
                     "val_frame_area_mae": best_val_mae,
+                    "eval_threshold": float(args.eval_threshold),
                     "args": vars(args),
                 },
                 args.checkpoint,
@@ -370,11 +480,20 @@ def main():
         dt = time.perf_counter() - t0
         print(
             f"Epoch {epoch:03d}/{args.epochs} | "
-            f"Train loss {train_metrics['loss']:.4f} dice {train_metrics['dice']:.4f} | "
-            f"Val loss {val_metrics['loss']:.4f} dice {val_metrics['dice']:.4f} | "
+            f"Train loss {train_metrics['loss']:.4f} (bce {train_metrics['bce']:.4f}, diceL {train_metrics['dice_loss']:.4f}) "
+            f"dice@thr {train_metrics['dice_hard']:.4f} softDice {train_metrics['dice_soft']:.4f} "
+            f"fg(pred/gt) {train_metrics['pred_fg_frac']:.4f}/{train_metrics['gt_fg_frac']:.4f} posW {train_metrics['avg_pos_weight']:.2f} | "
+            f"Val loss {val_metrics['loss']:.4f} (bce {val_metrics['bce']:.4f}, diceL {val_metrics['dice_loss']:.4f}) "
+            f"dice@thr {val_metrics['dice_hard']:.4f} softDice {val_metrics['dice_soft']:.4f} "
+            f"fg(pred/gt) {val_metrics['pred_fg_frac']:.4f}/{val_metrics['gt_fg_frac']:.4f} posW {val_metrics['avg_pos_weight']:.2f} | "
             f"Val frame area MAE {val_metrics['frame_area_mae']:.2f} px | "
             f"Val frame area MAPE {val_metrics['frame_area_mape']*100:.2f}% | {save_msg} | {dt:.1f}s"
         )
+
+        if val_metrics["pred_fg_frac"] < 0.005:
+            print("Warning: validation predicted foreground fraction is very low (<0.5%). Consider lowering --eval-threshold or increasing --pos-weight.")
+        elif val_metrics["pred_fg_frac"] > 0.50:
+            print("Warning: validation predicted foreground fraction is very high (>50%). Consider raising --eval-threshold or reducing --pos-weight.")
 
         if epochs_without_improvement >= args.patience:
             print("Early stopping triggered")
@@ -393,6 +512,9 @@ def main():
         device=device,
         amp_enabled=amp_enabled,
         dice_weight=args.dice_weight,
+        eval_threshold=float(args.eval_threshold),
+        manual_pos_weight=args.pos_weight,
+        pos_weight_max=float(args.pos_weight_max),
         csv_path=val_best_csv,
     )
 
@@ -403,6 +525,9 @@ def main():
         device=device,
         amp_enabled=amp_enabled,
         dice_weight=args.dice_weight,
+        eval_threshold=float(args.eval_threshold),
+        manual_pos_weight=args.pos_weight,
+        pos_weight_max=float(args.pos_weight_max),
         csv_path=test_csv,
     )
 
@@ -412,12 +537,14 @@ def main():
     print(f"Best checkpoint epoch: {ckpt.get('epoch')}")
     print(f"Best val frame area MAE (during training): {ckpt.get('val_frame_area_mae'):.2f} px")
     print(
-        f"Val(best) -> loss: {val_best_metrics['loss']:.4f} | dice: {val_best_metrics['dice']:.4f} | "
+        f"Val(best) -> loss: {val_best_metrics['loss']:.4f} | bce: {val_best_metrics['bce']:.4f} | "
+        f"dice@thr: {val_best_metrics['dice_hard']:.4f} | softDice: {val_best_metrics['dice_soft']:.4f} | "
         f"area MAE: {val_best_metrics['frame_area_mae']:.2f} px | "
         f"area MAPE: {val_best_metrics['frame_area_mape']*100:.2f}%"
     )
     print(
-        f"Test -> loss: {test_metrics['loss']:.4f} | dice: {test_metrics['dice']:.4f} | "
+        f"Test -> loss: {test_metrics['loss']:.4f} | bce: {test_metrics['bce']:.4f} | "
+        f"dice@thr: {test_metrics['dice_hard']:.4f} | softDice: {test_metrics['dice_soft']:.4f} | "
         f"area MAE: {test_metrics['frame_area_mae']:.2f} px | "
         f"area MAPE: {test_metrics['frame_area_mape']*100:.2f}%"
     )

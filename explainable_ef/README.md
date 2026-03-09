@@ -105,7 +105,7 @@ python validation\generate_reference_frame_template.py --split VAL --include-met
 Recommended:
 
 ```powershell
-python pipeline\train_stage4_segmentation.py --data-dir "D:\datascience\MTech\Sem4\Project\CardioXplain\dynamic\a4c-video-dir" --model-name deeplabv3_resnet50 --pretrained --batch-size 20 --epochs 50 --learning-rate 1e-5 --optimizer sgd --workers 8 --image-size 112
+python pipeline\train_stage4_segmentation.py --data-dir "D:\datascience\MTech\Sem4\Project\CardioXplain\dynamic\a4c-video-dir" --model-name deeplabv3_resnet50 --pretrained --batch-size 20 --epochs 50 --learning-rate 1e-4 --optimizer adamw --workers 8 --image-size 112 --eval-threshold 0.5
 ```
 
 CPU/smoke:
@@ -144,7 +144,7 @@ Outputs:
 ### K) Full Stage 1-7 orchestration (single command)
 
 ```powershell
-python pipeline\train_all_stages.py --stage123-num-frames 32 --stage123-epochs 50 --stage4-epochs 50
+python pipeline\train_all_stages.py --stage123-num-frames 32 --stage123-epochs 50 --stage4-epochs 50 --stage4-optimizer adamw --stage4-learning-rate 1e-4
 ```
 
 This orchestrates:
@@ -153,6 +153,8 @@ This orchestrates:
 - Stage4 segmentation training
 - Stage5 deterministic EF evaluation from tracings (VAL/TEST)
 - Stage6 similarity training + Stage7 uncertainty calibration
+
+Stage4 defaults are now class-imbalance aware (`--eval-threshold 0.5`, auto BCE `pos_weight`) to prevent empty-mask collapse.
 
 Use `--skip-stage123`, `--skip-stage4`, `--skip-stage5`, `--skip-stage67` to resume partial runs.
 
@@ -253,6 +255,9 @@ Run any script with `--help` for the latest values/defaults.
 - `--workers WORKERS`
 - `--max-videos MAX_VIDEOS`
 - `--dice-weight DICE_WEIGHT`
+- `--eval-threshold EVAL_THRESHOLD`
+- `--pos-weight POS_WEIGHT`
+- `--pos-weight-max POS_WEIGHT_MAX`
 - `--amp, --no-amp`
 - `--checkpoint CHECKPOINT`
 - `--output-dir OUTPUT_DIR`

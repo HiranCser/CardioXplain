@@ -39,14 +39,14 @@ def parse_args():
 
     parser.add_argument("--stage4-checkpoint", type=str, default="best_stage4_segmentation.pth")
     parser.add_argument("--stage4-epochs", type=int, default=50)
-    parser.add_argument("--stage4-learning-rate", type=float, default=1e-5)
+    parser.add_argument("--stage4-learning-rate", type=float, default=1e-4)
     parser.add_argument("--stage4-batch-size", type=int, default=20)
     parser.add_argument("--stage4-workers", type=int, default=8)
     parser.add_argument("--stage4-image-size", type=int, default=112)
     parser.add_argument("--stage4-max-videos", type=int, default=None)
     parser.add_argument("--stage4-model-name", type=str, default="deeplabv3_resnet50")
     parser.add_argument("--stage4-pretrained", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--stage4-optimizer", type=str, choices=["sgd", "adamw"], default="sgd")
+    parser.add_argument("--stage4-optimizer", type=str, choices=["sgd", "adamw"], default="adamw")
 
     parser.add_argument("--stage5-max-videos", type=int, default=0, help="0 means all videos")
     parser.add_argument("--stage5-save-overlays", action="store_true")
