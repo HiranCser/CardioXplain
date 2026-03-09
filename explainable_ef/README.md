@@ -128,7 +128,35 @@ Outputs:
 python pipeline\run_stage45_from_tracings.py --split VAL --max-videos 25 --save-overlays
 ```
 
-### J) One-page UI for Stage 1-5 outputs (recommended for review)
+### J) Stage 6 + Stage 7 training (similarity + uncertainty)
+
+```powershell
+python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32
+```
+
+Outputs:
+
+- `validation/outputs/stage67/stage6_similarity_engine.npz`
+- `validation/outputs/stage67/stage7_calibration.json`
+- `validation/outputs/stage67/stage67_summary.json`
+- per-split prediction CSVs (train/val/test)
+
+### K) Full Stage 1-7 orchestration (single command)
+
+```powershell
+python pipeline\train_all_stages.py --stage123-num-frames 32 --stage123-epochs 50 --stage4-epochs 50
+```
+
+This orchestrates:
+
+- Stage1-3 joint training (`model_execution.py --train-stage123 --no-phase-only`)
+- Stage4 segmentation training
+- Stage5 deterministic EF evaluation from tracings (VAL/TEST)
+- Stage6 similarity training + Stage7 uncertainty calibration
+
+Use `--skip-stage123`, `--skip-stage4`, `--skip-stage5`, `--skip-stage67` to resume partial runs.
+
+### L) One-page UI for Stage 1-5 outputs (recommended for review)
 
 Install Streamlit once:
 
@@ -146,6 +174,7 @@ UI behavior:
 
 - Loads videos from selected split (default `TEST`) in `FileList.csv`
 - User selects any video case from dropdown
+- Source `.avi` videos are auto-converted to browser-friendly MP4 preview (with frame-view fallback)
 - Runs Stage1-3 checkpoint inference and shows:
   - Stage1 diagnostics
   - Stage2 temporal weights curve
@@ -245,6 +274,54 @@ Run any script with `--help` for the latest values/defaults.
 - `--max-videos MAX_VIDEOS`
 - `--save-overlays`
 - `--output-dir OUTPUT_DIR`
+
+### `pipeline/train_stage67_similarity.py` options
+
+- `-h, --help`
+- `--data-dir DATA_DIR`
+- `--stage123-checkpoint STAGE123_CHECKPOINT`
+- `--num-frames NUM_FRAMES`
+- `--max-videos MAX_VIDEOS`
+- `--device DEVICE`
+- `--normal-threshold NORMAL_THRESHOLD`
+- `--severe-threshold SEVERE_THRESHOLD`
+- `--output-dir OUTPUT_DIR`
+- `--temporal-window-mode {full,tracing}`
+- `--temporal-window-margin-mult TEMPORAL_WINDOW_MARGIN_MULT`
+- `--save-per-split-csv, --no-save-per-split-csv`
+
+### `pipeline/train_all_stages.py` options
+
+- `-h, --help`
+- `--data-dir DATA_DIR`
+- `--skip-stage123`
+- `--skip-stage4`
+- `--skip-stage5`
+- `--skip-stage67`
+- `--stage123-checkpoint STAGE123_CHECKPOINT`
+- `--stage123-epochs STAGE123_EPOCHS`
+- `--stage123-learning-rate STAGE123_LEARNING_RATE`
+- `--stage123-batch-size STAGE123_BATCH_SIZE`
+- `--stage123-num-frames STAGE123_NUM_FRAMES`
+- `--stage123-workers STAGE123_WORKERS`
+- `--stage123-max-videos STAGE123_MAX_VIDEOS`
+- `--stage4-checkpoint STAGE4_CHECKPOINT`
+- `--stage4-epochs STAGE4_EPOCHS`
+- `--stage4-learning-rate STAGE4_LEARNING_RATE`
+- `--stage4-batch-size STAGE4_BATCH_SIZE`
+- `--stage4-workers STAGE4_WORKERS`
+- `--stage4-image-size STAGE4_IMAGE_SIZE`
+- `--stage4-max-videos STAGE4_MAX_VIDEOS`
+- `--stage4-model-name STAGE4_MODEL_NAME`
+- `--stage4-pretrained, --no-stage4-pretrained`
+- `--stage4-optimizer {sgd,adamw}`
+- `--stage5-max-videos STAGE5_MAX_VIDEOS`
+- `--stage5-save-overlays`
+- `--stage67-output-dir STAGE67_OUTPUT_DIR`
+- `--stage67-max-videos STAGE67_MAX_VIDEOS`
+- `--stage67-normal-threshold STAGE67_NORMAL_THRESHOLD`
+- `--stage67-severe-threshold STAGE67_SEVERE_THRESHOLD`
+- `--device DEVICE`
 
 ### `visualization/validate_phase_detection.py` options
 

@@ -1,6 +1,10 @@
 import os
+import io
 import sys
 import math
+import shutil
+import hashlib
+import subprocess
 
 import cv2
 import matplotlib.pyplot as plt
@@ -88,6 +92,202 @@ def _read_video_frames_rgb(video_path):
         raise ValueError(f"No frames found in video: {video_path}")
 
     return frames, float(fps if fps and fps > 0 else 50.0)
+
+
+def _video_cache_dir():
+    cache_dir = os.path.join(ROOT_DIR, "ui", ".video_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def _guess_video_mime(video_path):
+    ext = os.path.splitext(str(video_path))[1].lower()
+    if ext == ".mp4" or ext == ".m4v" or ext == ".mov":
+        return "video/mp4"
+    if ext == ".webm":
+        return "video/webm"
+    if ext in {".ogg", ".ogv"}:
+        return "video/ogg"
+    return "video/mp4"
+
+
+def _ffmpeg_h264_transcode(input_path, output_path):
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        return False, "ffmpeg not found"
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i",
+        input_path,
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        output_path,
+    ]
+
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode != 0:
+            err = proc.stderr.decode("utf-8", errors="ignore").strip().splitlines()
+            tail = err[-1] if err else "ffmpeg failed"
+            return False, tail
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            return False, "ffmpeg produced empty output"
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+@st.cache_data(show_spinner=False)
+def _prepare_browser_video(video_path):
+    """
+    Return (playable_path, was_converted, error_message, mime_type).
+
+    Strategy:
+    1) Use native web formats directly when possible.
+    2) For non-web formats (or problematic files), transcode to cached MP4.
+       Prefer ffmpeg/H.264 when available; fallback to OpenCV mp4v.
+    """
+    video_path = os.path.abspath(video_path)
+    if not os.path.exists(video_path):
+        return "", False, f"Video not found: {video_path}", "video/mp4"
+
+    ext = os.path.splitext(video_path)[1].lower()
+    if ext in {".mp4", ".webm", ".ogg", ".ogv", ".m4v", ".mov"}:
+        return video_path, False, "", _guess_video_mime(video_path)
+
+    try:
+        stat = os.stat(video_path)
+        cache_key = hashlib.md5(
+            f"{video_path}|{stat.st_mtime_ns}|{stat.st_size}".encode("utf-8")
+        ).hexdigest()[:16]
+        output_path = os.path.join(_video_cache_dir(), f"{cache_key}.mp4")
+
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path, True, "", "video/mp4"
+
+        ok_ffmpeg, ffmpeg_err = _ffmpeg_h264_transcode(video_path, output_path)
+        if ok_ffmpeg:
+            return output_path, True, "", "video/mp4"
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return "", False, f"Failed to open source video for conversion ({ffmpeg_err}).", "video/mp4"
+
+        src_fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = float(src_fps if src_fps and src_fps > 0 else 25.0)
+        fps = max(10.0, min(30.0, fps))
+
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if width <= 0 or height <= 0:
+            cap.release()
+            return "", False, "Invalid source video size; cannot convert.", "video/mp4"
+
+        max_w = 960
+        if width > max_w:
+            scale = max_w / float(width)
+            out_w = int(round(width * scale))
+            out_h = int(round(height * scale))
+        else:
+            out_w, out_h = width, height
+
+        out_w = max(2, out_w - (out_w % 2))
+        out_h = max(2, out_h - (out_h % 2))
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
+        if not writer.isOpened():
+            cap.release()
+            return "", False, f"Failed to initialize MP4 writer (ffmpeg={ffmpeg_err}).", "video/mp4"
+
+        frame_count = 0
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok:
+                break
+            if frame_bgr.shape[1] != out_w or frame_bgr.shape[0] != out_h:
+                frame_bgr = cv2.resize(frame_bgr, (out_w, out_h), interpolation=cv2.INTER_AREA)
+            writer.write(frame_bgr)
+            frame_count += 1
+
+        writer.release()
+        cap.release()
+
+        if frame_count == 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            return "", False, "Video conversion produced an empty output.", "video/mp4"
+
+        return output_path, True, "", "video/mp4"
+    except Exception as exc:
+        return "", False, f"Video conversion failed: {exc}", "video/mp4"
+
+
+@st.cache_data(show_spinner=False)
+def _prepare_gif_preview(video_path, max_frames=120, max_width=640):
+    """Build an animated GIF fallback preview for browsers with video codec issues."""
+    try:
+        from PIL import Image
+    except Exception:
+        return b"", "Pillow is not available for GIF fallback."
+
+    video_path = os.path.abspath(video_path)
+    if not os.path.exists(video_path):
+        return b"", f"Video not found: {video_path}"
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return b"", "Failed to open source video for GIF preview."
+
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = float(fps if fps and fps > 0 else 20.0)
+
+    stride = max(1, int(total / max_frames)) if total > 0 else 2
+    duration_ms = int(round(1000.0 / max(1.0, min(12.0, fps / stride))))
+
+    pil_frames = []
+    idx = 0
+    while True:
+        ok, frame_bgr = cap.read()
+        if not ok:
+            break
+        if idx % stride != 0:
+            idx += 1
+            continue
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        h, w = frame_rgb.shape[:2]
+        if w > max_width:
+            scale = max_width / float(w)
+            frame_rgb = cv2.resize(frame_rgb, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
+
+        pil_frames.append(Image.fromarray(frame_rgb))
+        if len(pil_frames) >= max_frames:
+            break
+        idx += 1
+
+    cap.release()
+
+    if not pil_frames:
+        return b"", "Could not extract frames for GIF preview."
+
+    buff = io.BytesIO()
+    pil_frames[0].save(
+        buff,
+        format="GIF",
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=max(40, duration_ms),
+        loop=0,
+        optimize=False,
+    )
+    return buff.getvalue(), ""
 
 
 @st.cache_data(show_spinner=False)
@@ -536,7 +736,38 @@ def main():
 
     st.subheader("Source Video")
     st.write(f"Path: `{result['video_path']}`")
-    st.video(result["video_path"])
+
+    playable_video_path, was_converted, video_err, video_mime = _prepare_browser_video(result["video_path"])
+    if playable_video_path:
+        if was_converted:
+            st.caption("Converted source video to browser-friendly MP4 preview.")
+        try:
+            with open(playable_video_path, "rb") as vf:
+                st.video(vf.read(), format=video_mime)
+        except Exception as exc:
+            st.warning(f"Failed to stream video bytes ({exc}); trying path playback.")
+            st.video(playable_video_path)
+    else:
+        st.warning(f"Video playback unavailable in browser player: {video_err}")
+
+    with st.expander("Animated fallback preview (GIF)", expanded=not bool(playable_video_path)):
+        gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
+        if gif_bytes:
+            st.image(gif_bytes, caption="Animated fallback preview", use_column_width=True)
+        else:
+            st.caption(f"GIF fallback unavailable: {gif_err}")
+
+    with st.expander("Source frame fallback viewer", expanded=not bool(playable_video_path)):
+        src_idx = st.slider(
+            "Source frame",
+            min_value=0,
+            max_value=len(result["full_frames"]) - 1,
+            value=int(np.clip(result["pred_ed_orig"], 0, len(result["full_frames"]) - 1)),
+            key="source_video_frame_slider",
+        )
+        src_frame, src_idx = _frame_from_list(result["full_frames"], src_idx)
+        if src_frame is not None:
+            st.image(src_frame, caption=f"Source frame {src_idx}", use_column_width=True)
 
     st.subheader("Key Metrics")
     c1, c2, c3, c4 = st.columns(4)
