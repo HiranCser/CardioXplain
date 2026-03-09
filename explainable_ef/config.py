@@ -1,4 +1,4 @@
-﻿import torch
+import torch
 import os
 
 # Data configuration
@@ -22,6 +22,9 @@ PHASE_SOFT_RADIUS = 4  # Optional radius for soft target support; <=0 means no c
 PHASE_HARD_INDEX_WEIGHT = 0.5  # Mix hard CE with soft index loss when soft targets are enabled
 PHASE_FRAME_CE_WEIGHT = 0.35  # Mix ratio for frame-wise CE in phase loss
 PHASE_FRAME_RADIUS = 2  # Radius around ED/ES used for frame-wise supervision
+PHASE_ATTN_ALIGN_WEIGHT = 0.25  # Extra loss weight to align Stage2 temporal attention around ED/ES
+PHASE_ATTN_ALIGN_SIGMA = 2.0  # Gaussian sigma for attention alignment targets
+PHASE_ATTN_ALIGN_RADIUS = 5  # Optional support radius for attention alignment targets
 PHASE_UNFREEZE_LR_MULT = 0.5  # Multiply LR when unfreezing stage1 in phase-only mode
 PHASE_TEMPORAL_WINDOW_MODE = "full"  # "full" (entire clip) or "tracing" (crop around traced ED/ES)
 PHASE_TEMPORAL_WINDOW_MARGIN_MULT = 1.5  # Extra margin (in ED-ES span units) on both sides in tracing mode

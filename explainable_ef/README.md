@@ -58,6 +58,8 @@ python model_execution.py --train-stage123 --no-phase-only
 
 This now trains Stage 1/2/3 jointly and keeps EF loss enabled.
 
+`--train-stage123` now also applies phase-friendly defaults unless explicitly overridden: tracing window sampling, higher phase loss weight, and Stage2 attention-alignment loss.
+
 ### B) Phase-only Stage 1+2+3
 
 ```powershell
@@ -197,6 +199,9 @@ Run any script with `--help` for the latest values/defaults.
 - `--phase-hard-index-weight PHASE_HARD_INDEX_WEIGHT`
 - `--phase-frame-ce-weight PHASE_FRAME_CE_WEIGHT`
 - `--phase-frame-radius PHASE_FRAME_RADIUS`
+- `--phase-attn-align-weight PHASE_ATTN_ALIGN_WEIGHT`
+- `--phase-attn-align-sigma PHASE_ATTN_ALIGN_SIGMA`
+- `--phase-attn-align-radius PHASE_ATTN_ALIGN_RADIUS`
 - `--phase-unfreeze-lr-mult PHASE_UNFREEZE_LR_MULT`
 - `--weight-decay WEIGHT_DECAY`
 - `--max-grad-norm MAX_GRAD_NORM`

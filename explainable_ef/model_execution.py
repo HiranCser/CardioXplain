@@ -54,6 +54,9 @@ def parse_args(argv=None):
     parser.add_argument("--phase-hard-index-weight", type=float, default=None, help="Override config.PHASE_HARD_INDEX_WEIGHT")
     parser.add_argument("--phase-frame-ce-weight", type=float, default=None, help="Override config.PHASE_FRAME_CE_WEIGHT")
     parser.add_argument("--phase-frame-radius", type=int, default=None, help="Override config.PHASE_FRAME_RADIUS")
+    parser.add_argument("--phase-attn-align-weight", type=float, default=None, help="Override config.PHASE_ATTN_ALIGN_WEIGHT")
+    parser.add_argument("--phase-attn-align-sigma", type=float, default=None, help="Override config.PHASE_ATTN_ALIGN_SIGMA")
+    parser.add_argument("--phase-attn-align-radius", type=int, default=None, help="Override config.PHASE_ATTN_ALIGN_RADIUS")
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
@@ -122,6 +125,12 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_FRAME_CE_WEIGHT"] = args.phase_frame_ce_weight
     if args.phase_frame_radius is not None:
         overrides["PHASE_FRAME_RADIUS"] = args.phase_frame_radius
+    if args.phase_attn_align_weight is not None:
+        overrides["PHASE_ATTN_ALIGN_WEIGHT"] = args.phase_attn_align_weight
+    if args.phase_attn_align_sigma is not None:
+        overrides["PHASE_ATTN_ALIGN_SIGMA"] = args.phase_attn_align_sigma
+    if args.phase_attn_align_radius is not None:
+        overrides["PHASE_ATTN_ALIGN_RADIUS"] = args.phase_attn_align_radius
     if args.phase_unfreeze_lr_mult is not None:
         overrides["PHASE_UNFREEZE_LR_MULT"] = args.phase_unfreeze_lr_mult
     if args.weight_decay is not None:
@@ -138,9 +147,19 @@ def apply_runtime_overrides(args, logger):
     if bool(getattr(args, "train_stage123", False)):
         logger.info("Enabled Stage1-3 end-to-end training profile (joint EF + phase)")
         # Stage1/2/3 should train jointly without disabling EF regression.
-        # Respect explicit --phase-only/--no-phase-only if user provided it.
+        # Respect explicit CLI values when present.
         if args.phase_only is None:
             overrides["PHASE_ONLY"] = False
+        if args.phase_loss_weight is None:
+            overrides["PHASE_LOSS_WEIGHT"] = 1.0
+        if args.phase_temporal_window_mode is None:
+            overrides["PHASE_TEMPORAL_WINDOW_MODE"] = "tracing"
+        if args.phase_temporal_window_margin_mult is None:
+            overrides["PHASE_TEMPORAL_WINDOW_MARGIN_MULT"] = 1.0
+        if args.phase_temporal_window_jitter_mult is None:
+            overrides["PHASE_TEMPORAL_WINDOW_JITTER_MULT"] = 0.03
+        if args.phase_attn_align_weight is None:
+            overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.35
         overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = 0
 
     for key, value in overrides.items():
@@ -156,6 +175,16 @@ def apply_runtime_overrides(args, logger):
         elif jitter_value > 0.10:
             setattr(config, jitter_key, 0.10)
             logger.warning("Clamped %s from %.3f to 0.100 to avoid over-augmentation", jitter_key, jitter_value)
+
+    attn_align_key = "PHASE_ATTN_ALIGN_WEIGHT"
+    if hasattr(config, attn_align_key):
+        attn_align_value = float(getattr(config, attn_align_key, 0.0))
+        if attn_align_value < 0.0:
+            setattr(config, attn_align_key, 0.0)
+            logger.warning("Clamped %s from %.3f to 0.000", attn_align_key, attn_align_value)
+        elif attn_align_value > 2.0:
+            setattr(config, attn_align_key, 2.0)
+            logger.warning("Clamped %s from %.3f to 2.000", attn_align_key, attn_align_value)
 
     return overrides
 
@@ -436,6 +465,37 @@ def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
     return targets
 
 
+def compute_attention_alignment_loss(attention, ed_idx, es_idx):
+    """KL alignment between Stage2 attention weights and ED/ES-centered soft targets."""
+    if attention is None:
+        return torch.zeros((), device=ed_idx.device)
+
+    attn = attention
+    if attn.ndim == 3 and attn.shape[-1] == 1:
+        attn = attn.squeeze(-1)
+
+    if attn.ndim != 2 or attn.shape[1] <= 0:
+        return torch.zeros((), device=ed_idx.device)
+
+    attn = attn.float()
+    attn = attn / attn.sum(dim=1, keepdim=True).clamp_min(1e-8)
+
+    sigma = float(getattr(config, "PHASE_ATTN_ALIGN_SIGMA", 0.0))
+    if sigma <= 0.0:
+        sigma = max(0.5, float(getattr(config, "PHASE_SOFT_SIGMA", 1.5)))
+
+    radius = int(getattr(config, "PHASE_ATTN_ALIGN_RADIUS", int(getattr(config, "PHASE_SOFT_RADIUS", 0))))
+    num_frames = attn.shape[1]
+
+    ed_target = build_soft_temporal_targets(ed_idx, num_frames, attn.device, sigma, radius)
+    es_target = build_soft_temporal_targets(es_idx, num_frames, attn.device, sigma, radius)
+
+    target = 0.5 * (ed_target + es_target)
+    target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-8)
+
+    return F.kl_div(torch.log(attn.clamp_min(1e-8)), target, reduction="batchmean")
+
+
 def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
     """
     Train phase detection as two temporal index tasks:
@@ -629,8 +689,8 @@ def evaluate(model, loader, amp_enabled):
                     stage2_feat_count += batch_size
 
             # Stage 3: ED/ES index CE (diagnostic only)
-            ed_ce = F.cross_entropy(phase_logits[:, :, 0], ed_idx, reduction="sum")
-            es_ce = F.cross_entropy(phase_logits[:, :, 1], es_idx, reduction="sum")
+            ed_ce = F.cross_entropy(phase_logits[:, :, 1], ed_idx, reduction="sum")
+            es_ce = F.cross_entropy(phase_logits[:, :, 2], es_idx, reduction="sum")
             stage3_ed_ce_sum += ed_ce.item()
             stage3_es_ce_sum += es_ce.item()
 
@@ -685,6 +745,7 @@ def train_one_epoch(
 
     num_batches = len(loader)
     phase_only = is_phase_only_mode()
+    attn_align_weight = max(0.0, float(getattr(config, "PHASE_ATTN_ALIGN_WEIGHT", 0.0)))
 
     for batch_idx, (videos, efs, ed_idx, es_idx) in enumerate(loader):
         data_time += time.perf_counter() - loop_end
@@ -709,8 +770,9 @@ def train_one_epoch(
                 es_idx=es_idx,
                 phase_index_loss_fn=phase_index_loss_fn,
             )
+            attn_align_loss = compute_attention_alignment_loss(attention, ed_idx, es_idx)
 
-            loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
+            loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss + attn_align_weight * attn_align_loss
             loss_for_backward = loss / accumulation_steps
 
         if amp_enabled:
@@ -739,7 +801,7 @@ def train_one_epoch(
         if batch_idx == 0:
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
             logger.info(
-                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | AttnAlign %.4f (w=%.3f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 ef_loss.item(),
@@ -747,6 +809,8 @@ def train_one_epoch(
                 ed_phase_loss.item(),
                 es_phase_loss.item(),
                 frame_phase_loss.item(),
+                attn_align_loss.item(),
+                attn_align_weight,
                 ed_idx[0].item(),
                 es_idx[0].item(),
                 pred_ed_idx[0].item(),
@@ -878,6 +942,9 @@ def log_header(logger, amp_enabled):
     logger.info("Phase soft radius: %d", int(getattr(config, "PHASE_SOFT_RADIUS", 0)))
     logger.info("Phase frame CE weight: %.3f", float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0)))
     logger.info("Phase frame radius: %d", int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
+    logger.info("Phase attn align weight: %.3f", float(getattr(config, "PHASE_ATTN_ALIGN_WEIGHT", 0.0)))
+    logger.info("Phase attn align sigma: %.3f", float(getattr(config, "PHASE_ATTN_ALIGN_SIGMA", 0.0)))
+    logger.info("Phase attn align radius: %d", int(getattr(config, "PHASE_ATTN_ALIGN_RADIUS", 0)))
     logger.info("Phase hard index weight: %.3f", float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0)))
     logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
     logger.info("Weight decay: %s", getattr(config, "WEIGHT_DECAY", 0.0))
@@ -897,11 +964,15 @@ def main(argv=None):
     model, optimizer, mse_loss, phase_index_loss_fn, amp_enabled, scaler = build_model_stack(logger)
 
     phase_only = is_phase_only_mode()
+    train_stage123_mode = bool(getattr(args, "train_stage123", False))
     freeze_epochs = max(0, int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
 
     if phase_only:
         best_monitor = -float("inf")
         monitor_name = "phase_score_joint_minus_mae"
+    elif train_stage123_mode:
+        best_monitor = -float("inf")
+        monitor_name = "stage123_joint_score"
     else:
         best_monitor = float("inf")
         monitor_name = "ef_mae"
@@ -922,7 +993,7 @@ def main(argv=None):
     if protect_checkpoint_enabled:
         baseline_monitor = load_existing_monitor_baseline(logger, expected_monitor_name=monitor_name)
         if baseline_monitor is not None:
-            if phase_only:
+            if phase_only or train_stage123_mode:
                 best_monitor = max(best_monitor, baseline_monitor)
             else:
                 best_monitor = min(best_monitor, baseline_monitor)
@@ -982,6 +1053,27 @@ def main(argv=None):
                     val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
                 )
                 current_monitor = phase_score
+                improved = current_monitor > best_monitor
+            elif train_stage123_mode:
+                logger.info(
+                    "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%% | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%% | Val ED/ES MAE(fr): %.3f / %.3f",
+                    epoch + 1,
+                    config.EPOCHS,
+                    train_metrics["train_loss"],
+                    val_metrics["ef_mae"] * 100,
+                    val_metrics["ef_rmse"] * 100,
+                    val_metrics["ed_acc"] * 100,
+                    val_metrics["es_acc"] * 100,
+                    val_metrics["joint_acc"] * 100,
+                    val_metrics["ed_mae_frames"],
+                    val_metrics["es_mae_frames"],
+                )
+
+                phase_score = val_metrics["joint_acc"] - 0.01 * (
+                    val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
+                )
+                ef_score = 1.0 - val_metrics["ef_mae"]
+                current_monitor = 0.65 * phase_score + 0.35 * ef_score
                 improved = current_monitor > best_monitor
             else:
                 logger.info(
