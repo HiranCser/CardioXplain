@@ -7,6 +7,7 @@ import time
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
@@ -25,6 +26,7 @@ from pipeline.stage67_similarity import (
     confusion_matrix_np,
     ef_to_severity_label,
     macro_f1_np,
+    softmax_np,
 )
 
 
@@ -42,8 +44,25 @@ FEATURE_COLUMNS = [
 ]
 
 
+class Stage6MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim=64, dropout=0.1, n_classes=3):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), int(n_classes)),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train Stage6 similarity and Stage7 uncertainty calibration using Stage1-5 outputs.")
+    parser = argparse.ArgumentParser(description="Train Stage6 similarity/MLP and Stage7 uncertainty calibration using Stage1-5 outputs.")
     parser.add_argument("--data-dir", type=str, default=config.DATA_DIR)
     parser.add_argument("--stage123-checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model.pth"))
     parser.add_argument("--num-frames", type=int, default=int(getattr(config, "NUM_FRAMES", 32)))
@@ -55,6 +74,17 @@ def parse_args():
     parser.add_argument("--temporal-window-mode", type=str, choices=["full", "tracing"], default="tracing")
     parser.add_argument("--temporal-window-margin-mult", type=float, default=1.0)
     parser.add_argument("--save-per-split-csv", action=argparse.BooleanOptionalAction, default=True)
+
+    parser.add_argument("--stage6-backend", type=str, choices=["similarity", "mlp"], default="similarity")
+    parser.add_argument("--stage6-mlp-hidden-dim", type=int, default=64)
+    parser.add_argument("--stage6-mlp-dropout", type=float, default=0.1)
+    parser.add_argument("--stage6-mlp-epochs", type=int, default=80)
+    parser.add_argument("--stage6-mlp-batch-size", type=int, default=128)
+    parser.add_argument("--stage6-mlp-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--stage6-mlp-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--stage6-mlp-patience", type=int, default=10)
+    parser.add_argument("--stage6-mlp-label-smoothing", type=float, default=0.0)
+    parser.add_argument("--stage6-mlp-log-every", type=int, default=10)
     return parser.parse_args()
 
 
@@ -93,7 +123,6 @@ def _build_frame_area_lookup(data_dir):
         if file_name_ext in dims_map:
             h, w = dims_map[file_name_ext]
         else:
-            # Conservative fallback if file list metadata is missing.
             max_x = float(max(grp["X1"].max(), grp["X2"].max()))
             max_y = float(max(grp["Y1"].max(), grp["Y2"].max()))
             w = int(max(2, np.ceil(max_x + 2)))
@@ -307,6 +336,120 @@ def _attach_predictions(df, probs_raw, probs_cal, pred_raw, pred_cal, ef_fused, 
     return out
 
 
+def _predict_logits_mlp(model, x_np, device, batch_size=4096):
+    model.eval()
+    outs = []
+    x_t = torch.from_numpy(np.asarray(x_np, dtype=np.float32))
+    with torch.no_grad():
+        for i in range(0, x_t.shape[0], int(batch_size)):
+            xb = x_t[i : i + int(batch_size)].to(device)
+            logits = model(xb)
+            outs.append(logits.detach().cpu())
+    if not outs:
+        return np.zeros((0, 3), dtype=np.float64)
+    return torch.cat(outs, dim=0).numpy().astype(np.float64)
+
+
+def _train_stage6_mlp(x_train, y_train, x_val, y_val, args, device):
+    input_dim = int(x_train.shape[1])
+    model = Stage6MLP(
+        input_dim=input_dim,
+        hidden_dim=int(args.stage6_mlp_hidden_dim),
+        dropout=float(args.stage6_mlp_dropout),
+        n_classes=3,
+    ).to(device)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(args.stage6_mlp_learning_rate),
+        weight_decay=float(args.stage6_mlp_weight_decay),
+    )
+    criterion = nn.CrossEntropyLoss(label_smoothing=float(max(0.0, args.stage6_mlp_label_smoothing)))
+
+    x_train_t = torch.from_numpy(np.asarray(x_train, dtype=np.float32).copy())
+    y_train_t = torch.from_numpy(np.asarray(y_train, dtype=np.int64).copy())
+    x_val_t = torch.from_numpy(np.asarray(x_val, dtype=np.float32).copy()).to(device)
+    y_val_t = torch.from_numpy(np.asarray(y_val, dtype=np.int64).copy()).to(device)
+
+    best_state = None
+    best_val_loss = float("inf")
+    best_epoch = 0
+    bad_epochs = 0
+
+    batch_size = int(max(8, args.stage6_mlp_batch_size))
+    n_train = int(x_train_t.shape[0])
+
+    history = []
+
+    for epoch in range(1, int(args.stage6_mlp_epochs) + 1):
+        model.train()
+        perm = torch.randperm(n_train)
+
+        train_loss_sum = 0.0
+        train_seen = 0
+
+        for i in range(0, n_train, batch_size):
+            idx = perm[i : i + batch_size]
+            xb = x_train_t[idx].to(device)
+            yb = y_train_t[idx].to(device)
+
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+
+            bs = int(xb.shape[0])
+            train_loss_sum += float(loss.item()) * bs
+            train_seen += bs
+
+        train_loss = train_loss_sum / max(1, train_seen)
+
+        model.eval()
+        with torch.no_grad():
+            val_logits = model(x_val_t)
+            val_loss = float(criterion(val_logits, y_val_t).item())
+            val_pred = torch.argmax(val_logits, dim=1).detach().cpu().numpy()
+            val_acc = accuracy_np(val_pred, y_val)
+            val_f1 = macro_f1_np(val_pred, y_val)
+
+        history.append(
+            {
+                "epoch": int(epoch),
+                "train_loss": float(train_loss),
+                "val_loss": float(val_loss),
+                "val_acc": float(val_acc),
+                "val_f1": float(val_f1),
+            }
+        )
+
+        if epoch == 1 or epoch % int(max(1, args.stage6_mlp_log_every)) == 0:
+            print(
+                f"Stage6-MLP epoch {epoch:03d}/{int(args.stage6_mlp_epochs)} | "
+                f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | val_acc={val_acc*100:.2f}% | val_f1={val_f1:.4f}"
+            )
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_epoch = int(epoch)
+            bad_epochs = 0
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            bad_epochs += 1
+            if bad_epochs >= int(max(1, args.stage6_mlp_patience)):
+                print(f"Stage6-MLP early stopping at epoch {epoch} (best epoch={best_epoch}, val_loss={best_val_loss:.4f})")
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    return model, {
+        "best_epoch": int(best_epoch),
+        "best_val_loss": float(best_val_loss),
+        "history": history,
+    }
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -327,6 +470,7 @@ def main():
     print(f"Temporal window: {args.temporal_window_mode} (margin={args.temporal_window_margin_mult})")
     print(f"Max videos per split: {args.max_videos if args.max_videos else 'All'}")
     print(f"Severity thresholds: severe<{args.severe_threshold}, normal>={args.normal_threshold}")
+    print(f"Stage6 backend: {args.stage6_backend}")
     print(f"Output dir: {os.path.abspath(args.output_dir)}")
     print("=" * 96)
 
@@ -356,16 +500,61 @@ def main():
     y_val = val_df["severity_label"].to_numpy(dtype=np.int64)
     y_test = test_df["severity_label"].to_numpy(dtype=np.int64)
 
-    stage6 = Stage6SimilarityEngine()
-    stage6.fit(x_train, y_train)
+    stage6_artifact = None
+    stage6_extra = {}
 
-    logits_train = stage6.predict_logits(x_train)
-    logits_val = stage6.predict_logits(x_val)
-    logits_test = stage6.predict_logits(x_test)
+    if str(args.stage6_backend) == "similarity":
+        stage6 = Stage6SimilarityEngine()
+        stage6.fit(x_train, y_train)
 
-    probs_train_raw = stage6.predict_proba(x_train, temperature=1.0)
-    probs_val_raw = stage6.predict_proba(x_val, temperature=1.0)
-    probs_test_raw = stage6.predict_proba(x_test, temperature=1.0)
+        logits_train = stage6.predict_logits(x_train)
+        logits_val = stage6.predict_logits(x_val)
+        logits_test = stage6.predict_logits(x_test)
+
+        probs_train_raw = stage6.predict_proba(x_train, temperature=1.0)
+        probs_val_raw = stage6.predict_proba(x_val, temperature=1.0)
+        probs_test_raw = stage6.predict_proba(x_test, temperature=1.0)
+
+        stage6_npz = os.path.join(args.output_dir, "stage6_similarity_engine.npz")
+        stage6.save_npz(stage6_npz)
+        stage6_artifact = stage6_npz
+    else:
+        stage6_mlp, mlp_info = _train_stage6_mlp(
+            x_train=x_train,
+            y_train=y_train,
+            x_val=x_val,
+            y_val=y_val,
+            args=args,
+            device=device,
+        )
+
+        logits_train = _predict_logits_mlp(stage6_mlp, x_train, device=device)
+        logits_val = _predict_logits_mlp(stage6_mlp, x_val, device=device)
+        logits_test = _predict_logits_mlp(stage6_mlp, x_test, device=device)
+
+        probs_train_raw = softmax_np(logits_train, temperature=1.0)
+        probs_val_raw = softmax_np(logits_val, temperature=1.0)
+        probs_test_raw = softmax_np(logits_test, temperature=1.0)
+
+        stage6_pth = os.path.join(args.output_dir, "stage6_mlp_model.pth")
+        torch.save(
+            {
+                "model_state_dict": stage6_mlp.state_dict(),
+                "input_dim": int(x_train.shape[1]),
+                "hidden_dim": int(args.stage6_mlp_hidden_dim),
+                "dropout": float(args.stage6_mlp_dropout),
+                "feature_columns": FEATURE_COLUMNS,
+                "train_args": vars(args),
+                "best_epoch": int(mlp_info["best_epoch"]),
+                "best_val_loss": float(mlp_info["best_val_loss"]),
+            },
+            stage6_pth,
+        )
+        stage6_artifact = stage6_pth
+        stage6_extra = {
+            "mlp_best_epoch": int(mlp_info["best_epoch"]),
+            "mlp_best_val_loss": float(mlp_info["best_val_loss"]),
+        }
 
     pred_train_raw = np.argmax(probs_train_raw, axis=1)
     pred_val_raw = np.argmax(probs_val_raw, axis=1)
@@ -410,6 +599,11 @@ def main():
     )
 
     metrics = {
+        "stage6": {
+            "backend": str(args.stage6_backend),
+            "artifact": os.path.abspath(stage6_artifact) if stage6_artifact else None,
+            **stage6_extra,
+        },
         "train": {
             "stage6_acc_raw": accuracy_np(pred_train_raw, y_train),
             "stage6_macro_f1_raw": macro_f1_np(pred_train_raw, y_train),
@@ -461,9 +655,6 @@ def main():
         },
     }
 
-    stage6_npz = os.path.join(args.output_dir, "stage6_similarity_engine.npz")
-    stage6.save_npz(stage6_npz)
-
     stage7_json = os.path.join(args.output_dir, "stage7_calibration.json")
     stage7.save_json(stage7_json)
 
@@ -494,6 +685,8 @@ def main():
     print("=" * 96)
     print("STAGE 6/7 SUMMARY")
     print("=" * 96)
+    print(f"Stage6 backend: {metrics['stage6']['backend']}")
+    print(f"Stage6 artifact: {metrics['stage6']['artifact']}")
     print(
         f"VAL Stage6 acc raw/cal: {metrics['val']['stage6_acc_raw']*100:.2f}% / {metrics['val']['stage6_acc_cal']*100:.2f}% | "
         f"macro-F1 raw/cal: {metrics['val']['stage6_macro_f1_raw']:.4f} / {metrics['val']['stage6_macro_f1_cal']:.4f}"
@@ -519,3 +712,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -374,3 +374,46 @@ Run any script with `--help` for the latest values/defaults.
 - Stage 4 tracing-to-mask logic is aligned with EchoNet contour construction from `VolumeTracings.csv`.
 - Stage 4 area validation is exported at both frame and video level.
 - For reproducibility, keep one config profile per experiment and log CLI overrides used for that run.
+
+## 7. Update: Stage5 Predicted-Mask Mode + Stage6 MLP Backend
+
+### Stage5 from learned Stage4 masks
+
+Use this after Stage4 training to evaluate EF using **predicted segmentation masks** instead of tracing-only baseline:
+
+```powershell
+python pipeline\run_stage45_from_tracings.py --split VAL --mode predicted_masks --stage4-checkpoint best_stage4_segmentation.pth --eval-threshold 0.5 --max-videos 25 --save-overlays
+```
+
+Tracing baseline remains available:
+
+```powershell
+python pipeline\run_stage45_from_tracings.py --split VAL --mode tracing --max-videos 25 --save-overlays
+```
+
+### Stage6 backend options
+
+Prototype backend (default):
+
+```powershell
+python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32 --stage6-backend similarity
+```
+
+Trainable MLP backend (creates `.pth` artifact):
+
+```powershell
+python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32 --stage6-backend mlp --stage6-mlp-epochs 80 --stage6-mlp-hidden-dim 64
+```
+
+Artifacts:
+- similarity backend: `validation/outputs/stage67/stage6_similarity_engine.npz`
+- MLP backend: `validation/outputs/stage67/stage6_mlp_model.pth`
+- calibration: `validation/outputs/stage67/stage7_calibration.json`
+
+### Orchestrator flags
+
+`train_all_stages.py` now supports:
+- `--stage5-mode tracing|predicted_masks` (default `predicted_masks`)
+- `--stage5-stage4-checkpoint ...`
+- `--stage67-backend similarity|mlp`
+- `--stage67-mlp-*` training flags

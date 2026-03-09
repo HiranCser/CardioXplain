@@ -50,11 +50,30 @@ def parse_args():
 
     parser.add_argument("--stage5-max-videos", type=int, default=0, help="0 means all videos")
     parser.add_argument("--stage5-save-overlays", action="store_true")
+    parser.add_argument(
+        "--stage5-mode",
+        type=str,
+        choices=["tracing", "predicted_masks"],
+        default="predicted_masks",
+        help="tracing baseline or learned Stage4 mask-based EF evaluation",
+    )
+    parser.add_argument("--stage5-stage4-checkpoint", type=str, default=None, help="Defaults to --stage4-checkpoint")
+    parser.add_argument("--stage5-stage4-model-name", type=str, default="deeplabv3_resnet50")
+    parser.add_argument("--stage5-stage4-base-channels", type=int, default=32)
+    parser.add_argument("--stage5-eval-threshold", type=float, default=0.5)
 
     parser.add_argument("--stage67-output-dir", type=str, default=os.path.join("validation", "outputs", "stage67"))
     parser.add_argument("--stage67-max-videos", type=int, default=None)
     parser.add_argument("--stage67-normal-threshold", type=float, default=50.0)
     parser.add_argument("--stage67-severe-threshold", type=float, default=30.0)
+    parser.add_argument("--stage67-backend", type=str, choices=["similarity", "mlp"], default="similarity")
+    parser.add_argument("--stage67-mlp-hidden-dim", type=int, default=64)
+    parser.add_argument("--stage67-mlp-dropout", type=float, default=0.1)
+    parser.add_argument("--stage67-mlp-epochs", type=int, default=80)
+    parser.add_argument("--stage67-mlp-batch-size", type=int, default=128)
+    parser.add_argument("--stage67-mlp-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--stage67-mlp-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--stage67-mlp-patience", type=int, default=10)
 
     parser.add_argument("--device", type=str, default=None, help="Optional device override propagated to stage scripts")
     return parser.parse_args()
@@ -133,21 +152,42 @@ def main():
     else:
         print("Skipping Stage4 training")
 
-    # Stage 5 (deterministic EF computation from tracings)
+    # Stage 5
     if not args.skip_stage5:
+        stage5_ckpt = args.stage5_stage4_checkpoint if args.stage5_stage4_checkpoint else args.stage4_checkpoint
+
         for split in ("VAL", "TEST"):
             cmd = [
                 python_bin,
                 os.path.join(ROOT_DIR, "pipeline", "run_stage45_from_tracings.py"),
                 "--split",
                 split,
+                "--mode",
+                str(args.stage5_mode),
                 "--output-dir",
                 os.path.join("validation", "outputs", "stage45", split.lower()),
             ]
+
+            if args.data_dir is not None:
+                cmd += ["--data-dir", str(args.data_dir)]
             if args.stage5_max_videos and int(args.stage5_max_videos) > 0:
                 cmd += ["--max-videos", str(args.stage5_max_videos)]
             if args.stage5_save_overlays:
                 cmd += ["--save-overlays"]
+
+            if str(args.stage5_mode) == "predicted_masks":
+                cmd += [
+                    "--stage4-checkpoint",
+                    str(stage5_ckpt),
+                    "--stage4-model-name",
+                    str(args.stage5_stage4_model_name),
+                    "--stage4-base-channels",
+                    str(args.stage5_stage4_base_channels),
+                    "--eval-threshold",
+                    str(args.stage5_eval_threshold),
+                ]
+                if args.device is not None:
+                    cmd += ["--device", str(args.device)]
 
             _run_step(f"Stage5 evaluation ({split})", cmd)
     else:
@@ -166,6 +206,8 @@ def main():
             str(args.stage67_normal_threshold),
             "--severe-threshold",
             str(args.stage67_severe_threshold),
+            "--stage6-backend",
+            str(args.stage67_backend),
         ]
 
         if args.data_dir is not None:
@@ -176,6 +218,24 @@ def main():
             cmd += ["--max-videos", str(args.stage67_max_videos)]
         if args.device is not None:
             cmd += ["--device", str(args.device)]
+
+        if str(args.stage67_backend) == "mlp":
+            cmd += [
+                "--stage6-mlp-hidden-dim",
+                str(args.stage67_mlp_hidden_dim),
+                "--stage6-mlp-dropout",
+                str(args.stage67_mlp_dropout),
+                "--stage6-mlp-epochs",
+                str(args.stage67_mlp_epochs),
+                "--stage6-mlp-batch-size",
+                str(args.stage67_mlp_batch_size),
+                "--stage6-mlp-learning-rate",
+                str(args.stage67_mlp_learning_rate),
+                "--stage6-mlp-weight-decay",
+                str(args.stage67_mlp_weight_decay),
+                "--stage6-mlp-patience",
+                str(args.stage67_mlp_patience),
+            ]
 
         _run_step("Stage6-7 training", cmd)
     else:
