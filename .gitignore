@@ -22,3 +22,7 @@ explainable_ef/best_model_phasefix_temporal_smoke.pth
 dynamic
 explainable_ef/ui/.video_cache/*
 trainnigs/stage123/training_logs.txt
+trained_models/best_model.pth
+trained_models/best_stage4_segmentation.pth
+explainable_ef/best_stage4_segmentation.pth
+trainnigs/all_stages_skipped_stage123_training/training_logs.txt
