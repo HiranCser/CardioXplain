@@ -26,6 +26,15 @@ from pipeline.stage45_pipeline import Stage45Pipeline
 
 
 st.set_page_config(page_title="CardioXplain Stage Dashboard", layout="wide")
+PREVIEW_MAX_WIDTH = 420
+PREVIEW_DISPLAY_WIDTH = 400
+FRAME_DISPLAY_WIDTH = 360
+
+
+def _render_centered_image(image_data, caption, width=PREVIEW_DISPLAY_WIDTH):
+    _left_col, preview_col, _right_col = st.columns([1.6, 2.0, 1.6])
+    with preview_col:
+        st.image(image_data, caption=caption, width=width)
 
 
 def _abs_path(path_value):
@@ -229,7 +238,7 @@ def _prepare_browser_video(video_path):
 
 
 @st.cache_data(show_spinner=False)
-def _prepare_gif_preview(video_path, max_frames=120, max_width=640):
+def _prepare_gif_preview(video_path, max_frames=120, max_width=PREVIEW_MAX_WIDTH):
     """Build an animated GIF fallback preview for browsers with video codec issues."""
     try:
         from PIL import Image
@@ -290,7 +299,7 @@ def _prepare_gif_preview(video_path, max_frames=120, max_width=640):
     return buff.getvalue(), ""
 
 
-def _prepare_segmentation_gif(full_frames, model4, meta4, device, max_frames=80, max_width=640):
+def _prepare_segmentation_gif(full_frames, model4, meta4, device, max_frames=80, max_width=PREVIEW_MAX_WIDTH):
     try:
         from PIL import Image
     except Exception:
@@ -718,7 +727,7 @@ def run_case(
 
 
 def main():
-    st.title("CardioXplain: One-Page Stage Dashboard")
+    st.title("CardioXplain: Dashboard")
     st.caption("Select a test video, run Stage1-5 inference, and inspect stage-wise outputs + metrics.")
 
     default_stage123_ckpt = _abs_path(getattr(config, "CHECKPOINT_PATH", "best_model.pth"))
@@ -791,7 +800,7 @@ def main():
 
     gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
     if gif_bytes:
-        st.image(gif_bytes, caption="Animated source preview", use_container_width=True)
+        _render_centered_image(gif_bytes, "Animated source preview")
     else:
         st.caption(f"Animated preview unavailable: {gif_err}")
 
@@ -811,7 +820,7 @@ def main():
     st.subheader("Frames and Overlays")
     view_idx = st.slider("Inspect original frame", 0, len(result["full_frames"]) - 1, int(result["pred_ed_orig"]))
     frame_view, _ = _frame_from_list(result["full_frames"], view_idx)
-    st.image(frame_view, caption=f"Original frame {view_idx}", use_container_width=True)
+    _render_centered_image(frame_view, f"Original frame {view_idx}", width=FRAME_DISPLAY_WIDTH)
 
     st.subheader("Stage 4 + Stage 5")
     if not result["stage4"].get("enabled"):
@@ -828,12 +837,12 @@ def main():
         col_ed.image(
             _overlay_mask_rgb(pred_ed_frame_rgb, s4["pred_ed_mask"], color=(0, 255, 0), alpha=0.35),
             caption=f"Pred ED frame {s4['pred_ed_frame_idx']} + predicted mask",
-            use_container_width=True,
+            width=FRAME_DISPLAY_WIDTH,
         )
         col_es.image(
             _overlay_mask_rgb(pred_es_frame_rgb, s4["pred_es_mask"], color=(255, 165, 0), alpha=0.35),
             caption=f"Pred ES frame {s4['pred_es_frame_idx']} + predicted mask",
-            use_container_width=True,
+            width=FRAME_DISPLAY_WIDTH,
         )
 
         stage45_table = pd.DataFrame(
@@ -851,7 +860,7 @@ def main():
         st.dataframe(stage45_table, use_container_width=True, hide_index=True)
         seg_bytes = s4.get("seg_preview_gif")
         if seg_bytes:
-            st.image(seg_bytes, caption="Segmentation overlay animation", use_container_width=True)
+            _render_centered_image(seg_bytes, "Segmentation overlay animation")
         else:
             st.caption(s4.get("seg_preview_err", "Segmentation preview unavailable."))
 
