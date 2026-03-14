@@ -90,6 +90,10 @@ def parse_args():
 
 def _safe_entropy(weights):
     w = np.asarray(weights, dtype=np.float64)
+    if w.ndim == 2 and w.shape[1] > 0:
+        w = w.mean(axis=1)
+    else:
+        w = w.reshape(-1)
     if w.size <= 1:
         return 0.0
     w = np.clip(w, 1e-12, 1.0)
@@ -221,8 +225,12 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         ef_gt_pct = float(row["EF"])
 
         attn_np = attention[0].detach().cpu().numpy().astype(np.float64)
-        attn_peak = float(np.max(attn_np))
-        attn_entropy = _safe_entropy(attn_np)
+        if attn_np.ndim == 2 and attn_np.shape[1] > 0:
+            attn_for_metrics = attn_np.mean(axis=1)
+        else:
+            attn_for_metrics = attn_np.reshape(-1)
+        attn_peak = float(np.max(attn_for_metrics))
+        attn_entropy = _safe_entropy(attn_for_metrics)
 
         pred_ed_idx_t, pred_es_idx_t = Stage3PhaseDetector.predict_indices(phase_logits)
         pred_ed_idx = int(pred_ed_idx_t[0].item())

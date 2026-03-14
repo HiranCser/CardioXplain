@@ -290,6 +290,57 @@ def _prepare_gif_preview(video_path, max_frames=120, max_width=640):
     return buff.getvalue(), ""
 
 
+def _prepare_segmentation_gif(full_frames, model4, meta4, device, max_frames=80, max_width=640):
+    try:
+        from PIL import Image
+    except Exception:
+        return b"", "Pillow is not available for segmentation GIF preview."
+
+    if not full_frames:
+        return b"", "No frames available for segmentation preview."
+
+    stride = max(1, int(math.ceil(len(full_frames) / float(max_frames))))
+    pil_frames = []
+
+    for idx, frame_rgb in enumerate(full_frames):
+        if idx % stride != 0:
+            continue
+
+        mask, _ = _predict_mask_stage4(
+            model4,
+            frame_rgb,
+            image_size=int(meta4["image_size"]),
+            normalize_mode=meta4["normalize"],
+            pretrained_flag=bool(meta4.get("pretrained", False)),
+            device=device,
+        )
+        overlay = _overlay_mask_rgb(frame_rgb, mask, color=(0, 255, 0), alpha=0.35)
+
+        h, w = overlay.shape[:2]
+        if w > max_width:
+            scale = max_width / float(w)
+            overlay = cv2.resize(overlay, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
+
+        pil_frames.append(Image.fromarray(overlay))
+        if len(pil_frames) >= max_frames:
+            break
+
+    if not pil_frames:
+        return b"", "Could not build segmentation GIF preview."
+
+    buff = io.BytesIO()
+    pil_frames[0].save(
+        buff,
+        format="GIF",
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=80,
+        loop=0,
+        optimize=False,
+    )
+    return buff.getvalue(), ""
+
+
 @st.cache_data(show_spinner=False)
 def load_split_filelist(data_dir, split):
     filelist_path = os.path.join(data_dir, "FileList.csv")
@@ -578,6 +629,14 @@ def run_case(
                 )
 
                 ef_stage5_pred_pct = float(stage45.compute_ef_from_areas(pred_ed_area, pred_es_area) * 100.0)
+                seg_gif_bytes, seg_gif_err = _prepare_segmentation_gif(
+                    full_frames,
+                    model4,
+                    meta4,
+                    device,
+                    max_frames=80,
+                    max_width=640,
+                )
 
                 gt_mask_pred_ed = gt_masks.get(ed_frame_idx)
                 gt_mask_pred_es = gt_masks.get(es_frame_idx)
@@ -603,29 +662,20 @@ def run_case(
                     "dice_pred_ed": _dice(pred_ed_mask, gt_mask_pred_ed),
                     "dice_pred_es": _dice(pred_es_mask, gt_mask_pred_es),
                     "ef_stage5_pred_pct": ef_stage5_pred_pct,
+                    "seg_preview_gif": seg_gif_bytes,
+                    "seg_preview_err": seg_gif_err,
                 }
             except Exception as exc:
                 stage4_out["error"] = str(exc)
 
     explanation = []
-    tol = int(getattr(config, "TOLERANCE", 1))
-    if ed_err_sampled <= tol and es_err_sampled <= tol:
-        explanation.append(f"Stage3 is within tolerance (+/-{tol}) on sampled ED/ES indices.")
-    else:
-        explanation.append(
-            f"Stage3 misses tolerance (+/-{tol}): ED err={ed_err_sampled}, ES err={es_err_sampled} (sampled index)."
-        )
-
-    explanation.append(
-        f"Stage2 attention peak is at sampled frame {stage2_peak_idx} with weight {stage2_peak:.3f}; closest ED/ES distance is {stage2_peak_to_event:.2f} frames."
-    )
-
     if stage4_out.get("available"):
         explanation.append(
             f"Stage5 EF from Stage4 masks = {stage4_out['ef_stage5_pred_pct']:.2f}%. Compare with Stage1-3 EF head = {ef_pred_pct:.2f}% and GT EF = {ef_gt_pct:.2f}%."
         )
     else:
         explanation.append("Stage4/5 result unavailable (missing checkpoint or load error).")
+
 
     return {
         "video_path": video_path,
@@ -739,50 +789,17 @@ def main():
     st.subheader("Source Video")
     st.write(f"Path: `{result['video_path']}`")
 
-    playable_video_path, was_converted, video_err, video_mime = _prepare_browser_video(result["video_path"])
-    if playable_video_path:
-        if was_converted:
-            st.caption("Converted source video to browser-friendly MP4 preview.")
-        try:
-            with open(playable_video_path, "rb") as vf:
-                st.video(vf.read(), format=video_mime)
-        except Exception as exc:
-            st.warning(f"Failed to stream video bytes ({exc}); trying path playback.")
-            st.video(playable_video_path)
+    gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
+    if gif_bytes:
+        st.image(gif_bytes, caption="Animated source preview", use_container_width=True)
     else:
-        st.warning(f"Video playback unavailable in browser player: {video_err}")
-
-    with st.expander("Animated fallback preview (GIF)", expanded=not bool(playable_video_path)):
-        gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
-        if gif_bytes:
-            st.image(gif_bytes, caption="Animated fallback preview", use_container_width=True)
-        else:
-            st.caption(f"GIF fallback unavailable: {gif_err}")
-
-    with st.expander("Source frame fallback viewer", expanded=not bool(playable_video_path)):
-        src_idx = st.slider(
-            "Source frame",
-            min_value=0,
-            max_value=len(result["full_frames"]) - 1,
-            value=int(np.clip(result["pred_ed_orig"], 0, len(result["full_frames"]) - 1)),
-            key="source_video_frame_slider",
-        )
-        src_frame, src_idx = _frame_from_list(result["full_frames"], src_idx)
-        if src_frame is not None:
-            st.image(src_frame, caption=f"Source frame {src_idx}", use_container_width=True)
+        st.caption(f"Animated preview unavailable: {gif_err}")
 
     st.subheader("Key Metrics")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("GT EF (%)", f"{result['ef_gt_pct']:.2f}")
     c2.metric("Pred EF (%)", f"{result['ef_pred_pct']:.2f}")
     c3.metric("EF Abs Error (%)", f"{result['ef_abs_err_pct']:.2f}")
-    c4.metric("Stage2 Entropy", f"{result['stage2_entropy']:.3f}")
-
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("ED Error (sampled)", f"{result['ed_err_sampled']}")
-    c6.metric("ES Error (sampled)", f"{result['es_err_sampled']}")
-    c7.metric("Pred ED (orig frame)", f"{result['pred_ed_orig']}")
-    c8.metric("Pred ES (orig frame)", f"{result['pred_es_orig']}")
 
     st.subheader("Stage 1")
     s1c1, s1c2 = st.columns(2)
@@ -790,73 +807,6 @@ def main():
     s1c2.metric("Temporal Std", f"{result['stage1_temp_std']:.3f}")
     st.caption(f"Temporal tokens after Stage1 pooling (T'): {result['stage1_tokens']}")
 
-    st.subheader("Stage 2")
-    fig_attn = _make_attention_plot(
-        result["stage2_attention"],
-        result["gt_ed_idx"],
-        result["gt_es_idx"],
-        result["pred_ed_idx"],
-        result["pred_es_idx"],
-    )
-    st.pyplot(fig_attn)
-    plt.close(fig_attn)
-
-    st.write(
-        {
-            "peak_index": result["stage2_peak_idx"],
-            "peak_weight": round(result["stage2_peak"], 4),
-            "peak_to_nearest_event_frames": round(result["stage2_peak_to_event"], 3),
-        }
-    )
-
-    st.subheader("Stage 3")
-    fig_phase = _make_phase_plot(
-        result["phase_probs"],
-        result["gt_ed_idx"],
-        result["gt_es_idx"],
-        result["pred_ed_idx"],
-        result["pred_es_idx"],
-    )
-    st.pyplot(fig_phase)
-    plt.close(fig_phase)
-
-    s3_table = pd.DataFrame(
-        [
-            {
-                "metric": "GT ED idx (sampled)",
-                "value": result["gt_ed_idx"],
-            },
-            {
-                "metric": "GT ES idx (sampled)",
-                "value": result["gt_es_idx"],
-            },
-            {
-                "metric": "Pred ED idx (sampled)",
-                "value": result["pred_ed_idx"],
-            },
-            {
-                "metric": "Pred ES idx (sampled)",
-                "value": result["pred_es_idx"],
-            },
-            {
-                "metric": "ED abs err (sampled idx)",
-                "value": result["ed_err_sampled"],
-            },
-            {
-                "metric": "ES abs err (sampled idx)",
-                "value": result["es_err_sampled"],
-            },
-            {
-                "metric": "ED abs err (orig frame)",
-                "value": result["ed_err_orig"],
-            },
-            {
-                "metric": "ES abs err (orig frame)",
-                "value": result["es_err_orig"],
-            },
-        ]
-    )
-    st.dataframe(s3_table, use_container_width=True, hide_index=True)
 
     st.subheader("Frames and Overlays")
     view_idx = st.slider("Inspect original frame", 0, len(result["full_frames"]) - 1, int(result["pred_ed_orig"]))
@@ -899,6 +849,11 @@ def main():
             ]
         )
         st.dataframe(stage45_table, use_container_width=True, hide_index=True)
+        seg_bytes = s4.get("seg_preview_gif")
+        if seg_bytes:
+            st.image(seg_bytes, caption="Segmentation overlay animation", use_container_width=True)
+        else:
+            st.caption(s4.get("seg_preview_err", "Segmentation preview unavailable."))
 
     st.subheader("Auto Explanation")
     for line in result["explanation"]:

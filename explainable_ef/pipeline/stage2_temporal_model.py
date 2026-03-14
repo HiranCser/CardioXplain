@@ -9,7 +9,9 @@ class Stage2TemporalModel(nn.Module):
     def __init__(self, num_frames=32, feature_dim=512):
         super().__init__()
         self.num_frames = num_frames
+        # Keep legacy parameter name for checkpoint compatibility; treat as ED head.
         self.temporal_attention = nn.Linear(feature_dim, 1)
+        self.temporal_attention_es = nn.Linear(feature_dim, 1)
 
     def forward(self, stage1_features):
         # stage1_features: (B, 512, T')
@@ -22,9 +24,14 @@ class Stage2TemporalModel(nn.Module):
         # (B, 512, T) -> (B, T, 512)
         temporal_feats = temporal_feats.permute(0, 2, 1)
 
-        attn_scores = self.temporal_attention(temporal_feats)
-        attn_weights = torch.softmax(attn_scores, dim=1)
+        attn_scores_ed = self.temporal_attention(temporal_feats)
+        attn_scores_es = self.temporal_attention_es(temporal_feats)
+        attn_weights_ed = torch.softmax(attn_scores_ed, dim=1)
+        attn_weights_es = torch.softmax(attn_scores_es, dim=1)
+        attn_weights_pair = torch.cat([attn_weights_ed, attn_weights_es], dim=-1)
 
-        weighted_feats = temporal_feats * attn_weights
+        # Pool with mean attention so EF uses a single fused temporal context.
+        attn_weights_mean = attn_weights_pair.mean(dim=-1, keepdim=True)
+        weighted_feats = temporal_feats * attn_weights_mean
         pooled_feats = weighted_feats.sum(dim=1)
-        return temporal_feats, pooled_feats, attn_weights.squeeze(-1)
+        return temporal_feats, pooled_feats, attn_weights_pair

@@ -465,35 +465,51 @@ def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
     return targets
 
 
-def compute_attention_alignment_loss(attention, ed_idx, es_idx):
-    """KL alignment between Stage2 attention weights and ED/ES-centered soft targets."""
+def _attention_heads_and_summary(attention):
+    """Normalize attention to (B, T, H) heads plus a single summary curve (B, T)."""
     if attention is None:
+        return None, None
+
+    attn = attention.float()
+    if attn.ndim == 2:
+        attn_heads = attn.unsqueeze(-1)
+    elif attn.ndim == 3 and attn.shape[-1] > 0:
+        attn_heads = attn
+    else:
+        return None, None
+
+    attn_heads = attn_heads / attn_heads.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    attn_summary = attn_heads.mean(dim=-1)
+    attn_summary = attn_summary / attn_summary.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    return attn_heads, attn_summary
+
+
+def compute_attention_alignment_loss(attention, ed_idx, es_idx):
+    """KL alignment between Stage2 attention heads and ED/ES-centered soft targets."""
+    attn_heads, _ = _attention_heads_and_summary(attention)
+    if attn_heads is None:
         return torch.zeros((), device=ed_idx.device)
-
-    attn = attention
-    if attn.ndim == 3 and attn.shape[-1] == 1:
-        attn = attn.squeeze(-1)
-
-    if attn.ndim != 2 or attn.shape[1] <= 0:
-        return torch.zeros((), device=ed_idx.device)
-
-    attn = attn.float()
-    attn = attn / attn.sum(dim=1, keepdim=True).clamp_min(1e-8)
 
     sigma = float(getattr(config, "PHASE_ATTN_ALIGN_SIGMA", 0.0))
     if sigma <= 0.0:
         sigma = max(0.5, float(getattr(config, "PHASE_SOFT_SIGMA", 1.5)))
 
     radius = int(getattr(config, "PHASE_ATTN_ALIGN_RADIUS", int(getattr(config, "PHASE_SOFT_RADIUS", 0))))
-    num_frames = attn.shape[1]
+    num_frames = attn_heads.shape[1]
 
-    ed_target = build_soft_temporal_targets(ed_idx, num_frames, attn.device, sigma, radius)
-    es_target = build_soft_temporal_targets(es_idx, num_frames, attn.device, sigma, radius)
+    ed_target = build_soft_temporal_targets(ed_idx, num_frames, attn_heads.device, sigma, radius)
+    es_target = build_soft_temporal_targets(es_idx, num_frames, attn_heads.device, sigma, radius)
 
-    target = 0.5 * (ed_target + es_target)
-    target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    if attn_heads.shape[-1] >= 2:
+        ed_attn = attn_heads[:, :, 0]
+        es_attn = attn_heads[:, :, 1]
+        ed_kl = F.kl_div(torch.log(ed_attn.clamp_min(1e-8)), ed_target, reduction="batchmean")
+        es_kl = F.kl_div(torch.log(es_attn.clamp_min(1e-8)), es_target, reduction="batchmean")
+        return 0.5 * (ed_kl + es_kl)
 
-    return F.kl_div(torch.log(attn.clamp_min(1e-8)), target, reduction="batchmean")
+    merged_target = 0.5 * (ed_target + es_target)
+    merged_target = merged_target / merged_target.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    return F.kl_div(torch.log(attn_heads[:, :, 0].clamp_min(1e-8)), merged_target, reduction="batchmean")
 
 
 def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
@@ -645,29 +661,25 @@ def evaluate(model, loader, amp_enabled):
 
             # Stage 2: temporal attention diagnostics
             stage2_attention = stage_outputs.get("stage2_attention", attention)
-            if stage2_attention is not None:
-                attn = stage2_attention.float()
-                if attn.ndim == 3 and attn.shape[-1] == 1:
-                    attn = attn.squeeze(-1)
+            _attn_heads, attn = _attention_heads_and_summary(stage2_attention)
+            if attn is not None and attn.ndim == 2 and attn.shape[1] > 0:
+                peak_vals, peak_idx = attn.max(dim=1)
+                stage2_attn_peak_sum += peak_vals.sum().item()
 
-                if attn.ndim == 2 and attn.shape[1] > 0:
-                    peak_vals, peak_idx = attn.max(dim=1)
-                    stage2_attn_peak_sum += peak_vals.sum().item()
+                peak_to_event = torch.minimum(
+                    torch.abs(peak_idx - ed_idx),
+                    torch.abs(peak_idx - es_idx),
+                )
+                stage2_peak_to_event_sum += peak_to_event.sum().item()
 
-                    peak_to_event = torch.minimum(
-                        torch.abs(peak_idx - ed_idx),
-                        torch.abs(peak_idx - es_idx),
-                    )
-                    stage2_peak_to_event_sum += peak_to_event.sum().item()
-
-                    if attn.shape[1] > 1:
-                        attn_safe = torch.clamp(attn, min=1e-8)
-                        attn_entropy = -(attn_safe * torch.log(attn_safe)).sum(dim=1) / math.log(attn.shape[1])
-                    else:
-                        attn_entropy = torch.zeros(batch_size, device=attn.device)
-                    stage2_attn_entropy_sum += attn_entropy.sum().item()
-                    stage2_tokens_sum += float(attn.shape[1]) * batch_size
-                    stage2_attn_count += batch_size
+                if attn.shape[1] > 1:
+                    attn_safe = torch.clamp(attn, min=1e-8)
+                    attn_entropy = -(attn_safe * torch.log(attn_safe)).sum(dim=1) / math.log(attn.shape[1])
+                else:
+                    attn_entropy = torch.zeros(batch_size, device=attn.device)
+                stage2_attn_entropy_sum += attn_entropy.sum().item()
+                stage2_tokens_sum += float(attn.shape[1]) * batch_size
+                stage2_attn_count += batch_size
 
             stage2_temporal_features = stage_outputs.get("stage2_temporal_features")
             if stage2_temporal_features is not None:
@@ -1188,3 +1200,5 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+

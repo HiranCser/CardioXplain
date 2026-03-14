@@ -71,7 +71,11 @@ def main():
     model = EFModel(num_frames=args.num_frames).to(device)
     checkpoint = torch.load(args.checkpoint, map_location=device)
     state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
-    model.load_state_dict(state_dict)
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    if incompatible.missing_keys or incompatible.unexpected_keys:
+        print(
+            f"Warning: checkpoint loaded with key mismatch | missing={len(incompatible.missing_keys)} unexpected={len(incompatible.unexpected_keys)}"
+        )
     model.eval()
 
     rows = []
@@ -83,6 +87,10 @@ def main():
             _ef, attention, _phase = model(videos)
 
             attn_np = attention.detach().cpu().numpy()
+            if attn_np.ndim == 3 and attn_np.shape[-1] > 1:
+                attn_np = attn_np.mean(axis=2)
+            elif attn_np.ndim == 3 and attn_np.shape[-1] == 1:
+                attn_np = attn_np[:, :, 0]
             ed_np = ed_idx.cpu().numpy().astype(int)
             es_np = es_idx.cpu().numpy().astype(int)
 
