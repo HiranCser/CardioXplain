@@ -1,7 +1,9 @@
 import os
 import io
 import sys
+import json
 import math
+import base64
 import shutil
 import hashlib
 import subprocess
@@ -11,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import torch
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,7 +30,7 @@ from pipeline.stage45_pipeline import Stage45Pipeline
 
 st.set_page_config(page_title="CardioXplain Stage Dashboard", layout="wide")
 PREVIEW_MAX_WIDTH = 420
-PREVIEW_DISPLAY_WIDTH = 400
+PREVIEW_DISPLAY_WIDTH = 600
 FRAME_DISPLAY_WIDTH = 360
 
 
@@ -496,6 +499,346 @@ def _make_phase_plot(phase_probs, gt_ed_idx, gt_es_idx, pred_ed_idx, pred_es_idx
     return fig
 
 
+def _expand_attention_to_full_frames(attn, sampled_indices, total_frames):
+    sampled = np.asarray(sampled_indices, dtype=np.int32).reshape(-1)
+    weights = np.asarray(attn, dtype=np.float64).reshape(-1)
+    total_frames = int(total_frames)
+
+    if total_frames <= 0:
+        return np.zeros(0, dtype=np.float64)
+    if sampled.size == 0 or weights.size == 0:
+        return np.zeros(total_frames, dtype=np.float64)
+
+    n = min(sampled.size, weights.size)
+    sampled = sampled[:n]
+    weights = weights[:n]
+
+    order = np.argsort(sampled)
+    sampled = sampled[order]
+    weights = weights[order]
+
+    unique_sampled, unique_idx = np.unique(sampled, return_index=True)
+    unique_weights = weights[unique_idx]
+
+    if unique_sampled.size == 1:
+        return np.full(total_frames, float(unique_weights[0]), dtype=np.float64)
+
+    frame_axis = np.arange(total_frames, dtype=np.float64)
+    full_weights = np.interp(
+        frame_axis,
+        unique_sampled.astype(np.float64),
+        unique_weights.astype(np.float64),
+        left=float(unique_weights[0]),
+        right=float(unique_weights[-1]),
+    )
+    return np.clip(full_weights.astype(np.float64), 0.0, None)
+
+
+def _render_temporal_weight_video(result):
+    playable_path, was_converted, video_err, mime_type = _prepare_browser_video(result["video_path"])
+    if not playable_path:
+        st.warning(f"Playable video unavailable: {video_err}")
+        return False
+
+    try:
+        video_bytes = open(playable_path, "rb").read()
+    except Exception as exc:
+        st.warning(f"Failed to load playable video: {exc}")
+        return False
+
+    total_frames = len(result["full_frames"])
+    frame_weights = _expand_attention_to_full_frames(
+        result["stage2_attention"],
+        result["sampled_indices"],
+        total_frames,
+    )
+    if frame_weights.size == 0:
+        st.warning("Temporal weights unavailable for playback view.")
+        return False
+
+    sampled_indices = np.asarray(result["sampled_indices"], dtype=np.int32).reshape(-1)
+    sampled_weights = np.asarray(result["stage2_attention"], dtype=np.float64).reshape(-1)
+    sample_count = min(sampled_indices.size, sampled_weights.size)
+
+    payload = {
+        "fps": float(result["fps"]),
+        "videoMime": mime_type,
+        "videoBase64": base64.b64encode(video_bytes).decode("ascii"),
+        "frameWeights": [round(float(v), 6) for v in frame_weights.tolist()],
+        "sampledIndices": [int(v) for v in sampled_indices[:sample_count].tolist()],
+        "sampledWeights": [round(float(v), 6) for v in sampled_weights[:sample_count].tolist()],
+        "gtEd": int(result["ed_orig"]),
+        "gtEs": int(result["es_orig"]),
+        "predEd": int(result["pred_ed_orig"]),
+        "predEs": int(result["pred_es_orig"]),
+        "totalFrames": int(total_frames),
+        "wasConverted": bool(was_converted),
+    }
+
+    component_id = hashlib.md5(
+        f"{result['video_path']}|{total_frames}|{result['fps']}".encode("utf-8")
+    ).hexdigest()[:12]
+    payload_json = json.dumps(payload)
+
+    components.html(
+        f"""
+        <div id="tw-{component_id}" style="font-family: 'Segoe UI', sans-serif; color: #102a43;">
+          <style>
+            #tw-{component_id} .tw-card {{
+              background: linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+              border: 1px solid #d9e6f2;
+              border-radius: 18px;
+              padding: 18px;
+              box-sizing: border-box;
+            }}
+            #tw-{component_id} .tw-title {{
+              font-size: 18px;
+              font-weight: 700;
+              margin-bottom: 6px;
+            }}
+            #tw-{component_id} .tw-subtitle {{
+              font-size: 13px;
+              color: #486581;
+              margin-bottom: 14px;
+            }}
+            #tw-{component_id} .tw-video {{
+              display: block;
+              width: min(100%, 760px);
+              margin: 0 auto 16px auto;
+              border-radius: 16px;
+              background: #000;
+              box-shadow: 0 10px 30px rgba(16, 42, 67, 0.18);
+            }}
+            #tw-{component_id} .tw-readout {{
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 10px;
+              margin-bottom: 14px;
+            }}
+            #tw-{component_id} .tw-pill {{
+              background: rgba(255, 255, 255, 0.82);
+              border: 1px solid #d9e2ec;
+              border-radius: 12px;
+              padding: 10px 12px;
+            }}
+            #tw-{component_id} .tw-pill-label {{
+              font-size: 11px;
+              text-transform: uppercase;
+              letter-spacing: 0.08em;
+              color: #627d98;
+              margin-bottom: 4px;
+            }}
+            #tw-{component_id} .tw-pill-value {{
+              font-size: 16px;
+              font-weight: 700;
+              color: #102a43;
+            }}
+            #tw-{component_id} .tw-chart-wrap {{
+              background: #ffffff;
+              border: 1px solid #d9e2ec;
+              border-radius: 16px;
+              padding: 10px;
+            }}
+            #tw-{component_id} .tw-chart {{
+              width: 100%;
+              height: 250px;
+              display: block;
+            }}
+            #tw-{component_id} .tw-legend {{
+              display: flex;
+              flex-wrap: wrap;
+              gap: 12px;
+              margin-top: 12px;
+              font-size: 12px;
+              color: #486581;
+            }}
+            #tw-{component_id} .tw-legend-item {{
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+            }}
+            #tw-{component_id} .tw-swatch {{
+              width: 12px;
+              height: 12px;
+              border-radius: 999px;
+              display: inline-block;
+            }}
+            @media (max-width: 760px) {{
+              #tw-{component_id} .tw-readout {{
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+              }}
+            }}
+          </style>
+          <div class="tw-card">
+            <div class="tw-title">Temporal Weight Playback</div>
+            <div class="tw-subtitle">Play the video to see the current frame marker move across the Stage 2 temporal-weight graph.</div>
+            <video id="tw-video-{component_id}" class="tw-video" controls preload="metadata"></video>
+            <div class="tw-readout">
+              <div class="tw-pill">
+                <div class="tw-pill-label">Current frame</div>
+                <div class="tw-pill-value" id="tw-frame-{component_id}">0</div>
+              </div>
+              <div class="tw-pill">
+                <div class="tw-pill-label">Temporal weight</div>
+                <div class="tw-pill-value" id="tw-weight-{component_id}">0.0000</div>
+              </div>
+              <div class="tw-pill">
+                <div class="tw-pill-label">Ground truth ED/ES</div>
+                <div class="tw-pill-value">{int(result['ed_orig'])} / {int(result['es_orig'])}</div>
+              </div>
+              <div class="tw-pill">
+                <div class="tw-pill-label">Predicted ED/ES</div>
+                <div class="tw-pill-value">{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}</div>
+              </div>
+            </div>
+            <div class="tw-chart-wrap">
+              <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 760 250" preserveAspectRatio="none"></svg>
+            </div>
+            <div class="tw-legend">
+              <span class="tw-legend-item"><span class="tw-swatch" style="background:#2563eb;"></span>Interpolated temporal weight by frame</span>
+              <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Sampled frames used by Stage 2</span>
+              <span class="tw-legend-item"><span class="tw-swatch" style="background:#16a34a;"></span>ED markers</span>
+              <span class="tw-legend-item"><span class="tw-swatch" style="background:#dc2626;"></span>ES markers</span>
+            </div>
+          </div>
+        </div>
+        <script>
+          const payload = {payload_json};
+          const video = document.getElementById("tw-video-{component_id}");
+          const svg = document.getElementById("tw-chart-{component_id}");
+          const frameLabel = document.getElementById("tw-frame-{component_id}");
+          const weightLabel = document.getElementById("tw-weight-{component_id}");
+          const width = 760;
+          const height = 250;
+          const padX = 42;
+          const padY = 20;
+          const maxWeight = Math.max(...payload.frameWeights, 1e-6);
+
+          video.src = `data:${{payload.videoMime}};base64,${{payload.videoBase64}}`;
+
+          function xForFrame(frame) {{
+            if (payload.totalFrames <= 1) {{
+              return width / 2;
+            }}
+            return padX + (frame / (payload.totalFrames - 1)) * (width - padX * 2);
+          }}
+
+          function yForWeight(weight) {{
+            return height - padY - (weight / maxWeight) * (height - padY * 2);
+          }}
+
+          function eventLine(frame, color, dash, label, labelOffset) {{
+            const x = xForFrame(frame);
+            return `
+              <line x1="${{x}}" y1="${{padY}}" x2="${{x}}" y2="${{height - padY}}" stroke="${{color}}" stroke-width="2" stroke-dasharray="${{dash}}" opacity="0.82"></line>
+              <text x="${{Math.min(width - 90, x + 6)}}" y="${{padY + labelOffset}}" fill="${{color}}" font-size="11" font-weight="700">${{label}}</text>
+            `;
+          }}
+
+          const polylinePoints = payload.frameWeights
+            .map((weight, frame) => `${{xForFrame(frame)}},${{yForWeight(weight)}}`)
+            .join(" " );
+
+          const sampledDots = payload.sampledIndices
+            .map((frame, idx) => `<circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="3.5" fill="#f97316" opacity="0.95"></circle>`)
+            .join("");
+
+          const xTicks = [0, Math.max(0, Math.floor((payload.totalFrames - 1) / 2)), Math.max(0, payload.totalFrames - 1)]
+            .map((frame) => `
+              <line x1="${{xForFrame(frame)}}" y1="${{height - padY}}" x2="${{xForFrame(frame)}}" y2="${{height - padY + 5}}" stroke="#9fb3c8"></line>
+              <text x="${{xForFrame(frame)}}" y="${{height - 2}}" fill="#627d98" text-anchor="middle" font-size="11">${{frame}}</text>
+            `)
+            .join("");
+
+          const yTicks = [0, maxWeight / 2, maxWeight]
+            .map((weight) => `
+              <line x1="${{padX - 5}}" y1="${{yForWeight(weight)}}" x2="${{width - padX}}" y2="${{yForWeight(weight)}}" stroke="#e6edf5"></line>
+              <text x="10" y="${{yForWeight(weight) + 4}}" fill="#627d98" font-size="11">${{weight.toFixed(3)}}</text>
+            `)
+            .join("");
+
+          svg.innerHTML = `
+            <rect x="0" y="0" width="760" height="250" rx="12" fill="#ffffff"></rect>
+            ${{yTicks}}
+            <line x1="${{padX}}" y1="${{height - padY}}" x2="${{width - padX}}" y2="${{height - padY}}" stroke="#9fb3c8" stroke-width="1.2"></line>
+            <line x1="${{padX}}" y1="${{padY}}" x2="${{padX}}" y2="${{height - padY}}" stroke="#9fb3c8" stroke-width="1.2"></line>
+            <polyline fill="none" stroke="#2563eb" stroke-width="3" points="${{polylinePoints}}"></polyline>
+            ${{sampledDots}}
+            ${{eventLine(payload.gtEd, '#16a34a', '5 4', 'GT ED', 12)}}
+            ${{eventLine(payload.gtEs, '#dc2626', '5 4', 'GT ES', 26)}}
+            ${{eventLine(payload.predEd, '#16a34a', '2 4', 'Pred ED', 40)}}
+            ${{eventLine(payload.predEs, '#dc2626', '2 4', 'Pred ES', 54)}}
+            ${{xTicks}}
+            <text x="${{width / 2}}" y="${{height - 16}}" fill="#486581" text-anchor="middle" font-size="12" font-weight="600">Frame index</text>
+            <text x="18" y="14" fill="#486581" font-size="12" font-weight="600">Weight</text>
+            <line id="tw-marker-{component_id}" x1="${{padX}}" y1="${{padY}}" x2="${{padX}}" y2="${{height - padY}}" stroke="#0f172a" stroke-width="2.5"></line>
+            <circle id="tw-marker-dot-{component_id}" cx="${{padX}}" cy="${{yForWeight(payload.frameWeights[0] || 0)}}" r="5.2" fill="#0f172a"></circle>
+          `;
+
+          const marker = document.getElementById("tw-marker-{component_id}");
+          const markerDot = document.getElementById("tw-marker-dot-{component_id}");
+          let rafId = null;
+
+          function updateMarker(frame) {{
+            const clampedFrame = Math.max(0, Math.min(payload.totalFrames - 1, frame));
+            const x = xForFrame(clampedFrame);
+            const weight = payload.frameWeights[clampedFrame] || 0;
+            marker.setAttribute('x1', x);
+            marker.setAttribute('x2', x);
+            markerDot.setAttribute('cx', x);
+            markerDot.setAttribute('cy', yForWeight(weight));
+            frameLabel.textContent = `${{clampedFrame}} / ${{Math.max(0, payload.totalFrames - 1)}}`;
+            weightLabel.textContent = weight.toFixed(4);
+          }}
+
+          function syncFromVideo() {{
+            const frame = Math.round((video.currentTime || 0) * payload.fps);
+            updateMarker(frame);
+          }}
+
+          function tick() {{
+            syncFromVideo();
+            if (!video.paused && !video.ended) {{
+              rafId = window.requestAnimationFrame(tick);
+            }}
+          }}
+
+          video.addEventListener('loadedmetadata', syncFromVideo);
+          video.addEventListener('timeupdate', syncFromVideo);
+          video.addEventListener('seeked', syncFromVideo);
+          video.addEventListener('play', () => {{
+            if (rafId !== null) {{
+              window.cancelAnimationFrame(rafId);
+            }}
+            tick();
+          }});
+          video.addEventListener('pause', () => {{
+            if (rafId !== null) {{
+              window.cancelAnimationFrame(rafId);
+              rafId = null;
+            }}
+            syncFromVideo();
+          }});
+          video.addEventListener('ended', () => {{
+            if (rafId !== null) {{
+              window.cancelAnimationFrame(rafId);
+              rafId = null;
+            }}
+            syncFromVideo();
+          }});
+
+          updateMarker(0);
+        </script>
+        """,
+        height=640,
+    )
+
+    if was_converted:
+        st.caption("Video was transcoded to MP4 for browser playback before syncing the temporal-weight graph.")
+
+    return True
+
+
 def run_case(
     data_dir,
     split,
@@ -798,11 +1141,12 @@ def main():
     st.subheader("Source Video")
     st.write(f"Path: `{result['video_path']}`")
 
-    gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
-    if gif_bytes:
-        _render_centered_image(gif_bytes, "Animated source preview")
-    else:
-        st.caption(f"Animated preview unavailable: {gif_err}")
+    if not _render_temporal_weight_video(result):
+        gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
+        if gif_bytes:
+            _render_centered_image(gif_bytes, "Animated source preview")
+        else:
+            st.caption(f"Animated preview unavailable: {gif_err}")
 
     st.subheader("Key Metrics")
     c1, c2, c3 = st.columns(3)
@@ -817,10 +1161,7 @@ def main():
     st.caption(f"Temporal tokens after Stage1 pooling (T'): {result['stage1_tokens']}")
 
 
-    st.subheader("Frames and Overlays")
-    view_idx = st.slider("Inspect original frame", 0, len(result["full_frames"]) - 1, int(result["pred_ed_orig"]))
-    frame_view, _ = _frame_from_list(result["full_frames"], view_idx)
-    _render_centered_image(frame_view, f"Original frame {view_idx}", width=FRAME_DISPLAY_WIDTH)
+   
 
     st.subheader("Stage 4 + Stage 5")
     if not result["stage4"].get("enabled"):

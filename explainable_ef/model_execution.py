@@ -57,6 +57,9 @@ def parse_args(argv=None):
     parser.add_argument("--phase-attn-align-weight", type=float, default=None, help="Override config.PHASE_ATTN_ALIGN_WEIGHT")
     parser.add_argument("--phase-attn-align-sigma", type=float, default=None, help="Override config.PHASE_ATTN_ALIGN_SIGMA")
     parser.add_argument("--phase-attn-align-radius", type=int, default=None, help="Override config.PHASE_ATTN_ALIGN_RADIUS")
+    parser.add_argument("--phase-attn-index-weight", type=float, default=None, help="Override config.PHASE_ATTN_INDEX_WEIGHT")
+    parser.add_argument("--phase-attn-order-weight", type=float, default=None, help="Override config.PHASE_ATTN_ORDER_WEIGHT")
+    parser.add_argument("--phase-attn-min-gap", type=int, default=None, help="Override config.PHASE_ATTN_MIN_GAP")
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
@@ -131,6 +134,12 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_ATTN_ALIGN_SIGMA"] = args.phase_attn_align_sigma
     if args.phase_attn_align_radius is not None:
         overrides["PHASE_ATTN_ALIGN_RADIUS"] = args.phase_attn_align_radius
+    if args.phase_attn_index_weight is not None:
+        overrides["PHASE_ATTN_INDEX_WEIGHT"] = args.phase_attn_index_weight
+    if args.phase_attn_order_weight is not None:
+        overrides["PHASE_ATTN_ORDER_WEIGHT"] = args.phase_attn_order_weight
+    if args.phase_attn_min_gap is not None:
+        overrides["PHASE_ATTN_MIN_GAP"] = args.phase_attn_min_gap
     if args.phase_unfreeze_lr_mult is not None:
         overrides["PHASE_UNFREEZE_LR_MULT"] = args.phase_unfreeze_lr_mult
     if args.weight_decay is not None:
@@ -159,7 +168,13 @@ def apply_runtime_overrides(args, logger):
         if args.phase_temporal_window_jitter_mult is None:
             overrides["PHASE_TEMPORAL_WINDOW_JITTER_MULT"] = 0.03
         if args.phase_attn_align_weight is None:
-            overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.35
+            overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.45
+        if args.phase_attn_index_weight is None:
+            overrides["PHASE_ATTN_INDEX_WEIGHT"] = 0.30
+        if args.phase_attn_order_weight is None:
+            overrides["PHASE_ATTN_ORDER_WEIGHT"] = 0.10
+        if args.phase_attn_min_gap is None:
+            overrides["PHASE_ATTN_MIN_GAP"] = 2
         overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = 0
 
     for key, value in overrides.items():
@@ -185,6 +200,23 @@ def apply_runtime_overrides(args, logger):
         elif attn_align_value > 2.0:
             setattr(config, attn_align_key, 2.0)
             logger.warning("Clamped %s from %.3f to 2.000", attn_align_key, attn_align_value)
+
+    for loss_key in ("PHASE_ATTN_INDEX_WEIGHT", "PHASE_ATTN_ORDER_WEIGHT"):
+        if hasattr(config, loss_key):
+            loss_value = float(getattr(config, loss_key, 0.0))
+            if loss_value < 0.0:
+                setattr(config, loss_key, 0.0)
+                logger.warning("Clamped %s from %.3f to 0.000", loss_key, loss_value)
+            elif loss_value > 2.0:
+                setattr(config, loss_key, 2.0)
+                logger.warning("Clamped %s from %.3f to 2.000", loss_key, loss_value)
+
+    min_gap_key = "PHASE_ATTN_MIN_GAP"
+    if hasattr(config, min_gap_key):
+        min_gap_value = int(getattr(config, min_gap_key, 1))
+        if min_gap_value < 1:
+            setattr(config, min_gap_key, 1)
+            logger.warning("Clamped %s from %d to 1", min_gap_key, min_gap_value)
 
     return overrides
 
@@ -512,6 +544,42 @@ def compute_attention_alignment_loss(attention, ed_idx, es_idx):
     return F.kl_div(torch.log(attn_heads[:, :, 0].clamp_min(1e-8)), merged_target, reduction="batchmean")
 
 
+def compute_attention_index_loss(attention, ed_idx, es_idx):
+    """Directly supervise Stage2 attention heads toward ED/ES indices and ordering."""
+    attn_heads, _ = _attention_heads_and_summary(attention)
+    if attn_heads is None:
+        zero = torch.zeros((), device=ed_idx.device)
+        return zero, zero
+
+    num_frames = attn_heads.shape[1]
+    if num_frames <= 0:
+        zero = torch.zeros((), device=ed_idx.device)
+        return zero, zero
+
+    if attn_heads.shape[-1] >= 2:
+        ed_attn = attn_heads[:, :, 0]
+        es_attn = attn_heads[:, :, 1]
+    else:
+        ed_attn = attn_heads[:, :, 0]
+        es_attn = attn_heads[:, :, 0]
+
+    positions = torch.arange(num_frames, device=attn_heads.device, dtype=attn_heads.dtype).unsqueeze(0)
+    denom = float(max(1, num_frames - 1))
+
+    ed_expect = (ed_attn * positions).sum(dim=1) / denom
+    es_expect = (es_attn * positions).sum(dim=1) / denom
+    ed_target = ed_idx.to(attn_heads.device, dtype=attn_heads.dtype) / denom
+    es_target = es_idx.to(attn_heads.device, dtype=attn_heads.dtype) / denom
+
+    ed_loss = F.smooth_l1_loss(ed_expect, ed_target)
+    es_loss = F.smooth_l1_loss(es_expect, es_target)
+    index_loss = 0.5 * (ed_loss + es_loss)
+
+    min_gap = float(max(1, int(getattr(config, "PHASE_ATTN_MIN_GAP", 1)))) / denom
+    order_loss = torch.relu(min_gap - (es_expect - ed_expect)).mean()
+    return index_loss, order_loss
+
+
 def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
     """
     Train phase detection as two temporal index tasks:
@@ -758,6 +826,8 @@ def train_one_epoch(
     num_batches = len(loader)
     phase_only = is_phase_only_mode()
     attn_align_weight = max(0.0, float(getattr(config, "PHASE_ATTN_ALIGN_WEIGHT", 0.0)))
+    attn_index_weight = max(0.0, float(getattr(config, "PHASE_ATTN_INDEX_WEIGHT", 0.0)))
+    attn_order_weight = max(0.0, float(getattr(config, "PHASE_ATTN_ORDER_WEIGHT", 0.0)))
 
     for batch_idx, (videos, efs, ed_idx, es_idx) in enumerate(loader):
         data_time += time.perf_counter() - loop_end
@@ -783,8 +853,15 @@ def train_one_epoch(
                 phase_index_loss_fn=phase_index_loss_fn,
             )
             attn_align_loss = compute_attention_alignment_loss(attention, ed_idx, es_idx)
+            attn_index_loss, attn_order_loss = compute_attention_index_loss(attention, ed_idx, es_idx)
 
-            loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss + attn_align_weight * attn_align_loss
+            loss = (
+                ef_loss
+                + config.PHASE_LOSS_WEIGHT * phase_loss
+                + attn_align_weight * attn_align_loss
+                + attn_index_weight * attn_index_loss
+                + attn_order_weight * attn_order_loss
+            )
             loss_for_backward = loss / accumulation_steps
 
         if amp_enabled:
@@ -813,7 +890,7 @@ def train_one_epoch(
         if batch_idx == 0:
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
             logger.info(
-                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | AttnAlign %.4f (w=%.3f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | AttnAlign %.4f (w=%.3f) | AttnIndex %.4f (w=%.3f) | AttnOrder %.4f (w=%.3f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 ef_loss.item(),
@@ -823,6 +900,10 @@ def train_one_epoch(
                 frame_phase_loss.item(),
                 attn_align_loss.item(),
                 attn_align_weight,
+                attn_index_loss.item(),
+                attn_index_weight,
+                attn_order_loss.item(),
+                attn_order_weight,
                 ed_idx[0].item(),
                 es_idx[0].item(),
                 pred_ed_idx[0].item(),
@@ -957,6 +1038,9 @@ def log_header(logger, amp_enabled):
     logger.info("Phase attn align weight: %.3f", float(getattr(config, "PHASE_ATTN_ALIGN_WEIGHT", 0.0)))
     logger.info("Phase attn align sigma: %.3f", float(getattr(config, "PHASE_ATTN_ALIGN_SIGMA", 0.0)))
     logger.info("Phase attn align radius: %d", int(getattr(config, "PHASE_ATTN_ALIGN_RADIUS", 0)))
+    logger.info("Phase attn index weight: %.3f", float(getattr(config, "PHASE_ATTN_INDEX_WEIGHT", 0.0)))
+    logger.info("Phase attn order weight: %.3f", float(getattr(config, "PHASE_ATTN_ORDER_WEIGHT", 0.0)))
+    logger.info("Phase attn min gap: %d", int(getattr(config, "PHASE_ATTN_MIN_GAP", 1)))
     logger.info("Phase hard index weight: %.3f", float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0)))
     logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
     logger.info("Weight decay: %s", getattr(config, "WEIGHT_DECAY", 0.0))
