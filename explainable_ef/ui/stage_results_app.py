@@ -625,11 +625,81 @@ def _predict_mask_stage4(model, frame_rgb, image_size, normalize_mode, pretraine
     return mask_orig, float(mask_orig.sum())
 
 
+def _predict_area_curve_stage4_from_frames(model, frames_rgb, image_size, normalize_mode, pretrained_flag, device, eval_threshold=0.5, batch_size=16):
+    if not frames_rgb:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float64)
+
+    frame_areas = []
+    batch_images = []
+    batch_sizes = []
+    batch_ids = []
+
+    def flush_batch():
+        nonlocal batch_images, batch_sizes, batch_ids, frame_areas
+        if not batch_images:
+            return
+        image_batch = torch.stack(batch_images, dim=0).to(device)
+        with torch.no_grad():
+            logits = model(image_batch)
+            if isinstance(logits, dict):
+                logits = logits["out"]
+            probs = torch.sigmoid(logits[:, 0]).detach().cpu().numpy()
+
+        for prob, (h, w), fid in zip(probs, batch_sizes, batch_ids):
+            mask_small = (prob >= float(eval_threshold)).astype(np.uint8)
+            mask_orig = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+            frame_areas.append((int(fid), float(mask_orig.sum())))
+        batch_images = []
+        batch_sizes = []
+        batch_ids = []
+
+    for frame_idx, frame_rgb in enumerate(frames_rgb):
+        h, w = frame_rgb.shape[:2]
+        resized = cv2.resize(frame_rgb, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
+        image_t = torch.from_numpy(resized).permute(2, 0, 1).float() / 255.0
+        image_t = _normalize_stage4_input(image_t, normalize_mode, pretrained_flag=pretrained_flag)
+        batch_images.append(image_t)
+        batch_sizes.append((h, w))
+        batch_ids.append(frame_idx)
+        if len(batch_images) >= int(max(1, batch_size)):
+            flush_batch()
+
+    flush_batch()
+    if not frame_areas:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float64)
+
+    curve_frame_ids = np.array([fid for fid, _ in frame_areas], dtype=np.int32)
+    curve_areas = np.array([area for _, area in frame_areas], dtype=np.float64)
+    return curve_frame_ids, curve_areas
+
+
 def _frame_from_list(frames, idx):
     if len(frames) == 0:
         return None, -1
     idx_clamped = int(np.clip(int(idx), 0, len(frames) - 1))
     return frames[idx_clamped], idx_clamped
+
+
+def _canonicalize_ed_es_pair_safe(ed_frame, ed_area, es_frame, es_area):
+    helper = getattr(Stage45Pipeline, "canonicalize_ed_es_pair", None)
+    if callable(helper):
+        return helper(ed_frame, ed_area, es_frame, es_area)
+
+    ed_frame = int(ed_frame)
+    es_frame = int(es_frame)
+    ed_area = float(ed_area)
+    es_area = float(es_area)
+    swapped = np.isfinite(ed_area) and np.isfinite(es_area) and es_area > ed_area
+    if swapped:
+        ed_frame, es_frame = es_frame, ed_frame
+        ed_area, es_area = es_area, ed_area
+    return {
+        "ed_frame": ed_frame,
+        "ed_area": ed_area,
+        "es_frame": es_frame,
+        "es_area": es_area,
+        "swapped": bool(swapped),
+    }
 
 
 def _annotate_temporal_frame(frame_rgb, _card_title, _phase_label, _frame_idx, accent_rgb):
@@ -1475,10 +1545,55 @@ def run_case(
                     device=device,
                 )
 
-                ed_frame_rgb, ed_frame_idx = _frame_from_list(full_frames, pred_ed_orig)
-                es_frame_rgb, es_frame_idx = _frame_from_list(full_frames, pred_es_orig)
+                curve_frame_ids, curve_areas = _predict_area_curve_stage4_from_frames(
+                    model4,
+                    full_frames,
+                    image_size=int(meta4["image_size"]),
+                    normalize_mode=meta4["normalize"],
+                    pretrained_flag=bool(meta4.get("pretrained", False)),
+                    device=device,
+                    eval_threshold=0.5,
+                    batch_size=16,
+                )
 
-                pred_ed_mask, pred_ed_area = _predict_mask_stage4(
+                if curve_frame_ids.size > 0:
+                    detected = stage45.detect_ed_es_from_size_curve(
+                        frame_ids=curve_frame_ids,
+                        areas=curve_areas,
+                        smooth_window=11,
+                        enforce_es_after_ed=True,
+                    )
+                    curve_area_lookup = {int(fid): float(area) for fid, area in zip(curve_frame_ids.tolist(), curve_areas.tolist())}
+                    ed_frame_idx = int(detected["ed_frame"])
+                    es_frame_idx = int(detected["es_frame"])
+                    pred_ed_area = float(curve_area_lookup.get(ed_frame_idx, float(np.max(curve_areas))))
+                    pred_es_area = float(curve_area_lookup.get(es_frame_idx, float(np.min(curve_areas))))
+                    pred_curve_method = "full_video_stage4_curve"
+                else:
+                    ed_frame_idx = int(pred_ed_orig)
+                    es_frame_idx = int(pred_es_orig)
+                    pred_curve_method = "stage123_frame_fallback"
+                    _, pred_ed_area = _predict_mask_stage4(
+                        model4,
+                        full_frames[ed_frame_idx],
+                        image_size=int(meta4["image_size"]),
+                        normalize_mode=meta4["normalize"],
+                        pretrained_flag=bool(meta4.get("pretrained", False)),
+                        device=device,
+                    )
+                    _, pred_es_area = _predict_mask_stage4(
+                        model4,
+                        full_frames[es_frame_idx],
+                        image_size=int(meta4["image_size"]),
+                        normalize_mode=meta4["normalize"],
+                        pretrained_flag=bool(meta4.get("pretrained", False)),
+                        device=device,
+                    )
+
+                ed_frame_rgb, ed_frame_idx = _frame_from_list(full_frames, ed_frame_idx)
+                es_frame_rgb, es_frame_idx = _frame_from_list(full_frames, es_frame_idx)
+
+                pred_ed_mask, pred_ed_area_mask = _predict_mask_stage4(
                     model4,
                     ed_frame_rgb,
                     image_size=int(meta4["image_size"]),
@@ -1486,7 +1601,7 @@ def run_case(
                     pretrained_flag=bool(meta4.get("pretrained", False)),
                     device=device,
                 )
-                pred_es_mask, pred_es_area = _predict_mask_stage4(
+                pred_es_mask, pred_es_area_mask = _predict_mask_stage4(
                     model4,
                     es_frame_rgb,
                     image_size=int(meta4["image_size"]),
@@ -1494,6 +1609,19 @@ def run_case(
                     pretrained_flag=bool(meta4.get("pretrained", False)),
                     device=device,
                 )
+
+                canonical_pair = _canonicalize_ed_es_pair_safe(
+                    ed_frame_idx,
+                    pred_ed_area,
+                    es_frame_idx,
+                    pred_es_area,
+                )
+                pred_pair_swapped = bool(canonical_pair["swapped"])
+                if pred_pair_swapped:
+                    ed_frame_idx, es_frame_idx = int(canonical_pair["ed_frame"]), int(canonical_pair["es_frame"])
+                    pred_ed_area, pred_es_area = float(canonical_pair["ed_area"]), float(canonical_pair["es_area"])
+                    pred_ed_mask, pred_es_mask = pred_es_mask, pred_ed_mask
+                    pred_ed_area_mask, pred_es_area_mask = pred_es_area_mask, pred_ed_area_mask
 
                 ef_stage5_pred_pct = float(stage45.compute_ef_from_areas(pred_ed_area, pred_es_area) * 100.0)
                 seg_gif_bytes, seg_gif_err = _prepare_segmentation_gif(
@@ -1505,8 +1633,8 @@ def run_case(
                     max_width=640,
                 )
 
-                gt_mask_pred_ed = gt_masks.get(ed_frame_idx)
-                gt_mask_pred_es = gt_masks.get(es_frame_idx)
+                gt_mask_pred_ed = gt_masks.get(ed_frame_idx, gt_masks.get(int(pred_ed_orig)))
+                gt_mask_pred_es = gt_masks.get(es_frame_idx, gt_masks.get(int(pred_es_orig)))
                 gt_area_pred_ed = gt_areas.get(ed_frame_idx, float("nan"))
                 gt_area_pred_es = gt_areas.get(es_frame_idx, float("nan"))
 
@@ -1522,6 +1650,8 @@ def run_case(
                     "pred_es_mask": pred_es_mask,
                     "pred_ed_area": float(pred_ed_area),
                     "pred_es_area": float(pred_es_area),
+                    "pred_curve_method": pred_curve_method,
+                    "pred_pair_swapped": bool(pred_pair_swapped),
                     "gt_mask_pred_ed": gt_mask_pred_ed,
                     "gt_mask_pred_es": gt_mask_pred_es,
                     "gt_area_pred_ed": gt_area_pred_ed,
@@ -1540,6 +1670,9 @@ def run_case(
         explanation.append(
             f"Stage5 EF from Stage4 masks = {stage4_out['ef_stage5_pred_pct']:.2f}%. Compare with Stage1-3 EF head = {ef_pred_pct:.2f}% and GT EF = {ef_gt_pct:.2f}%."
         )
+        explanation.append(f"Stage4/5 frame selection method: {stage4_out.get('pred_curve_method', 'unknown')}.")
+        if stage4_out.get("pred_pair_swapped"):
+            explanation.append("Stage4 predicted areas were inverted on this case, so ED/ES were reordered before computing EF.")
     else:
         explanation.append("Stage4/5 result unavailable (missing checkpoint or load error).")
 
@@ -1590,7 +1723,7 @@ def main():
     st.caption("Select a test video, run Stage1-5 inference, and inspect stage-wise outputs + metrics.")
 
     default_stage123_ckpt = _abs_path(getattr(config, "CHECKPOINT_PATH", "best_model.pth"))
-    default_stage4_ckpt = _abs_path("best_stage4_segmentation.pth")
+    default_stage4_ckpt = _abs_path(getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
 
     with st.sidebar:
         st.header("Run Settings")
@@ -1712,6 +1845,7 @@ def main():
                 {"metric": "GT ES area at predicted-ES frame (px)", "value": round(float(s4["gt_area_pred_es"]), 2) if np.isfinite(s4["gt_area_pred_es"]) else "NA"},
                 {"metric": "Dice on predicted-ED frame", "value": round(float(s4["dice_pred_ed"]), 4) if np.isfinite(s4["dice_pred_ed"]) else "NA"},
                 {"metric": "Dice on predicted-ES frame", "value": round(float(s4["dice_pred_es"]), 4) if np.isfinite(s4["dice_pred_es"]) else "NA"},
+                {"metric": "Stage4/5 frame selection", "value": s4.get("pred_curve_method", "NA")},
             ]
         )
         st.dataframe(stage45_table, use_container_width=True, hide_index=True)

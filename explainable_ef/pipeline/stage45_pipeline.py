@@ -51,14 +51,54 @@ class Stage45Pipeline:
         return float(mask.sum())
 
     @staticmethod
+    def canonicalize_ed_es_pair(ed_frame, ed_area, es_frame, es_area):
+        """Return a physiologically ordered ED/ES pair where ED area is >= ES area."""
+        ed_frame = int(ed_frame)
+        es_frame = int(es_frame)
+        ed_area = float(ed_area)
+        es_area = float(es_area)
+
+        if not np.isfinite(ed_area) or not np.isfinite(es_area):
+            return {
+                "ed_frame": ed_frame,
+                "ed_area": ed_area,
+                "es_frame": es_frame,
+                "es_area": es_area,
+                "swapped": False,
+            }
+
+        swapped = es_area > ed_area
+        if swapped:
+            ed_frame, es_frame = es_frame, ed_frame
+            ed_area, es_area = es_area, ed_area
+
+        return {
+            "ed_frame": ed_frame,
+            "ed_area": ed_area,
+            "es_frame": es_frame,
+            "es_area": es_area,
+            "swapped": swapped,
+        }
+
+    @staticmethod
     def compute_ef_from_areas(ed_area, es_area):
         """
         Compute EF proxy from area.
         EF = (ED - ES) / ED
+
+        The computation is made physiologically safe by treating the larger area
+        as ED and the smaller area as ES, then clamping to [0, 1].
         """
+        ed_area = float(ed_area)
+        es_area = float(es_area)
+        if not np.isfinite(ed_area) or not np.isfinite(es_area):
+            return float("nan")
+
+        ed_area, es_area = max(ed_area, es_area), min(ed_area, es_area)
         if ed_area <= 0:
             return 0.0
-        return float((ed_area - es_area) / ed_area)
+        ef = (ed_area - es_area) / ed_area
+        return float(np.clip(ef, 0.0, 1.0))
 
     @staticmethod
     def detect_ed_es_from_size_curve(frame_ids, areas, smooth_window=11, enforce_es_after_ed=True):

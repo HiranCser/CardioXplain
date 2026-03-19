@@ -5,6 +5,8 @@ import subprocess
 import sys
 import time
 
+import config
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -37,7 +39,7 @@ def parse_args():
     parser.add_argument("--stage123-workers", type=int, default=None)
     parser.add_argument("--stage123-max-videos", type=int, default=None)
 
-    parser.add_argument("--stage4-checkpoint", type=str, default="best_stage4_segmentation.pth")
+    parser.add_argument("--stage4-checkpoint", type=str, default=getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
     parser.add_argument("--stage4-epochs", type=int, default=50)
     parser.add_argument("--stage4-learning-rate", type=float, default=1e-4)
     parser.add_argument("--stage4-batch-size", type=int, default=20)

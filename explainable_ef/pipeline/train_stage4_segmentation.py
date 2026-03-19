@@ -482,7 +482,7 @@ def parse_args():
     parser.add_argument("--pos-weight-max", type=float, default=8.0)
     parser.add_argument("--area-loss-weight", type=float, default=0.20, help="Relative LV-area loss weight for segmentation training")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--checkpoint", type=str, default="best_stage4_segmentation.pth")
+    parser.add_argument("--checkpoint", type=str, default=getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage4"))
     parser.add_argument("--device", type=str, default=("cuda" if torch.cuda.is_available() else "cpu"))
     parser.add_argument("--patience", type=int, default=10)

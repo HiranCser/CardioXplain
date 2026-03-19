@@ -7,7 +7,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-d
 
 # Model configuration
 BATCH_SIZE = 20
-NUM_FRAMES = 32  # Increase to 48/64 for finer phase localization
+NUM_FRAMES = 96  # VolumeTracings.csv provides only two traced frames per video, so denser temporal sampling improves ED/ES localization
 IMAGE_SIZE = 112
 MAX_VIDEOS = None  # None = use all videos
 PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss
@@ -48,6 +48,7 @@ VALIDATE_EVERY = 1  # Run validation every N epochs
 # Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CHECKPOINT_PATH = "best_model.pth"
+STAGE4_CHECKPOINT_PATH = "best_stage4_segmentation_area.pth"
 
 # ============================================================================
 # PERFORMANCE OPTIMIZATION SETTINGS

@@ -44,3 +44,12 @@ trainnigs/all_stages_skipped_stage123_training_improved/training_logs.txt
 trained_models/19-March/best_model.pth
 trained_models/19-March/best_stage4_segmentation.pth
 trainnigs/19-March/Training_Logs.txt
+explainable_ef/best_model_stage123_pair64.pth
+explainable_ef/best_stage4_segmentation_area.pth
+trained_models/19-March/2/best_model.pth
+trained_models/19-March/2/best_stage4_segmentation.pth
+trained_models/19-March/3/best_model_phase_fix_64_clean.pth
+trained_models/19-March/3/best_stage4_segmentation.pth
+trained_models/19-March/4/best_model_stage123_pair64.pth
+trained_models/19-March/4/best_stage4_segmentation_area.pth
+trainnigs/19-March/4/Stage4-5.txt

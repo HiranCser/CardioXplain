@@ -159,6 +159,28 @@ def read_video_frame(video_path, frame_idx):
     return frame
 
 
+def _canonicalize_ed_es_pair_safe(ed_frame, ed_area, es_frame, es_area):
+    helper = getattr(Stage45Pipeline, "canonicalize_ed_es_pair", None)
+    if callable(helper):
+        return helper(ed_frame, ed_area, es_frame, es_area)
+
+    ed_frame = int(ed_frame)
+    es_frame = int(es_frame)
+    ed_area = float(ed_area)
+    es_area = float(es_area)
+    swapped = np.isfinite(ed_area) and np.isfinite(es_area) and es_area > ed_area
+    if swapped:
+        ed_frame, es_frame = es_frame, ed_frame
+        ed_area, es_area = es_area, ed_area
+    return {
+        "ed_frame": ed_frame,
+        "ed_area": ed_area,
+        "es_frame": es_frame,
+        "es_area": es_area,
+        "swapped": bool(swapped),
+    }
+
+
 def _write_overlay(path, frame_bgr, pred_mask=None, gt_mask=None, text=""):
     vis = frame_bgr.copy()
     if gt_mask is not None:
@@ -200,7 +222,7 @@ def parse_args():
         default="tracing",
         help="tracing: ED/ES/areas from GT tracings; predicted_masks: ED/ES/areas from Stage4 predicted masks",
     )
-    parser.add_argument("--stage4-checkpoint", type=str, default="best_stage4_segmentation.pth")
+    parser.add_argument("--stage4-checkpoint", type=str, default=getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
     parser.add_argument("--stage4-model-name", type=str, default="deeplabv3_resnet50")
     parser.add_argument("--stage4-base-channels", type=int, default=32)
     parser.add_argument("--eval-threshold", type=float, default=0.5)
@@ -331,10 +353,22 @@ def main():
             pred_es_frame = int(detected["es_frame"])
             pred_ed_area = float(curve_area_lookup.get(pred_ed_frame, float(np.max(curve_areas))))
             pred_es_area = float(curve_area_lookup.get(pred_es_frame, float(np.min(curve_areas))))
+            canonical_pair = _canonicalize_ed_es_pair_safe(
+                pred_ed_frame,
+                pred_ed_area,
+                pred_es_frame,
+                pred_es_area,
+            )
+            pred_ed_frame = int(canonical_pair["ed_frame"])
+            pred_es_frame = int(canonical_pair["es_frame"])
+            pred_ed_area = float(canonical_pair["ed_area"])
+            pred_es_area = float(canonical_pair["es_area"])
+            pred_pair_swapped = bool(canonical_pair["swapped"])
             ef_pred = Stage45Pipeline.compute_ef_from_areas(pred_ed_area, pred_es_area)
         else:
             pred_ed_frame, pred_ed_area = gt_ed_frame, gt_ed_area
             pred_es_frame, pred_es_area = gt_es_frame, gt_es_area
+            pred_pair_swapped = False
             ef_pred = ef_gt_proxy
 
         abs_err = abs(float(ef_pred) - float(ef_gt))
@@ -361,6 +395,7 @@ def main():
                 "pred_ed_frame_error": float(abs(pred_ed_frame - gt_ed_frame)),
                 "pred_es_frame_error": float(abs(pred_es_frame - gt_es_frame)),
                 "pred_curve_method": ("full_video_stage4_curve" if args.mode == "predicted_masks" else "tracing"),
+                "pred_pair_swapped": bool(pred_pair_swapped),
             }
         )
 
