@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument("--skip-stage5", action="store_true")
     parser.add_argument("--skip-stage67", action="store_true")
 
-    parser.add_argument("--stage123-checkpoint", type=str, default="best_model.pth")
+    parser.add_argument("--stage123-checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
     parser.add_argument("--stage123-epochs", type=int, default=None)
     parser.add_argument("--stage123-learning-rate", type=float, default=None)
     parser.add_argument("--stage123-batch-size", type=int, default=None)

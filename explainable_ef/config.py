@@ -47,7 +47,7 @@ VALIDATE_EVERY = 1  # Run validation every N epochs
 
 # Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CHECKPOINT_PATH = "best_model.pth"
+CHECKPOINT_PATH = "best_model_stage123_96f.pth"
 STAGE4_CHECKPOINT_PATH = "best_stage4_segmentation_area.pth"
 
 # ============================================================================

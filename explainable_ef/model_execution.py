@@ -989,6 +989,20 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
             "monitor_value": monitor_value,
             "val_mae": val_mae,
             "epoch": epoch,
+            "runtime_config": {
+                "NUM_FRAMES": int(getattr(config, "NUM_FRAMES", 32)),
+                "PHASE_TEMPORAL_WINDOW_MODE": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
+                "PHASE_TEMPORAL_WINDOW_MARGIN_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
+                "PHASE_TEMPORAL_WINDOW_JITTER_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
+            },
+            "args": {
+                "num_frames": int(getattr(config, "NUM_FRAMES", 32)),
+                "phase_temporal_window_mode": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
+                "phase_temporal_window_margin_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
+                "phase_temporal_window_jitter_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
+                "train_stage123": True,
+                "phase_only": bool(getattr(config, "PHASE_ONLY", False)),
+            },
         },
         config.CHECKPOINT_PATH,
     )

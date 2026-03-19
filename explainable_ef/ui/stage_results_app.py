@@ -545,7 +545,7 @@ def load_volume_tracings(data_dir):
 def load_stage123_model(checkpoint_path, num_frames, device):
     model = EFModel(num_frames=int(num_frames)).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    state_dict, _ = _safe_checkpoint_state_dict(checkpoint)
+    state_dict, checkpoint_dict = _safe_checkpoint_state_dict(checkpoint)
     model_state = model.state_dict()
     filtered_state_dict = {
         key: value
@@ -554,7 +554,8 @@ def load_stage123_model(checkpoint_path, num_frames, device):
     }
     incompatible = model.load_state_dict(filtered_state_dict, strict=False)
     model.eval()
-    return model, incompatible
+    metadata = checkpoint_dict if isinstance(checkpoint_dict, dict) else {}
+    return model, incompatible, metadata
 
 
 @st.cache_resource(show_spinner=False)
@@ -584,15 +585,38 @@ def load_stage4_model(checkpoint_path, fallback_model_name, fallback_base_channe
     return model, metadata, incompatible
 
 
+def _resolve_stage123_temporal_settings(checkpoint_meta):
+    meta = checkpoint_meta if isinstance(checkpoint_meta, dict) else {}
+    args = meta.get("args", {}) if isinstance(meta.get("args", {}), dict) else {}
+    runtime_config = meta.get("runtime_config", {}) if isinstance(meta.get("runtime_config", {}), dict) else {}
+
+    mode = args.get("phase_temporal_window_mode")
+    if mode is None:
+        mode = runtime_config.get("PHASE_TEMPORAL_WINDOW_MODE")
+    if mode is None:
+        mode = "tracing"
+
+    margin = args.get("phase_temporal_window_margin_mult")
+    if margin is None:
+        margin = runtime_config.get("PHASE_TEMPORAL_WINDOW_MARGIN_MULT")
+    if margin is None:
+        margin = 1.0 if str(mode).lower() == "tracing" else float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5))
+
+    return {
+        "mode": str(mode).lower(),
+        "margin_mult": float(margin),
+    }
+
+
 @st.cache_resource(show_spinner=False)
-def load_dataset_resource(data_dir, split, num_frames):
+def load_dataset_resource(data_dir, split, num_frames, temporal_window_mode, temporal_window_margin_mult):
     return EchoDataset(
         data_dir=data_dir,
         split=str(split).upper(),
         num_frames=int(num_frames),
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
-        temporal_window_margin_mult=float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
+        temporal_window_mode=str(temporal_window_mode).lower(),
+        temporal_window_margin_mult=float(temporal_window_margin_mult),
         temporal_window_jitter_mult=0.0,
     )
 
@@ -1182,7 +1206,7 @@ def _render_temporal_weight_video(result):
             }}
             #tw-{component_id} .tw-chart {{
               width: 100%;
-              height: 328px;
+              height: 344px;
               display: block;
             }}
             #tw-{component_id} .tw-footer {{
@@ -1265,7 +1289,7 @@ def _render_temporal_weight_video(result):
               </div>
             </div>
             <div class="tw-chart-card">
-              <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 820 328" preserveAspectRatio="none"></svg>
+              <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 820 344" preserveAspectRatio="none"></svg>
               <div class="tw-footer">
                 <div class="tw-footer-note">The timeline marker, the selected-frame preview, and the phase-context cards are synchronized to the same frame index.</div>
                 <div class="tw-legend">
@@ -1283,11 +1307,11 @@ def _render_temporal_weight_video(result):
           const payload = {payload_json};
           const svg = document.getElementById("tw-chart-{component_id}");
           const width = 820;
-          const height = 328;
+          const height = 344;
           const padLeft = 58;
           const padRight = 18;
           const padTop = 28;
-          const padBottom = 42;
+          const padBottom = 58;
           const graphHeight = height - padTop - padBottom;
           const graphWidth = width - padLeft - padRight;
           const maxWeight = Math.max(...payload.frameWeights, 1e-6);
@@ -1413,12 +1437,12 @@ def _render_temporal_weight_video(result):
             <line x1="${{padLeft}}" y1="${{padTop + graphHeight}}" x2="${{width - padRight}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.1"></line>
             <line x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.1"></line>
             ${{xTicks}}
-            <text x="${{width / 2}}" y="${{height - 3}}" fill="#486581" text-anchor="middle" font-size="12" font-weight="700">Frame index</text>
+            <text x="${{width / 2}}" y="${{height - 12}}" fill="#486581" text-anchor="middle" font-size="12" font-weight="700">Frame index</text>
             <text x="14" y="18" fill="#486581" font-size="12" font-weight="700">Weight</text>
           `;
         </script>
         """,
-        height=515,
+        height=540,
     )
 
     return True
@@ -1438,7 +1462,15 @@ def run_case(
 ):
     stage45 = Stage45Pipeline()
 
-    dataset = load_dataset_resource(data_dir=data_dir, split=split, num_frames=int(num_frames))
+    model123, incompat123, stage123_meta = load_stage123_model(stage123_checkpoint, int(num_frames), device)
+    temporal_settings = _resolve_stage123_temporal_settings(stage123_meta)
+    dataset = load_dataset_resource(
+        data_dir=data_dir,
+        split=split,
+        num_frames=int(num_frames),
+        temporal_window_mode=temporal_settings["mode"],
+        temporal_window_margin_mult=temporal_settings["margin_mult"],
+    )
     row_match = dataset.filelist[dataset.filelist["FileName"] == video_name]
     if row_match.empty:
         raise ValueError(f"Video {video_name} not found in split {split}")
@@ -1459,8 +1491,6 @@ def run_case(
     gt_ed_idx = int(np.argmin(np.abs(sampled_indices - int(ed_orig)))) if ed_orig >= 0 else 0
     gt_es_idx = int(np.argmin(np.abs(sampled_indices - int(es_orig)))) if es_orig >= 0 else 0
     ef_gt_pct = float(row["EF"])
-
-    model123, incompat123 = load_stage123_model(stage123_checkpoint, int(num_frames), device)
 
     with torch.no_grad():
         out = model123(clip.unsqueeze(0).to(device), return_stage_outputs=True)
@@ -1499,8 +1529,8 @@ def run_case(
     stage2_peak_idx = int(np.argmax(attn))
     stage2_peak_to_event = float(min(abs(stage2_peak_idx - gt_ed_idx), abs(stage2_peak_idx - gt_es_idx)))
 
-    phase_pred_ed = int(np.argmax(phase_probs[:, 0]))
-    phase_pred_es = int(np.argmax(phase_probs[:, 1]))
+    phase_pred_ed = int(np.argmax(phase_probs[:, 1]))
+    phase_pred_es = int(np.argmax(phase_probs[:, 2]))
 
     ed_err_sampled = int(abs(pred_ed_idx - gt_ed_idx))
     es_err_sampled = int(abs(pred_es_idx - gt_es_idx))
@@ -1666,6 +1696,9 @@ def run_case(
                 stage4_out["error"] = str(exc)
 
     explanation = []
+    explanation.append(
+        f"Stage1-3 temporal inference mode: {temporal_settings['mode']} (margin={temporal_settings['margin_mult']:.2f})."
+    )
     if stage4_out.get("available"):
         explanation.append(
             f"Stage5 EF from Stage4 masks = {stage4_out['ef_stage5_pred_pct']:.2f}%. Compare with Stage1-3 EF head = {ef_pred_pct:.2f}% and GT EF = {ef_gt_pct:.2f}%."
@@ -1722,14 +1755,14 @@ def main():
     st.title("CardioXplain: Dashboard")
     st.caption("Select a test video, run Stage1-5 inference, and inspect stage-wise outputs + metrics.")
 
-    default_stage123_ckpt = _abs_path(getattr(config, "CHECKPOINT_PATH", "best_model.pth"))
+    default_stage123_ckpt = _abs_path(getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
     default_stage4_ckpt = _abs_path(getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
 
     with st.sidebar:
         st.header("Run Settings")
         data_dir = st.text_input("Data directory", value=_abs_path(config.DATA_DIR))
         split = st.selectbox("Dataset split", options=["TEST", "VAL", "TRAIN"], index=0)
-        num_frames = st.number_input("Stage1-3 num frames", min_value=8, max_value=128, value=int(getattr(config, "NUM_FRAMES", 32)), step=8)
+        num_frames = st.number_input("Stage1-3 num frames", min_value=8, max_value=128, value=int(getattr(config, "NUM_FRAMES", 96)), step=8)
 
         device_choice = st.selectbox("Device", options=["auto", "cuda", "cpu"], index=0)
         device = _resolve_device(device_choice)
