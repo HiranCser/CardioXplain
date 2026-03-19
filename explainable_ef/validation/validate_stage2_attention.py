@@ -71,7 +71,13 @@ def main():
     model = EFModel(num_frames=args.num_frames).to(device)
     checkpoint = torch.load(args.checkpoint, map_location=device)
     state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
-    incompatible = model.load_state_dict(state_dict, strict=False)
+    model_state = model.state_dict()
+    filtered_state_dict = {
+        key: value
+        for key, value in state_dict.items()
+        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
+    }
+    incompatible = model.load_state_dict(filtered_state_dict, strict=False)
     if incompatible.missing_keys or incompatible.unexpected_keys:
         print(
             f"Warning: checkpoint loaded with key mismatch | missing={len(incompatible.missing_keys)} unexpected={len(incompatible.unexpected_keys)}"

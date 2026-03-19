@@ -951,7 +951,13 @@ def maybe_warm_start_from_checkpoint(model, logger, enabled=True):
     try:
         checkpoint = torch.load(ckpt_path, map_location=config.DEVICE)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
-        incompatible = model.load_state_dict(state_dict, strict=False)
+        model_state = model.state_dict()
+        filtered_state_dict = {
+            key: value
+            for key, value in state_dict.items()
+            if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
+        }
+        incompatible = model.load_state_dict(filtered_state_dict, strict=False)
         missing = list(getattr(incompatible, "missing_keys", []))
         unexpected = list(getattr(incompatible, "unexpected_keys", []))
 

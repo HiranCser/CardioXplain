@@ -106,7 +106,14 @@ def save_sample_visualizations(model, dataset, out_dir, num_samples, device, see
 def load_model(checkpoint_path, device):
     model = EFModel(num_frames=config.NUM_FRAMES).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
+    model_state = model.state_dict()
+    filtered_state_dict = {
+        key: value
+        for key, value in state_dict.items()
+        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
+    }
+    model.load_state_dict(filtered_state_dict, strict=False)
     return model
 
 

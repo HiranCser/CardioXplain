@@ -179,7 +179,13 @@ def _load_stage123_model(checkpoint_path, num_frames, device):
     model = EFModel(num_frames=int(num_frames)).to(device)
     ckpt = torch.load(checkpoint_path, map_location=device)
     state_dict = ckpt.get("model_state_dict", ckpt)
-    incompatible = model.load_state_dict(state_dict, strict=False)
+    model_state = model.state_dict()
+    filtered_state_dict = {
+        key: value
+        for key, value in state_dict.items()
+        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
+    }
+    incompatible = model.load_state_dict(filtered_state_dict, strict=False)
     model.eval()
     return model, incompatible
 
