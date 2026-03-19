@@ -40,6 +40,73 @@ def _render_centered_image(image_data, caption, width=PREVIEW_DISPLAY_WIDTH):
         st.image(image_data, caption=caption, width=width)
 
 
+def _inject_page_styles():
+    st.markdown(
+        """
+        <style>
+            [data-testid="stAppViewContainer"] {
+                background:
+                    radial-gradient(circle at top left, rgba(30, 136, 229, 0.10), transparent 28%),
+                    radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 24%),
+                    linear-gradient(180deg, #f5f9ff 0%, #edf4fb 48%, #f8fbff 100%);
+            }
+            .block-container {
+                padding-top: 1.4rem;
+                padding-bottom: 2.5rem;
+                max-width: 1320px;
+            }
+            [data-testid="stSidebar"] {
+                background: linear-gradient(180deg, #f7fbff 0%, #eef5fd 100%);
+                border-right: 1px solid rgba(148, 163, 184, 0.22);
+            }
+            h1, h2, h3 {
+                color: #12324a;
+                letter-spacing: -0.02em;
+            }
+            h1 {
+                font-size: 2.1rem;
+                font-weight: 800;
+            }
+            h2, h3 {
+                font-weight: 700;
+            }
+            [data-testid="stMetric"] {
+                background: rgba(255, 255, 255, 0.88);
+                border: 1px solid rgba(148, 163, 184, 0.22);
+                border-radius: 18px;
+                padding: 0.85rem 1rem;
+                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+            }
+            [data-testid="stMetricLabel"] {
+                color: #5b7690;
+                font-weight: 600;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+            }
+            [data-testid="stMetricValue"] {
+                color: #102a43;
+                font-weight: 800;
+            }
+            div[data-testid="stDataFrame"] {
+                border-radius: 18px;
+                overflow: hidden;
+                border: 1px solid rgba(148, 163, 184, 0.20);
+                box-shadow: 0 12px 24px rgba(15, 23, 42, 0.05);
+                background: rgba(255, 255, 255, 0.92);
+            }
+            [data-testid="stImage"] img {
+                border-radius: 18px;
+                box-shadow: 0 14px 34px rgba(15, 23, 42, 0.10);
+            }
+            [data-testid="stCaptionContainer"] {
+                color: #587086;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _abs_path(path_value):
     if not path_value:
         return ""
@@ -535,17 +602,6 @@ def _expand_attention_to_full_frames(attn, sampled_indices, total_frames):
 
 
 def _render_temporal_weight_video(result):
-    playable_path, was_converted, video_err, mime_type = _prepare_browser_video(result["video_path"])
-    if not playable_path:
-        st.warning(f"Playable video unavailable: {video_err}")
-        return False
-
-    try:
-        video_bytes = open(playable_path, "rb").read()
-    except Exception as exc:
-        st.warning(f"Failed to load playable video: {exc}")
-        return False
-
     total_frames = len(result["full_frames"])
     frame_weights = _expand_attention_to_full_frames(
         result["stage2_attention"],
@@ -559,11 +615,23 @@ def _render_temporal_weight_video(result):
     sampled_indices = np.asarray(result["sampled_indices"], dtype=np.int32).reshape(-1)
     sampled_weights = np.asarray(result["stage2_attention"], dtype=np.float64).reshape(-1)
     sample_count = min(sampled_indices.size, sampled_weights.size)
+    peak_frame = int(np.argmax(frame_weights)) if frame_weights.size > 0 else 0
+    peak_weight = float(frame_weights[peak_frame]) if frame_weights.size > 0 else 0.0
+
+    playback_col, summary_col = st.columns([1.65, 1.0])
+    with playback_col:
+        gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
+        if gif_bytes:
+            st.image(gif_bytes, caption="Animated source preview", use_container_width=True)
+        else:
+            st.caption(f"Animated preview unavailable: {gif_err}")
+    with summary_col:
+        st.metric("Peak Weight", f"{peak_weight:.4f}")
+        st.metric("Peak Frame", str(peak_frame))
+        st.metric("Frames", str(total_frames))
+        st.caption("Only the animated preview is shown here. The graph below stays available for frame-wise temporal-weight inspection.")
 
     payload = {
-        "fps": float(result["fps"]),
-        "videoMime": mime_type,
-        "videoBase64": base64.b64encode(video_bytes).decode("ascii"),
         "frameWeights": [round(float(v), 6) for v in frame_weights.tolist()],
         "sampledIndices": [int(v) for v in sampled_indices[:sample_count].tolist()],
         "sampledWeights": [round(float(v), 6) for v in sampled_weights[:sample_count].tolist()],
@@ -571,8 +639,9 @@ def _render_temporal_weight_video(result):
         "gtEs": int(result["es_orig"]),
         "predEd": int(result["pred_ed_orig"]),
         "predEs": int(result["pred_es_orig"]),
+        "peakFrame": peak_frame,
+        "peakWeight": round(peak_weight, 6),
         "totalFrames": int(total_frames),
-        "wasConverted": bool(was_converted),
     }
 
     component_id = hashlib.md5(
@@ -582,80 +651,121 @@ def _render_temporal_weight_video(result):
 
     components.html(
         f"""
-        <div id="tw-{component_id}" style="font-family: 'Segoe UI', sans-serif; color: #102a43;">
+        <div id="tw-{component_id}" style="font-family: 'Trebuchet MS', 'Segoe UI', sans-serif; color: #102a43;">
           <style>
-            #tw-{component_id} .tw-card {{
-              background: linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
-              border: 1px solid #d9e6f2;
-              border-radius: 18px;
+            #tw-{component_id} {{
+              --tw-ink: #102a43;
+              --tw-muted: #587086;
+              --tw-line: #245fd9;
+              --tw-sample: #f97316;
+              --tw-ed: #16a34a;
+              --tw-es: #dc2626;
+              --tw-border: rgba(148, 163, 184, 0.22);
+            }}
+            #tw-{component_id} .tw-shell {{
+              background: linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(240,247,255,0.94) 100%);
+              border: 1px solid var(--tw-border);
+              border-radius: 26px;
               padding: 18px;
-              box-sizing: border-box;
+              box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
             }}
-            #tw-{component_id} .tw-title {{
-              font-size: 18px;
-              font-weight: 700;
-              margin-bottom: 6px;
-            }}
-            #tw-{component_id} .tw-subtitle {{
-              font-size: 13px;
-              color: #486581;
+            #tw-{component_id} .tw-header {{
+              display: flex;
+              justify-content: space-between;
+              align-items: flex-end;
+              gap: 12px;
               margin-bottom: 14px;
             }}
-            #tw-{component_id} .tw-video {{
-              display: block;
-              width: min(100%, 760px);
-              margin: 0 auto 16px auto;
-              border-radius: 16px;
-              background: #000;
-              box-shadow: 0 10px 30px rgba(16, 42, 67, 0.18);
+            #tw-{component_id} .tw-title {{
+              margin: 0;
+              font-size: 1.25rem;
+              font-weight: 800;
+              color: var(--tw-ink);
             }}
-            #tw-{component_id} .tw-readout {{
+            #tw-{component_id} .tw-subtitle {{
+              margin: 4px 0 0 0;
+              color: var(--tw-muted);
+              font-size: 0.92rem;
+              line-height: 1.45;
+            }}
+            #tw-{component_id} .tw-chip-row {{
+              display: flex;
+              flex-wrap: wrap;
+              gap: 8px;
+              justify-content: flex-end;
+            }}
+            #tw-{component_id} .tw-chip {{
+              border-radius: 999px;
+              padding: 8px 12px;
+              background: rgba(255,255,255,0.92);
+              border: 1px solid var(--tw-border);
+              color: var(--tw-muted);
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 0.03em;
+            }}
+            #tw-{component_id} .tw-grid {{
               display: grid;
               grid-template-columns: repeat(4, minmax(0, 1fr));
               gap: 10px;
               margin-bottom: 14px;
             }}
-            #tw-{component_id} .tw-pill {{
-              background: rgba(255, 255, 255, 0.82);
-              border: 1px solid #d9e2ec;
-              border-radius: 12px;
-              padding: 10px 12px;
+            #tw-{component_id} .tw-stat {{
+              background: rgba(255,255,255,0.88);
+              border: 1px solid var(--tw-border);
+              border-radius: 16px;
+              padding: 12px 14px;
+              box-shadow: inset 0 1px 0 rgba(255,255,255,0.65);
             }}
-            #tw-{component_id} .tw-pill-label {{
+            #tw-{component_id} .tw-stat-label {{
               font-size: 11px;
               text-transform: uppercase;
               letter-spacing: 0.08em;
-              color: #627d98;
-              margin-bottom: 4px;
+              color: #6b8297;
+              margin-bottom: 5px;
             }}
-            #tw-{component_id} .tw-pill-value {{
-              font-size: 16px;
-              font-weight: 700;
-              color: #102a43;
+            #tw-{component_id} .tw-stat-value {{
+              font-size: 1.14rem;
+              font-weight: 800;
+              color: var(--tw-ink);
             }}
-            #tw-{component_id} .tw-chart-wrap {{
-              background: #ffffff;
-              border: 1px solid #d9e2ec;
-              border-radius: 16px;
-              padding: 10px;
+            #tw-{component_id} .tw-chart-card {{
+              background: radial-gradient(circle at top right, rgba(36,95,217,0.08), transparent 26%), #ffffff;
+              border: 1px solid var(--tw-border);
+              border-radius: 22px;
+              padding: 14px;
             }}
             #tw-{component_id} .tw-chart {{
               width: 100%;
-              height: 250px;
+              height: 310px;
               display: block;
+            }}
+            #tw-{component_id} .tw-slider-row {{
+              margin-top: 10px;
+            }}
+            #tw-{component_id} .tw-slider-label {{
+              display: flex;
+              justify-content: space-between;
+              color: var(--tw-muted);
+              font-size: 12px;
+              margin-bottom: 6px;
+            }}
+            #tw-{component_id} .tw-slider {{
+              width: 100%;
+              accent-color: #245fd9;
             }}
             #tw-{component_id} .tw-legend {{
               display: flex;
               flex-wrap: wrap;
-              gap: 12px;
+              gap: 14px;
               margin-top: 12px;
+              color: var(--tw-muted);
               font-size: 12px;
-              color: #486581;
             }}
             #tw-{component_id} .tw-legend-item {{
               display: inline-flex;
               align-items: center;
-              gap: 6px;
+              gap: 7px;
             }}
             #tw-{component_id} .tw-swatch {{
               width: 12px;
@@ -663,121 +773,168 @@ def _render_temporal_weight_video(result):
               border-radius: 999px;
               display: inline-block;
             }}
-            @media (max-width: 760px) {{
-              #tw-{component_id} .tw-readout {{
+            @media (max-width: 900px) {{
+              #tw-{component_id} .tw-grid {{
                 grid-template-columns: repeat(2, minmax(0, 1fr));
+              }}
+              #tw-{component_id} .tw-header {{
+                flex-direction: column;
+                align-items: flex-start;
+              }}
+              #tw-{component_id} .tw-chip-row {{
+                justify-content: flex-start;
               }}
             }}
           </style>
-          <div class="tw-card">
-            <div class="tw-title">Temporal Weight Playback</div>
-            <div class="tw-subtitle">Play the video to see the current frame marker move across the Stage 2 temporal-weight graph.</div>
-            <video id="tw-video-{component_id}" class="tw-video" controls preload="metadata"></video>
-            <div class="tw-readout">
-              <div class="tw-pill">
-                <div class="tw-pill-label">Current frame</div>
-                <div class="tw-pill-value" id="tw-frame-{component_id}">0</div>
+          <div class="tw-shell">
+            <div class="tw-header">
+              <div>
+                <div class="tw-title">Temporal Weight Graph</div>
+                <div class="tw-subtitle">Use the native video player above for playback. This graph remains available for frame-by-frame temporal-weight inspection.</div>
               </div>
-              <div class="tw-pill">
-                <div class="tw-pill-label">Temporal weight</div>
-                <div class="tw-pill-value" id="tw-weight-{component_id}">0.0000</div>
-              </div>
-              <div class="tw-pill">
-                <div class="tw-pill-label">Ground truth ED/ES</div>
-                <div class="tw-pill-value">{int(result['ed_orig'])} / {int(result['es_orig'])}</div>
-              </div>
-              <div class="tw-pill">
-                <div class="tw-pill-label">Predicted ED/ES</div>
-                <div class="tw-pill-value">{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}</div>
+              <div class="tw-chip-row">
+                <span class="tw-chip">{payload['totalFrames']} frames</span>
+                <span class="tw-chip">Peak frame {payload['peakFrame']}</span>
+                <span class="tw-chip">Peak weight {payload['peakWeight']:.4f}</span>
               </div>
             </div>
-            <div class="tw-chart-wrap">
-              <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 760 250" preserveAspectRatio="none"></svg>
+            <div class="tw-grid">
+              <div class="tw-stat">
+                <div class="tw-stat-label">Selected frame</div>
+                <div class="tw-stat-value" id="tw-frame-{component_id}">0 / {payload['totalFrames'] - 1}</div>
+              </div>
+              <div class="tw-stat">
+                <div class="tw-stat-label">Temporal weight</div>
+                <div class="tw-stat-value" id="tw-weight-{component_id}">0.0000</div>
+              </div>
+              <div class="tw-stat">
+                <div class="tw-stat-label">Ground truth ED/ES</div>
+                <div class="tw-stat-value">{int(result['ed_orig'])} / {int(result['es_orig'])}</div>
+              </div>
+              <div class="tw-stat">
+                <div class="tw-stat-label">Predicted ED/ES</div>
+                <div class="tw-stat-value">{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}</div>
+              </div>
             </div>
-            <div class="tw-legend">
-              <span class="tw-legend-item"><span class="tw-swatch" style="background:#2563eb;"></span>Interpolated temporal weight by frame</span>
-              <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Sampled frames used by Stage 2</span>
-              <span class="tw-legend-item"><span class="tw-swatch" style="background:#16a34a;"></span>ED markers</span>
-              <span class="tw-legend-item"><span class="tw-swatch" style="background:#dc2626;"></span>ES markers</span>
+            <div class="tw-chart-card">
+              <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 820 310" preserveAspectRatio="none"></svg>
+              <div class="tw-slider-row">
+                <div class="tw-slider-label">
+                  <span>Inspect graph by frame</span>
+                  <span id="tw-slider-readout-{component_id}">Frame 0</span>
+                </div>
+                <input id="tw-slider-{component_id}" class="tw-slider" type="range" min="0" max="{max(0, payload['totalFrames'] - 1)}" value="0" step="1" />
+              </div>
+              <div class="tw-legend">
+                <span class="tw-legend-item"><span class="tw-swatch" style="background:#245fd9;"></span>Temporal weight curve</span>
+                <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Sampled frames</span>
+                <span class="tw-legend-item"><span class="tw-swatch" style="background:#16a34a;"></span>ED markers</span>
+                <span class="tw-legend-item"><span class="tw-swatch" style="background:#dc2626;"></span>ES markers</span>
+              </div>
             </div>
           </div>
         </div>
         <script>
           const payload = {payload_json};
-          const video = document.getElementById("tw-video-{component_id}");
           const svg = document.getElementById("tw-chart-{component_id}");
           const frameLabel = document.getElementById("tw-frame-{component_id}");
           const weightLabel = document.getElementById("tw-weight-{component_id}");
-          const width = 760;
-          const height = 250;
-          const padX = 42;
-          const padY = 20;
+          const slider = document.getElementById("tw-slider-{component_id}");
+          const sliderReadout = document.getElementById("tw-slider-readout-{component_id}");
+          const width = 820;
+          const height = 310;
+          const padLeft = 58;
+          const padRight = 20;
+          const padTop = 22;
+          const padBottom = 42;
+          const graphHeight = height - padTop - padBottom;
+          const graphWidth = width - padLeft - padRight;
           const maxWeight = Math.max(...payload.frameWeights, 1e-6);
-
-          video.src = `data:${{payload.videoMime}};base64,${{payload.videoBase64}}`;
 
           function xForFrame(frame) {{
             if (payload.totalFrames <= 1) {{
-              return width / 2;
+              return padLeft + graphWidth / 2;
             }}
-            return padX + (frame / (payload.totalFrames - 1)) * (width - padX * 2);
+            return padLeft + (frame / (payload.totalFrames - 1)) * graphWidth;
           }}
 
           function yForWeight(weight) {{
-            return height - padY - (weight / maxWeight) * (height - padY * 2);
+            return padTop + graphHeight - (weight / maxWeight) * graphHeight;
           }}
 
-          function eventLine(frame, color, dash, label, labelOffset) {{
+          function buildLinePath(points) {{
+            return points.map((point, idx) => `${{idx === 0 ? 'M' : 'L'}}${{point[0].toFixed(2)}},${{point[1].toFixed(2)}}`).join(' ');
+          }}
+
+          function buildAreaPath(points) {{
+            if (points.length === 0) {{
+              return '';
+            }}
+            const linePath = buildLinePath(points);
+            const last = points[points.length - 1];
+            const first = points[0];
+            return `${{linePath}} L${{last[0].toFixed(2)}},${{(padTop + graphHeight).toFixed(2)}} L${{first[0].toFixed(2)}},${{(padTop + graphHeight).toFixed(2)}} Z`;
+          }}
+
+          function eventMarkup(frame, color, dash, label, row) {{
             const x = xForFrame(frame);
+            const labelWidth = Math.max(62, label.length * 7.4 + 20);
+            const rectX = Math.min(width - labelWidth - 8, Math.max(8, x - labelWidth / 2));
+            const rectY = padTop + 8 + row * 20;
             return `
-              <line x1="${{x}}" y1="${{padY}}" x2="${{x}}" y2="${{height - padY}}" stroke="${{color}}" stroke-width="2" stroke-dasharray="${{dash}}" opacity="0.82"></line>
-              <text x="${{Math.min(width - 90, x + 6)}}" y="${{padY + labelOffset}}" fill="${{color}}" font-size="11" font-weight="700">${{label}}</text>
+              <line x1="${{x}}" y1="${{padTop}}" x2="${{x}}" y2="${{padTop + graphHeight}}" stroke="${{color}}" stroke-width="2.2" stroke-dasharray="${{dash}}" opacity="0.85"></line>
+              <rect x="${{rectX}}" y="${{rectY}}" width="${{labelWidth}}" height="18" rx="9" fill="white" fill-opacity="0.92" stroke="${{color}}" stroke-opacity="0.35"></rect>
+              <text x="${{rectX + labelWidth / 2}}" y="${{rectY + 12.5}}" fill="${{color}}" text-anchor="middle" font-size="11.5" font-weight="800">${{label}}</text>
             `;
           }}
 
-          const polylinePoints = payload.frameWeights
-            .map((weight, frame) => `${{xForFrame(frame)}},${{yForWeight(weight)}}`)
-            .join(" " );
-
-          const sampledDots = payload.sampledIndices
-            .map((frame, idx) => `<circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="3.5" fill="#f97316" opacity="0.95"></circle>`)
-            .join("");
-
-          const xTicks = [0, Math.max(0, Math.floor((payload.totalFrames - 1) / 2)), Math.max(0, payload.totalFrames - 1)]
-            .map((frame) => `
-              <line x1="${{xForFrame(frame)}}" y1="${{height - padY}}" x2="${{xForFrame(frame)}}" y2="${{height - padY + 5}}" stroke="#9fb3c8"></line>
-              <text x="${{xForFrame(frame)}}" y="${{height - 2}}" fill="#627d98" text-anchor="middle" font-size="11">${{frame}}</text>
-            `)
-            .join("");
-
-          const yTicks = [0, maxWeight / 2, maxWeight]
-            .map((weight) => `
-              <line x1="${{padX - 5}}" y1="${{yForWeight(weight)}}" x2="${{width - padX}}" y2="${{yForWeight(weight)}}" stroke="#e6edf5"></line>
-              <text x="10" y="${{yForWeight(weight) + 4}}" fill="#627d98" font-size="11">${{weight.toFixed(3)}}</text>
-            `)
-            .join("");
+          const points = payload.frameWeights.map((weight, frame) => [xForFrame(frame), yForWeight(weight)]);
+          const linePath = buildLinePath(points);
+          const areaPath = buildAreaPath(points);
+          const sampledDots = payload.sampledIndices.map((frame, idx) => `
+            <circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="4.2" fill="#f97316" stroke="white" stroke-width="1.4"></circle>
+          `).join('');
+          const xTickFrames = [0, Math.max(0, Math.floor((payload.totalFrames - 1) / 2)), Math.max(0, payload.totalFrames - 1)];
+          const xTicks = xTickFrames.map((frame) => `
+            <line x1="${{xForFrame(frame)}}" y1="${{padTop + graphHeight}}" x2="${{xForFrame(frame)}}" y2="${{padTop + graphHeight + 6}}" stroke="#9db2c7"></line>
+            <text x="${{xForFrame(frame)}}" y="${{height - 10}}" fill="#627d98" text-anchor="middle" font-size="11.5">${{frame}}</text>
+          `).join('');
+          const yTickValues = [0, maxWeight / 2, maxWeight];
+          const yTicks = yTickValues.map((weight) => `
+            <line x1="${{padLeft}}" y1="${{yForWeight(weight)}}" x2="${{width - padRight}}" y2="${{yForWeight(weight)}}" stroke="#e5edf6"></line>
+            <text x="14" y="${{yForWeight(weight) + 4}}" fill="#627d98" font-size="11.5">${{weight.toFixed(3)}}</text>
+          `).join('');
 
           svg.innerHTML = `
-            <rect x="0" y="0" width="760" height="250" rx="12" fill="#ffffff"></rect>
+            <defs>
+              <linearGradient id="tw-fill-{component_id}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#245fd9" stop-opacity="0.28"></stop>
+                <stop offset="100%" stop-color="#245fd9" stop-opacity="0.02"></stop>
+              </linearGradient>
+              <filter id="tw-glow-{component_id}" x="-10%" y="-10%" width="120%" height="120%">
+                <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#245fd9" flood-opacity="0.20"></feDropShadow>
+              </filter>
+            </defs>
+            <rect x="0" y="0" width="820" height="310" rx="18" fill="#ffffff"></rect>
             ${{yTicks}}
-            <line x1="${{padX}}" y1="${{height - padY}}" x2="${{width - padX}}" y2="${{height - padY}}" stroke="#9fb3c8" stroke-width="1.2"></line>
-            <line x1="${{padX}}" y1="${{padY}}" x2="${{padX}}" y2="${{height - padY}}" stroke="#9fb3c8" stroke-width="1.2"></line>
-            <polyline fill="none" stroke="#2563eb" stroke-width="3" points="${{polylinePoints}}"></polyline>
+            <path d="${{areaPath}}" fill="url(#tw-fill-{component_id})"></path>
+            <path d="${{linePath}}" fill="none" stroke="#245fd9" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#tw-glow-{component_id})"></path>
             ${{sampledDots}}
-            ${{eventLine(payload.gtEd, '#16a34a', '5 4', 'GT ED', 12)}}
-            ${{eventLine(payload.gtEs, '#dc2626', '5 4', 'GT ES', 26)}}
-            ${{eventLine(payload.predEd, '#16a34a', '2 4', 'Pred ED', 40)}}
-            ${{eventLine(payload.predEs, '#dc2626', '2 4', 'Pred ES', 54)}}
+            ${{eventMarkup(payload.gtEd, '#16a34a', '5 5', 'GT ED', 0)}}
+            ${{eventMarkup(payload.gtEs, '#dc2626', '5 5', 'GT ES', 1)}}
+            ${{eventMarkup(payload.predEd, '#16a34a', '2 5', 'Pred ED', 2)}}
+            ${{eventMarkup(payload.predEs, '#dc2626', '2 5', 'Pred ES', 3)}}
+            <line x1="${{padLeft}}" y1="${{padTop + graphHeight}}" x2="${{width - padRight}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.3"></line>
+            <line x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.3"></line>
             ${{xTicks}}
-            <text x="${{width / 2}}" y="${{height - 16}}" fill="#486581" text-anchor="middle" font-size="12" font-weight="600">Frame index</text>
-            <text x="18" y="14" fill="#486581" font-size="12" font-weight="600">Weight</text>
-            <line id="tw-marker-{component_id}" x1="${{padX}}" y1="${{padY}}" x2="${{padX}}" y2="${{height - padY}}" stroke="#0f172a" stroke-width="2.5"></line>
-            <circle id="tw-marker-dot-{component_id}" cx="${{padX}}" cy="${{yForWeight(payload.frameWeights[0] || 0)}}" r="5.2" fill="#0f172a"></circle>
+            <text x="${{width / 2}}" y="${{height - 4}}" fill="#486581" text-anchor="middle" font-size="12.5" font-weight="700">Frame index</text>
+            <text x="14" y="16" fill="#486581" font-size="12.5" font-weight="700">Weight</text>
+            <line id="tw-marker-{component_id}" x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#0f172a" stroke-width="2.7"></line>
+            <circle id="tw-marker-dot-{component_id}" cx="${{padLeft}}" cy="${{yForWeight(payload.frameWeights[0] || 0)}}" r="6" fill="#0f172a" stroke="white" stroke-width="2"></circle>
           `;
 
           const marker = document.getElementById("tw-marker-{component_id}");
           const markerDot = document.getElementById("tw-marker-dot-{component_id}");
-          let rafId = null;
 
           function updateMarker(frame) {{
             const clampedFrame = Math.max(0, Math.min(payload.totalFrames - 1, frame));
@@ -789,54 +946,22 @@ def _render_temporal_weight_video(result):
             markerDot.setAttribute('cy', yForWeight(weight));
             frameLabel.textContent = `${{clampedFrame}} / ${{Math.max(0, payload.totalFrames - 1)}}`;
             weightLabel.textContent = weight.toFixed(4);
+            slider.value = String(clampedFrame);
+            sliderReadout.textContent = `Frame ${{clampedFrame}}`;
           }}
 
-          function syncFromVideo() {{
-            const frame = Math.round((video.currentTime || 0) * payload.fps);
-            updateMarker(frame);
-          }}
-
-          function tick() {{
-            syncFromVideo();
-            if (!video.paused && !video.ended) {{
-              rafId = window.requestAnimationFrame(tick);
-            }}
-          }}
-
-          video.addEventListener('loadedmetadata', syncFromVideo);
-          video.addEventListener('timeupdate', syncFromVideo);
-          video.addEventListener('seeked', syncFromVideo);
-          video.addEventListener('play', () => {{
-            if (rafId !== null) {{
-              window.cancelAnimationFrame(rafId);
-            }}
-            tick();
-          }});
-          video.addEventListener('pause', () => {{
-            if (rafId !== null) {{
-              window.cancelAnimationFrame(rafId);
-              rafId = null;
-            }}
-            syncFromVideo();
-          }});
-          video.addEventListener('ended', () => {{
-            if (rafId !== null) {{
-              window.cancelAnimationFrame(rafId);
-              rafId = null;
-            }}
-            syncFromVideo();
+          slider.addEventListener('input', (event) => {{
+            updateMarker(Number(event.target.value || 0));
           }});
 
           updateMarker(0);
         </script>
         """,
-        height=640,
+        height=560,
     )
 
-    if was_converted:
-        st.caption("Video was transcoded to MP4 for browser playback before syncing the temporal-weight graph.")
-
     return True
+
 
 
 def run_case(
@@ -1070,6 +1195,7 @@ def run_case(
 
 
 def main():
+    _inject_page_styles()
     st.title("CardioXplain: Dashboard")
     st.caption("Select a test video, run Stage1-5 inference, and inspect stage-wise outputs + metrics.")
 
