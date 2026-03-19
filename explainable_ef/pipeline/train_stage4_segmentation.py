@@ -375,6 +375,7 @@ def train_one_epoch(
         "loss": total_loss / max(1, n_batches),
         "bce": total_bce / max(1, n_batches),
         "dice_loss": total_dice_loss / max(1, n_batches),
+        "area_loss": total_area_loss / max(1, n_batches),
         "dice_hard": total_dice_hard / max(1, n_batches),
         "dice_soft": total_dice_soft / max(1, n_batches),
         "avg_pos_weight": total_pos_weight / max(1, n_batches),

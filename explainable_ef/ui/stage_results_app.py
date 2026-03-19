@@ -29,9 +29,9 @@ from pipeline.stage45_pipeline import Stage45Pipeline
 
 
 st.set_page_config(page_title="CardioXplain Stage Dashboard", layout="wide")
-PREVIEW_MAX_WIDTH = 420
-PREVIEW_DISPLAY_WIDTH = 600
-FRAME_DISPLAY_WIDTH = 360
+PREVIEW_MAX_WIDTH = 440
+PREVIEW_DISPLAY_WIDTH = 440
+FRAME_DISPLAY_WIDTH = 440
 
 
 def _render_centered_image(image_data, caption, width=PREVIEW_DISPLAY_WIDTH):
@@ -138,47 +138,41 @@ def _inject_page_styles():
                 margin-bottom: 0.75rem;
             }
             .phase-group {
-                background: rgba(255, 255, 255, 0.88);
+                background: rgba(255, 255, 255, 0.9);
                 border: 1px solid rgba(148, 163, 184, 0.16);
-                border-radius: 20px;
-                padding: 0.95rem;
-                box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
-                margin-bottom: 0.75rem;
+                border-radius: 22px;
+                padding: 1rem 1rem 0.9rem 1rem;
+                box-shadow: 0 10px 22px rgba(15, 23, 42, 0.04);
+                margin-bottom: 0.95rem;
             }
             .phase-group-title {
                 color: #173652;
-                font-size: 0.98rem;
+                font-size: 1rem;
                 font-weight: 800;
-                margin-bottom: 0.7rem;
+                margin-bottom: 0.2rem;
             }
-            .phase-card-grid {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 0.85rem;
-            }
-            .phase-card {
-                background: linear-gradient(180deg, #ffffff 0%, #f8fbfe 100%);
-                border: 1px solid rgba(148, 163, 184, 0.14);
-                border-radius: 18px;
-                overflow: hidden;
-                box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+            .phase-group-note {
+                color: #688197;
+                font-size: 0.83rem;
+                line-height: 1.45;
+                margin-bottom: 0.85rem;
             }
             .phase-card-head {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                gap: 0.6rem;
-                padding: 0.7rem 0.8rem 0.2rem 0.8rem;
+                gap: 0.75rem;
+                margin-bottom: 0.55rem;
             }
             .phase-card-title {
                 color: #18344d;
-                font-size: 0.91rem;
+                font-size: 1rem;
                 font-weight: 800;
                 line-height: 1.3;
             }
             .phase-pill {
                 border-radius: 999px;
-                padding: 0.22rem 0.55rem;
+                padding: 0.24rem 0.62rem;
                 font-size: 0.72rem;
                 font-weight: 800;
                 letter-spacing: 0.04em;
@@ -192,33 +186,19 @@ def _inject_page_styles():
                 background: rgba(220, 38, 38, 0.12);
                 color: #b42318;
             }
-            .phase-frame-wrap {
-                padding: 0.45rem 0.8rem 0 0.8rem;
-            }
-            .phase-frame {
-                width: 100%;
-                display: block;
-                border-radius: 14px;
-                background: #020617;
-            }
-            .phase-frame-ed {
-                border: 2px solid rgba(22, 163, 74, 0.85);
-            }
-            .phase-frame-es {
-                border: 2px solid rgba(220, 38, 38, 0.85);
-            }
             .phase-card-meta {
                 display: flex;
                 justify-content: space-between;
                 gap: 0.75rem;
                 color: #6b8297;
-                font-size: 0.8rem;
-                padding: 0.62rem 0.8rem 0.82rem 0.8rem;
+                font-size: 0.82rem;
+                margin-top: 0.45rem;
+                padding: 0 0.15rem 0.1rem 0.15rem;
             }
-            @media (max-width: 900px) {
-                .phase-card-grid {
-                    grid-template-columns: 1fr;
-                }
+            .phase-frame-caption {
+                color: #688197;
+                font-size: 0.82rem;
+                margin-top: 0.35rem;
             }
         </style>
         """,
@@ -674,40 +654,45 @@ def _frame_to_data_uri(frame_rgb):
     return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode('ascii')
 
 
-def _phase_card_html(frame_rgb, title, phase_code, frame_idx, accent_class, footnote):
-    image_uri = _frame_to_data_uri(frame_rgb)
-    safe_title = str(title)
-    safe_phase = str(phase_code)
-    safe_footnote = str(footnote)
-    return f"""
-    <div class="phase-card">
-      <div class="phase-card-head">
-        <div class="phase-card-title">{safe_title}</div>
-        <span class="phase-pill {accent_class}">{safe_phase}</span>
-      </div>
-      <div class="phase-frame-wrap">
-        <img class="phase-frame {'phase-frame-ed' if accent_class == 'phase-pill-ed' else 'phase-frame-es'}" src="{image_uri}" alt="{safe_title}" />
-      </div>
-      <div class="phase-card-meta">
-        <span>Frame {int(frame_idx)}</span>
-        <span>{safe_footnote}</span>
-      </div>
-    </div>
-    """
-
-
-def _render_phase_group(group_title, cards_html):
+def _render_phase_card(frame_rgb, title, phase_code, frame_idx, accent_class, footnote):
     st.markdown(
         f"""
-        <div class="phase-group">
-          <div class="phase-group-title">{group_title}</div>
-          <div class="phase-card-grid">
-            {cards_html}
-          </div>
+        <div class="phase-card-head">
+          <div class="phase-card-title">{title}</div>
+          <span class="phase-pill {accent_class}">{phase_code}</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    if frame_rgb is not None:
+        st.image(frame_rgb, use_container_width=True)
+    else:
+        st.caption("Frame unavailable")
+    st.markdown(
+        f"""
+        <div class="phase-card-meta">
+          <span>Frame {int(frame_idx)}</span>
+          <span>{footnote}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_phase_group(group_title, card_specs):
+    st.markdown(
+        f"""
+        <div class="phase-group">
+          <div class="phase-group-title">{group_title}</div>
+          <div class="phase-group-note">Two key landmarks shown side by side with labels outside the image for readability.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    card_cols = st.columns(2, gap="medium")
+    for col, spec in zip(card_cols, card_specs):
+        with col:
+            _render_phase_card(*spec)
 
 
 def _make_attention_plot(attn, gt_ed_idx, gt_es_idx, pred_ed_idx, pred_es_idx):
@@ -784,6 +769,46 @@ def _expand_attention_to_full_frames(attn, sampled_indices, total_frames):
     return np.clip(full_weights.astype(np.float64), 0.0, None)
 
 
+def _phase_window_label(frame_idx, ed_idx, es_idx):
+    frame_idx = int(frame_idx)
+    ed_idx = int(ed_idx)
+    es_idx = int(es_idx)
+
+    if ed_idx <= es_idx:
+        if frame_idx < ed_idx:
+            return "Pre-ED"
+        if frame_idx == ed_idx:
+            return "End-Diastole"
+        if frame_idx < es_idx:
+            return "Systolic window"
+        if frame_idx == es_idx:
+            return "End-Systole"
+        return "Post-ES"
+
+    lo, hi = sorted((ed_idx, es_idx))
+    if frame_idx < lo:
+        return "Before landmarks"
+    if frame_idx > hi:
+        return "After landmarks"
+    if frame_idx == ed_idx:
+        return "End-Diastole"
+    if frame_idx == es_idx:
+        return "End-Systole"
+    return "Between landmarks"
+
+
+def _nearest_landmark_text(frame_idx, ed_idx, es_idx, prefix):
+    frame_idx = int(frame_idx)
+    choices = [("ED", int(ed_idx)), ("ES", int(es_idx))]
+    label, ref_idx = min(choices, key=lambda item: abs(frame_idx - item[1]))
+    delta = frame_idx - ref_idx
+    if delta == 0:
+        return f"At {prefix} {label}"
+    if delta < 0:
+        return f"{abs(delta)} fr before {prefix} {label}"
+    return f"{abs(delta)} fr after {prefix} {label}"
+
+
 def _render_temporal_weight_video(result):
     total_frames = len(result["full_frames"])
     frame_weights = _expand_attention_to_full_frames(
@@ -816,7 +841,7 @@ def _render_temporal_weight_video(result):
         unsafe_allow_html=True,
     )
 
-    playback_col, summary_col = st.columns([0.92, 1.08], gap="large")
+    playback_col, summary_col = st.columns([1.08, 0.92], gap="large")
     with playback_col:
         st.markdown(
             """
@@ -829,7 +854,7 @@ def _render_temporal_weight_video(result):
         )
         gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
         if gif_bytes:
-            left_pad, image_col, right_pad = st.columns([0.08, 0.84, 0.08])
+            left_pad, image_col, right_pad = st.columns([0.12, 0.76, 0.12])
             with image_col:
                 st.image(gif_bytes, caption="Animated source preview", width=PREVIEW_DISPLAY_WIDTH)
         else:
@@ -865,43 +890,117 @@ def _render_temporal_weight_video(result):
     with compare_left:
         _render_phase_group(
             "Ground Truth",
-            _phase_card_html(
-                _annotate_temporal_frame(gt_ed_frame_rgb, "", "", result["ed_orig"], (22, 163, 74)),
-                "End-Diastole",
-                "ED",
-                result["ed_orig"],
-                "phase-pill-ed",
-                "Ground truth",
-            )
-            + _phase_card_html(
-                _annotate_temporal_frame(gt_es_frame_rgb, "", "", result["es_orig"], (220, 38, 38)),
-                "End-Systole",
-                "ES",
-                result["es_orig"],
-                "phase-pill-es",
-                "Ground truth",
-            ),
+            [
+                (
+                    _annotate_temporal_frame(gt_ed_frame_rgb, "", "", result["ed_orig"], (22, 163, 74)),
+                    "End-Diastole",
+                    "ED",
+                    result["ed_orig"],
+                    "phase-pill-ed",
+                    "Ground truth",
+                ),
+                (
+                    _annotate_temporal_frame(gt_es_frame_rgb, "", "", result["es_orig"], (220, 38, 38)),
+                    "End-Systole",
+                    "ES",
+                    result["es_orig"],
+                    "phase-pill-es",
+                    "Ground truth",
+                ),
+            ],
         )
     with compare_right:
         _render_phase_group(
             "Model Prediction",
-            _phase_card_html(
-                _annotate_temporal_frame(pred_ed_frame_rgb, "", "", result["pred_ed_orig"], (22, 163, 74)),
-                "End-Diastole",
-                "ED",
-                result["pred_ed_orig"],
-                "phase-pill-ed",
-                "Predicted",
-            )
-            + _phase_card_html(
-                _annotate_temporal_frame(pred_es_frame_rgb, "", "", result["pred_es_orig"], (220, 38, 38)),
-                "End-Systole",
-                "ES",
-                result["pred_es_orig"],
-                "phase-pill-es",
-                "Predicted",
-            ),
+            [
+                (
+                    _annotate_temporal_frame(pred_ed_frame_rgb, "", "", result["pred_ed_orig"], (22, 163, 74)),
+                    "End-Diastole",
+                    "ED",
+                    result["pred_ed_orig"],
+                    "phase-pill-ed",
+                    "Predicted",
+                ),
+                (
+                    _annotate_temporal_frame(pred_es_frame_rgb, "", "", result["pred_es_orig"], (220, 38, 38)),
+                    "End-Systole",
+                    "ES",
+                    result["pred_es_orig"],
+                    "phase-pill-es",
+                    "Predicted",
+                ),
+            ],
         )
+
+    component_id = hashlib.md5(
+        f"{result['video_path']}|{total_frames}|{result['fps']}|{result['ed_orig']}|{result['pred_ed_orig']}".encode("utf-8")
+    ).hexdigest()[:12]
+    selected_frame = st.slider(
+        "Linked frame inspector",
+        min_value=0,
+        max_value=max(0, total_frames - 1),
+        value=int(np.clip(peak_frame, 0, max(0, total_frames - 1))),
+        key=f"tw_selected_frame_{component_id}",
+        help="This frame selection drives the preview card and the highlighted marker on the temporal-weight graph.",
+    )
+
+    selected_frame_rgb, _ = _frame_from_list(result["full_frames"], selected_frame)
+    selected_preview = _annotate_temporal_frame(selected_frame_rgb, "", "", selected_frame, (37, 92, 199))
+    selected_weight = float(frame_weights[selected_frame]) if frame_weights.size > 0 else 0.0
+    gt_context = _phase_window_label(selected_frame, result["ed_orig"], result["es_orig"])
+    pred_context = _phase_window_label(selected_frame, result["pred_ed_orig"], result["pred_es_orig"])
+    nearest_gt = _nearest_landmark_text(selected_frame, result["ed_orig"], result["es_orig"], "GT")
+    nearest_pred = _nearest_landmark_text(selected_frame, result["pred_ed_orig"], result["pred_es_orig"], "Pred")
+    nearest_sampled = int(sampled_indices[np.argmin(np.abs(sampled_indices - selected_frame))]) if sample_count > 0 else int(selected_frame)
+    if nearest_sampled == int(selected_frame):
+        sampling_note = "Selected frame is one of the sampled frames used by Stage 2."
+    else:
+        sampling_note = f"Temporal weight is interpolated to this frame. Nearest sampled frame: {nearest_sampled}."
+
+    st.markdown(
+        """
+        <div class="section-heading">
+          <div class="section-title">Linked Frame Inspector</div>
+          <div class="section-subtitle">Use the frame scrubber to connect the timeline marker with the actual echo frame and its phase context.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    inspect_col, context_col = st.columns([0.88, 1.12], gap="large")
+    with inspect_col:
+        st.markdown(
+            """
+            <div class="media-shell">
+              <div class="shell-title">Selected Frame Preview</div>
+              <div class="shell-subtitle">The blue border marks the exact frame currently highlighted on the temporal-weight timeline.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if selected_preview is not None:
+            st.image(selected_preview, caption=f"Frame {selected_frame} linked to the timeline", width=FRAME_DISPLAY_WIDTH)
+        else:
+            st.caption("Selected frame unavailable.")
+    with context_col:
+        st.markdown(
+            """
+            <div class="media-shell">
+              <div class="shell-title">Phase Context</div>
+              <div class="shell-subtitle">This summary ties the selected frame to both the ground-truth landmarks and the model's predicted ED/ES window.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        ctx_row_1 = st.columns(2)
+        ctx_row_1[0].metric("GT Phase Context", gt_context)
+        ctx_row_1[1].metric("Pred Phase Context", pred_context)
+        ctx_row_2 = st.columns(2)
+        ctx_row_2[0].metric("Selected Weight", f"{selected_weight:.4f}")
+        ctx_row_2[1].metric("Nearest Sample", str(nearest_sampled))
+        st.caption(f"Ground truth: {nearest_gt}")
+        st.caption(f"Prediction: {nearest_pred}")
+        st.caption(sampling_note)
 
     payload = {
         "frameWeights": [round(float(v), 6) for v in frame_weights.tolist()],
@@ -913,14 +1012,13 @@ def _render_temporal_weight_video(result):
         "predEs": int(result["pred_es_orig"]),
         "peakFrame": peak_frame,
         "peakWeight": round(peak_weight, 6),
+        "selectedFrame": int(selected_frame),
+        "selectedWeight": round(selected_weight, 6),
+        "gtContext": gt_context,
+        "predContext": pred_context,
         "totalFrames": int(total_frames),
-        "gtSpan": abs(int(result["es_orig"]) - int(result["ed_orig"])),
-        "predSpan": abs(int(result["pred_es_orig"]) - int(result["pred_ed_orig"])),
     }
 
-    component_id = hashlib.md5(
-        f"{result['video_path']}|{total_frames}|{result['fps']}|{result['ed_orig']}|{result['pred_ed_orig']}".encode("utf-8")
-    ).hexdigest()[:12]
     payload_json = json.dumps(payload)
 
     components.html(
@@ -934,7 +1032,7 @@ def _render_temporal_weight_video(result):
               --tw-sample: #f97316;
               --tw-ed: #16a34a;
               --tw-es: #dc2626;
-              --tw-pred-band: rgba(37, 92, 199, 0.06);
+              --tw-pred-band: rgba(37, 92, 199, 0.05);
               --tw-gt-band: rgba(22, 163, 74, 0.05);
               --tw-border: rgba(148, 163, 184, 0.18);
             }}
@@ -954,7 +1052,7 @@ def _render_temporal_weight_video(result):
             }}
             #tw-{component_id} .tw-title {{
               margin: 0;
-              font-size: 1.16rem;
+              font-size: 1.14rem;
               font-weight: 800;
               color: var(--tw-ink);
             }}
@@ -963,7 +1061,7 @@ def _render_temporal_weight_video(result):
               color: var(--tw-muted);
               font-size: 0.88rem;
               line-height: 1.45;
-              max-width: 560px;
+              max-width: 620px;
             }}
             #tw-{component_id} .tw-chip-row {{
               display: flex;
@@ -1001,9 +1099,10 @@ def _render_temporal_weight_video(result):
               margin-bottom: 4px;
             }}
             #tw-{component_id} .tw-stat-value {{
-              font-size: 1.08rem;
+              font-size: 1.05rem;
               font-weight: 800;
               color: var(--tw-ink);
+              line-height: 1.25;
             }}
             #tw-{component_id} .tw-chart-card {{
               background: #ffffff;
@@ -1023,19 +1122,10 @@ def _render_temporal_weight_video(result):
               gap: 10px;
               align-items: center;
             }}
-            #tw-{component_id} .tw-slider-block {{
-              min-width: 0;
-            }}
-            #tw-{component_id} .tw-slider-label {{
-              display: flex;
-              justify-content: space-between;
+            #tw-{component_id} .tw-footer-note {{
               color: var(--tw-muted);
-              font-size: 12px;
-              margin-bottom: 6px;
-            }}
-            #tw-{component_id} .tw-slider {{
-              width: 100%;
-              accent-color: #245fd9;
+              font-size: 11.5px;
+              line-height: 1.45;
             }}
             #tw-{component_id} .tw-legend {{
               display: flex;
@@ -1078,48 +1168,42 @@ def _render_temporal_weight_video(result):
             <div class="tw-header">
               <div>
                 <div class="tw-title">Temporal Weight Timeline</div>
-                <div class="tw-subtitle">Stage 2 temporal weight across the full clip. Ground truth and predicted ED/ES markers remain visible while the curve stays visually primary.</div>
+                <div class="tw-subtitle">The highlighted marker is linked to the selected frame above. Green shading shows the GT ED?ES interval and blue shading shows the predicted ED?ES interval.</div>
               </div>
               <div class="tw-chip-row">
                 <span class="tw-chip">{payload['totalFrames']} frames</span>
                 <span class="tw-chip">Peak {payload['peakFrame']}</span>
-                <span class="tw-chip">GT span {payload['gtSpan']} fr</span>
-                <span class="tw-chip">Pred span {payload['predSpan']} fr</span>
+                <span class="tw-chip">Selected {payload['selectedFrame']}</span>
               </div>
             </div>
             <div class="tw-grid">
               <div class="tw-stat">
                 <div class="tw-stat-label">Selected frame</div>
-                <div class="tw-stat-value" id="tw-frame-{component_id}">0 / {payload['totalFrames'] - 1}</div>
+                <div class="tw-stat-value">{payload['selectedFrame']} / {payload['totalFrames'] - 1}</div>
               </div>
               <div class="tw-stat">
                 <div class="tw-stat-label">Temporal weight</div>
-                <div class="tw-stat-value" id="tw-weight-{component_id}">0.0000</div>
+                <div class="tw-stat-value">{payload['selectedWeight']:.4f}</div>
               </div>
               <div class="tw-stat">
-                <div class="tw-stat-label">Ground truth</div>
-                <div class="tw-stat-value">{int(result['ed_orig'])} / {int(result['es_orig'])}</div>
+                <div class="tw-stat-label">GT phase context</div>
+                <div class="tw-stat-value">{payload['gtContext']}</div>
               </div>
               <div class="tw-stat">
-                <div class="tw-stat-label">Prediction</div>
-                <div class="tw-stat-value">{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}</div>
+                <div class="tw-stat-label">Pred phase context</div>
+                <div class="tw-stat-value">{payload['predContext']}</div>
               </div>
             </div>
             <div class="tw-chart-card">
               <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 820 328" preserveAspectRatio="none"></svg>
               <div class="tw-footer">
-                <div class="tw-slider-block">
-                  <div class="tw-slider-label">
-                    <span>Inspect by frame</span>
-                    <span id="tw-slider-readout-{component_id}">Frame 0</span>
-                  </div>
-                  <input id="tw-slider-{component_id}" class="tw-slider" type="range" min="0" max="{max(0, payload['totalFrames'] - 1)}" value="0" step="1" />
-                </div>
+                <div class="tw-footer-note">The timeline marker, the selected-frame preview, and the phase-context cards are synchronized to the same frame index.</div>
                 <div class="tw-legend">
-                  <span class="tw-legend-item"><span class="tw-swatch" style="background:#245fd9;"></span>Weight</span>
-                  <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Samples</span>
-                  <span class="tw-legend-item"><span class="tw-swatch" style="background:rgba(22,163,74,0.55);"></span>GT window</span>
-                  <span class="tw-legend-item"><span class="tw-swatch" style="background:rgba(37,92,199,0.35);"></span>Pred window</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:#245fd9;"></span>Weight curve</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Sampled frames</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:rgba(22,163,74,0.55);"></span>GT systole</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:rgba(37,92,199,0.35);"></span>Pred systole</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:#0f172a;"></span>Selected frame</span>
                 </div>
               </div>
             </div>
@@ -1128,10 +1212,6 @@ def _render_temporal_weight_video(result):
         <script>
           const payload = {payload_json};
           const svg = document.getElementById("tw-chart-{component_id}");
-          const frameLabel = document.getElementById("tw-frame-{component_id}");
-          const weightLabel = document.getElementById("tw-weight-{component_id}");
-          const slider = document.getElementById("tw-slider-{component_id}");
-          const sliderReadout = document.getElementById("tw-slider-readout-{component_id}");
           const width = 820;
           const height = 328;
           const padLeft = 58;
@@ -1167,19 +1247,41 @@ def _render_temporal_weight_video(result):
             return `${{linePath}} L${{last[0].toFixed(2)}},${{(padTop + graphHeight).toFixed(2)}} L${{first[0].toFixed(2)}},${{(padTop + graphHeight).toFixed(2)}} Z`;
           }}
 
-          function bandMarkup(startFrame, endFrame, fill, opacity) {{
+          function bandMarkup(startFrame, endFrame, fill, opacity, label, labelY) {{
             const start = Math.max(0, Math.min(startFrame, endFrame));
             const end = Math.min(payload.totalFrames - 1, Math.max(startFrame, endFrame));
             const x1 = xForFrame(start);
             const x2 = xForFrame(end);
-            return `<rect x="${{x1}}" y="${{padTop}}" width="${{Math.max(2, x2 - x1)}}" height="${{graphHeight}}" fill="${{fill}}" fill-opacity="${{opacity}}"></rect>`;
+            const bandWidth = Math.max(2, x2 - x1);
+            const labelMarkup = bandWidth > 42
+              ? `<text x="${{Math.min(width - 18, Math.max(18, x1 + 8))}}" y="${{labelY}}" fill="#6b8297" font-size="10.5" font-weight="700">${{label}}</text>`
+              : '';
+            return `<rect x="${{x1}}" y="${{padTop}}" width="${{bandWidth}}" height="${{graphHeight}}" fill="${{fill}}" fill-opacity="${{opacity}}"></rect>${{labelMarkup}}`;
           }}
 
-          function eventMarkup(frame, color, dash, label, y) {{
+          function eventMarkup(frame, color, dash, label, anchor) {{
             const x = xForFrame(frame);
+            const pillWidth = Math.max(54, label.length * 6.6 + 14);
+            const pillX = Math.min(width - pillWidth - 12, Math.max(12, x - pillWidth / 2));
+            const pillY = anchor === 'top' ? padTop + 4 : padTop + graphHeight - 24;
+            const textY = pillY + 13;
             return `
-              <line x1="${{x}}" y1="${{padTop}}" x2="${{x}}" y2="${{padTop + graphHeight}}" stroke="${{color}}" stroke-width="2.1" stroke-dasharray="${{dash}}" opacity="0.82"></line>
-              <text x="${{Math.min(width - 24, Math.max(24, x))}}" y="${{y}}" fill="${{color}}" text-anchor="middle" font-size="11" font-weight="800">${{label}}</text>
+              <line x1="${{x}}" y1="${{padTop}}" x2="${{x}}" y2="${{padTop + graphHeight}}" stroke="${{color}}" stroke-width="1.8" stroke-dasharray="${{dash}}" opacity="0.82"></line>
+              <rect x="${{pillX}}" y="${{pillY}}" width="${{pillWidth}}" height="18" rx="9" fill="white" stroke="${{color}}" stroke-width="1"></rect>
+              <text x="${{pillX + pillWidth / 2}}" y="${{textY}}" fill="${{color}}" text-anchor="middle" font-size="10.5" font-weight="800">${{label}}</text>
+            `;
+          }}
+
+          function selectedMarkup(frame, weight) {{
+            const x = xForFrame(frame);
+            const y = yForWeight(weight);
+            const pillWidth = 72;
+            const pillX = Math.min(width - pillWidth - 12, Math.max(12, x - pillWidth / 2));
+            return `
+              <line x1="${{x}}" y1="${{padTop}}" x2="${{x}}" y2="${{padTop + graphHeight}}" stroke="#0f172a" stroke-width="2.2" stroke-dasharray="3 4" opacity="0.72"></line>
+              <rect x="${{pillX}}" y="${{padTop + 22}}" width="${{pillWidth}}" height="18" rx="9" fill="#0f172a"></rect>
+              <text x="${{pillX + pillWidth / 2}}" y="${{padTop + 35}}" fill="white" text-anchor="middle" font-size="10.5" font-weight="800">Selected</text>
+              <circle cx="${{x}}" cy="${{y}}" r="5.6" fill="#0f172a" stroke="white" stroke-width="1.8"></circle>
             `;
           }}
 
@@ -1188,8 +1290,8 @@ def _render_temporal_weight_video(result):
             const x = xForFrame(clamped);
             const y = yForWeight(payload.frameWeights[clamped] || 0);
             return `
-              <circle cx="${{x}}" cy="${{y}}" r="5.6" fill="white" stroke="${{color}}" stroke-width="2.4"></circle>
-              <circle cx="${{x}}" cy="${{y}}" r="2.2" fill="${{color}}"></circle>
+              <circle cx="${{x}}" cy="${{y}}" r="5.2" fill="white" stroke="${{color}}" stroke-width="2.2"></circle>
+              <circle cx="${{x}}" cy="${{y}}" r="2.0" fill="${{color}}"></circle>
             `;
           }}
 
@@ -1197,9 +1299,14 @@ def _render_temporal_weight_video(result):
           const linePath = buildLinePath(points);
           const areaPath = buildAreaPath(points);
           const sampledDots = payload.sampledIndices.map((frame, idx) => `
-            <circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="3.9" fill="#f97316" stroke="white" stroke-width="1.2"></circle>
+            <circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="3.3" fill="#f97316" stroke="white" stroke-width="1"></circle>
           `).join('');
-          const xTickFrames = [0, Math.max(0, Math.floor((payload.totalFrames - 1) / 2)), Math.max(0, payload.totalFrames - 1)];
+          const xTickFrames = Array.from(new Set([
+            0,
+            Math.max(0, Math.floor((payload.totalFrames - 1) * 0.33)),
+            Math.max(0, Math.floor((payload.totalFrames - 1) * 0.66)),
+            Math.max(0, payload.totalFrames - 1),
+          ])).sort((a, b) => a - b);
           const xTicks = xTickFrames.map((frame) => `
             <line x1="${{xForFrame(frame)}}" y1="${{padTop + graphHeight}}" x2="${{xForFrame(frame)}}" y2="${{padTop + graphHeight + 6}}" stroke="#9db2c7"></line>
             <text x="${{xForFrame(frame)}}" y="${{height - 10}}" fill="#627d98" text-anchor="middle" font-size="11.2">${{frame}}</text>
@@ -1213,63 +1320,38 @@ def _render_temporal_weight_video(result):
           svg.innerHTML = `
             <defs>
               <linearGradient id="tw-fill-{component_id}" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#245fd9" stop-opacity="0.22"></stop>
+                <stop offset="0%" stop-color="#245fd9" stop-opacity="0.18"></stop>
                 <stop offset="100%" stop-color="#245fd9" stop-opacity="0.02"></stop>
               </linearGradient>
             </defs>
             <rect x="0" y="0" width="820" height="328" rx="18" fill="#ffffff"></rect>
-            ${{bandMarkup(payload.gtEd, payload.gtEs, '#16a34a', 0.05)}}
-            ${{bandMarkup(payload.predEd, payload.predEs, '#255cc7', 0.06)}}
+            ${{bandMarkup(payload.gtEd, payload.gtEs, '#16a34a', 0.05, 'GT systole', padTop + 18)}}
+            ${{bandMarkup(payload.predEd, payload.predEs, '#255cc7', 0.05, 'Pred systole', padTop + graphHeight - 8)}}
             ${{yTicks}}
             <path d="${{areaPath}}" fill="url(#tw-fill-{component_id})"></path>
-            <path d="${{linePath}}" fill="none" stroke="#245fd9" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="${{linePath}}" fill="none" stroke="#245fd9" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round"></path>
             ${{sampledDots}}
-            ${{eventMarkup(payload.gtEd, '#16a34a', '4 5', 'GT ED', 18)}}
-            ${{eventMarkup(payload.gtEs, '#dc2626', '4 5', 'GT ES', 34)}}
-            ${{eventMarkup(payload.predEd, '#16a34a', '2 6', 'P ED', 50)}}
-            ${{eventMarkup(payload.predEs, '#dc2626', '2 6', 'P ES', 66)}}
+            ${{eventMarkup(payload.gtEd, '#16a34a', '4 5', 'GT-ED', 'top')}}
+            ${{eventMarkup(payload.gtEs, '#dc2626', '4 5', 'GT-ES', 'top')}}
+            ${{eventMarkup(payload.predEd, '#16a34a', '2 6', 'Pred-ED', 'bottom')}}
+            ${{eventMarkup(payload.predEs, '#dc2626', '2 6', 'Pred-ES', 'bottom')}}
             ${{curveEventDot(payload.gtEd, '#16a34a')}}
             ${{curveEventDot(payload.gtEs, '#dc2626')}}
             ${{curveEventDot(payload.predEd, '#16a34a')}}
             ${{curveEventDot(payload.predEs, '#dc2626')}}
+            ${{selectedMarkup(payload.selectedFrame, payload.selectedWeight)}}
             <line x1="${{padLeft}}" y1="${{padTop + graphHeight}}" x2="${{width - padRight}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.1"></line>
             <line x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.1"></line>
             ${{xTicks}}
             <text x="${{width / 2}}" y="${{height - 3}}" fill="#486581" text-anchor="middle" font-size="12" font-weight="700">Frame index</text>
             <text x="14" y="18" fill="#486581" font-size="12" font-weight="700">Weight</text>
-            <line id="tw-marker-{component_id}" x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#0f172a" stroke-width="2.2"></line>
-            <circle id="tw-marker-dot-{component_id}" cx="${{padLeft}}" cy="${{yForWeight(payload.frameWeights[0] || 0)}}" r="5.2" fill="#0f172a" stroke="white" stroke-width="1.8"></circle>
           `;
-
-          const marker = document.getElementById("tw-marker-{component_id}");
-          const markerDot = document.getElementById("tw-marker-dot-{component_id}");
-
-          function updateMarker(frame) {{
-            const clampedFrame = Math.max(0, Math.min(payload.totalFrames - 1, frame));
-            const x = xForFrame(clampedFrame);
-            const weight = payload.frameWeights[clampedFrame] || 0;
-            marker.setAttribute('x1', x);
-            marker.setAttribute('x2', x);
-            markerDot.setAttribute('cx', x);
-            markerDot.setAttribute('cy', yForWeight(weight));
-            frameLabel.textContent = `${{clampedFrame}} / ${{Math.max(0, payload.totalFrames - 1)}}`;
-            weightLabel.textContent = weight.toFixed(4);
-            slider.value = String(clampedFrame);
-            sliderReadout.textContent = `Frame ${{clampedFrame}}`;
-          }}
-
-          slider.addEventListener('input', (event) => {{
-            updateMarker(Number(event.target.value || 0));
-          }});
-
-          updateMarker(0);
         </script>
         """,
-        height=560,
+        height=515,
     )
 
     return True
-
 
 
 def run_case(
