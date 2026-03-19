@@ -41,3 +41,6 @@ trained_models/stage67/stage67_test_predictions.csv
 trained_models/stage67/stage67_train_predictions.csv
 trained_models/stage67/stage67_val_predictions.csv
 trainnigs/all_stages_skipped_stage123_training_improved/training_logs.txt
+trained_models/19-March/best_model.pth
+trained_models/19-March/best_stage4_segmentation.pth
+trainnigs/19-March/Training_Logs.txt

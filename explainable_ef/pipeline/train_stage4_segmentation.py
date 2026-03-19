@@ -70,17 +70,30 @@ def segmentation_loss(logits, targets, dice_weight=1.0, manual_pos_weight=None, 
     return loss, bce.detach(), dice_loss.detach(), float(pos_weight.item())
 
 
-def dataloader_kwargs(batch_size, workers, shuffle, device):
+def configure_dataloader_runtime():
+    sharing_strategy = None
+    if sys.platform.startswith("linux"):
+        try:
+            torch.multiprocessing.set_sharing_strategy("file_system")
+            sharing_strategy = "file_system"
+        except Exception:
+            sharing_strategy = None
+    return sharing_strategy
+
+
+def dataloader_kwargs(batch_size, workers, shuffle, device, pin_memory, persistent_workers, prefetch_factor):
     use_cuda = str(device).startswith("cuda") and torch.cuda.is_available()
+    num_workers = int(max(0, workers))
     kwargs = {
         "batch_size": int(batch_size),
         "shuffle": bool(shuffle),
-        "num_workers": int(max(0, workers)),
-        "pin_memory": use_cuda,
+        "num_workers": num_workers,
+        "pin_memory": bool(pin_memory) and use_cuda,
     }
-    if int(max(0, workers)) > 0:
-        kwargs["persistent_workers"] = True
-        kwargs["prefetch_factor"] = 2
+    if num_workers > 0:
+        kwargs["persistent_workers"] = bool(persistent_workers)
+        if prefetch_factor is not None:
+            kwargs["prefetch_factor"] = int(prefetch_factor)
     return kwargs
 
 
@@ -111,9 +124,42 @@ def build_loaders(args, device):
         normalize=normalize,
     )
 
-    train_loader = DataLoader(train_ds, **dataloader_kwargs(args.batch_size, args.workers, True, device))
-    val_loader = DataLoader(val_ds, **dataloader_kwargs(args.batch_size, args.workers, False, device))
-    test_loader = DataLoader(test_ds, **dataloader_kwargs(args.batch_size, args.workers, False, device))
+    train_loader = DataLoader(
+        train_ds,
+        **dataloader_kwargs(
+            args.batch_size,
+            args.workers,
+            True,
+            device,
+            pin_memory=args.pin_memory,
+            persistent_workers=args.persistent_workers,
+            prefetch_factor=args.prefetch_factor,
+        ),
+    )
+    val_loader = DataLoader(
+        val_ds,
+        **dataloader_kwargs(
+            args.batch_size,
+            args.workers,
+            False,
+            device,
+            pin_memory=args.pin_memory,
+            persistent_workers=args.persistent_workers,
+            prefetch_factor=args.prefetch_factor,
+        ),
+    )
+    test_loader = DataLoader(
+        test_ds,
+        **dataloader_kwargs(
+            args.batch_size,
+            args.workers,
+            False,
+            device,
+            pin_memory=args.pin_memory,
+            persistent_workers=args.persistent_workers,
+            prefetch_factor=args.prefetch_factor,
+        ),
+    )
     return train_loader, val_loader, test_loader, normalize
 
 
@@ -409,6 +455,9 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=(not sys.platform.startswith("linux")), help="Enable/disable DataLoader pin_memory. Defaults to off on Linux for Stage4 stability.")
+    parser.add_argument("--persistent-workers", action=argparse.BooleanOptionalAction, default=False, help="Enable/disable DataLoader persistent workers.")
+    parser.add_argument("--prefetch-factor", type=int, default=2, help="DataLoader prefetch factor when workers > 0")
     parser.add_argument("--max-videos", type=int, default=None)
     parser.add_argument("--dice-weight", type=float, default=1.0)
     parser.add_argument("--eval-threshold", type=float, default=0.5)
@@ -444,6 +493,7 @@ def main():
 
     device = args.device
     amp_enabled = bool(args.amp) and str(device).startswith("cuda") and torch.cuda.is_available()
+    sharing_strategy = configure_dataloader_runtime()
 
     train_loader, val_loader, test_loader, normalize_mode = build_loaders(args, device)
 
@@ -479,7 +529,11 @@ def main():
         print(f"LR scheduler: StepLR(step={args.lr_step_period}, gamma={args.lr_gamma})")
     else:
         print("LR scheduler: disabled")
-    print(f"Workers: {args.workers} | Max videos: {args.max_videos if args.max_videos else 'All'}")
+    print(
+        f"Workers: {args.workers} | pin_memory: {args.pin_memory} | persistent_workers: {args.persistent_workers} | "
+        f"prefetch_factor: {args.prefetch_factor if args.workers > 0 else 'n/a'} | sharing_strategy: {sharing_strategy or 'default'} | "
+        f"Max videos: {args.max_videos if args.max_videos else 'All'}"
+    )
     print(f"Checkpoint: {args.checkpoint}")
     print(f"Output dir: {args.output_dir}")
     print(f"Train samples: {len(train_loader.dataset)} | Val samples: {len(val_loader.dataset)} | Test samples: {len(test_loader.dataset)}")

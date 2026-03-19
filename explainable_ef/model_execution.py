@@ -583,13 +583,15 @@ def compute_attention_index_loss(attention, ed_idx, es_idx):
 def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
     """
     Train phase detection as two temporal index tasks:
-    - ED index from ED score curve (phase_logits[:, :, 1])
-    - ES index from ES score curve (phase_logits[:, :, 2])
+    - ED index from ED-vs-background score curve
+    - ES index from ES-vs-background score curve
 
     Optional stabilizer: frame-wise CE over {background, ED, ES} neighborhoods.
     """
-    ed_logits = phase_logits[:, :, 1]  # (B, T)
-    es_logits = phase_logits[:, :, 2]  # (B, T)
+    # Match training targets to the exact score definition used at inference time
+    # in Stage3PhaseDetector.predict_indices(...).
+    ed_logits = phase_logits[:, :, 1] - phase_logits[:, :, 0]  # (B, T)
+    es_logits = phase_logits[:, :, 2] - phase_logits[:, :, 0]  # (B, T)
 
     sigma = float(getattr(config, "PHASE_SOFT_SIGMA", 0.0))
     radius = int(getattr(config, "PHASE_SOFT_RADIUS", 0))
@@ -768,9 +770,10 @@ def evaluate(model, loader, amp_enabled):
                     stage2_ed_es_feat_dist_sum += ed_es_dist.sum().item()
                     stage2_feat_count += batch_size
 
-            # Stage 3: ED/ES index CE (diagnostic only)
-            ed_ce = F.cross_entropy(phase_logits[:, :, 1], ed_idx, reduction="sum")
-            es_ce = F.cross_entropy(phase_logits[:, :, 2], es_idx, reduction="sum")
+            # Stage 3: ED/ES index CE (diagnostic only), using the same
+            # relative score curves that inference uses for pair decoding.
+            ed_ce = F.cross_entropy(phase_logits[:, :, 1] - phase_logits[:, :, 0], ed_idx, reduction="sum")
+            es_ce = F.cross_entropy(phase_logits[:, :, 2] - phase_logits[:, :, 0], es_idx, reduction="sum")
             stage3_ed_ce_sum += ed_ce.item()
             stage3_es_ce_sum += es_ce.item()
 
