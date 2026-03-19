@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 
+from data.phase_ground_truth import detect_ed_es_from_area_curve
+
 
 class Stage45Pipeline:
     """Stage 4/5 utilities: LV mask creation, area extraction, and EF computation."""
@@ -57,6 +59,17 @@ class Stage45Pipeline:
         if ed_area <= 0:
             return 0.0
         return float((ed_area - es_area) / ed_area)
+
+    @staticmethod
+    def detect_ed_es_from_size_curve(frame_ids, areas, smooth_window=11, enforce_es_after_ed=True):
+        """Detect ED/ES on a full-video LV size curve using the same largest-to-smallest drop logic as EchoNet-style pipelines."""
+        detected = detect_ed_es_from_area_curve(
+            frame_ids=np.asarray(frame_ids, dtype=np.int32),
+            areas=np.asarray(areas, dtype=np.float64),
+            smooth_window=int(smooth_window),
+            enforce_es_after_ed=bool(enforce_es_after_ed),
+        )
+        return detected
 
     @staticmethod
     def overlay_mask(frame_bgr, mask, color=(0, 255, 0), alpha=0.35):

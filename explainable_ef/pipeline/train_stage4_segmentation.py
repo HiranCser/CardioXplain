@@ -56,7 +56,7 @@ def _resolve_pos_weight(targets, manual_pos_weight=None, pos_weight_max=20.0):
     return ratio.detach()
 
 
-def segmentation_loss(logits, targets, dice_weight=1.0, manual_pos_weight=None, pos_weight_max=20.0):
+def segmentation_loss(logits, targets, dice_weight=1.0, manual_pos_weight=None, pos_weight_max=20.0, area_loss_weight=0.0):
     pos_weight = _resolve_pos_weight(targets, manual_pos_weight=manual_pos_weight, pos_weight_max=pos_weight_max)
     bce = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight)
 
@@ -66,8 +66,12 @@ def segmentation_loss(logits, targets, dice_weight=1.0, manual_pos_weight=None, 
     dice = (2.0 * inter + 1e-6) / (union + 1e-6)
     dice_loss = 1.0 - dice.mean()
 
-    loss = bce + float(dice_weight) * dice_loss
-    return loss, bce.detach(), dice_loss.detach(), float(pos_weight.item())
+    pred_area = probs.sum(dim=(1, 2, 3))
+    target_area = targets.sum(dim=(1, 2, 3))
+    area_loss = torch.mean(torch.abs(pred_area - target_area) / target_area.clamp_min(1.0))
+
+    loss = bce + float(dice_weight) * dice_loss + float(area_loss_weight) * area_loss
+    return loss, bce.detach(), dice_loss.detach(), area_loss.detach(), float(pos_weight.item())
 
 
 def configure_dataloader_runtime():
@@ -108,6 +112,7 @@ def build_loaders(args, device):
         image_size=args.image_size,
         max_videos=args.max_videos,
         normalize=normalize,
+        augment=args.augment,
     )
     val_ds = Stage4SegmentationDataset(
         data_dir=args.data_dir,
@@ -115,6 +120,7 @@ def build_loaders(args, device):
         image_size=args.image_size,
         max_videos=args.max_videos,
         normalize=normalize,
+        augment=False,
     )
     test_ds = Stage4SegmentationDataset(
         data_dir=args.data_dir,
@@ -122,6 +128,7 @@ def build_loaders(args, device):
         image_size=args.image_size,
         max_videos=args.max_videos,
         normalize=normalize,
+        augment=False,
     )
 
     train_loader = DataLoader(
@@ -191,6 +198,7 @@ def evaluate(
     eval_threshold,
     manual_pos_weight,
     pos_weight_max,
+    area_loss_weight,
     csv_path=None,
 ):
     model.eval()
@@ -198,6 +206,7 @@ def evaluate(
     total_loss = 0.0
     total_bce = 0.0
     total_dice_loss = 0.0
+    total_area_loss = 0.0
     total_dice_hard = 0.0
     total_dice_soft = 0.0
     total_pos_weight = 0.0
@@ -216,12 +225,13 @@ def evaluate(
 
             with autocast_context(device, amp_enabled):
                 logits = extract_logits(model(images))
-                loss, bce, dice_loss, pos_weight_value = segmentation_loss(
+                loss, bce, dice_loss, area_loss, pos_weight_value = segmentation_loss(
                     logits,
                     masks,
                     dice_weight=dice_weight,
                     manual_pos_weight=manual_pos_weight,
                     pos_weight_max=pos_weight_max,
+                    area_loss_weight=area_loss_weight,
                 )
 
             dice_hard = dice_from_logits(logits, masks, threshold=eval_threshold, soft=False)
@@ -233,6 +243,7 @@ def evaluate(
             total_loss += float(loss.item())
             total_bce += float(bce.item())
             total_dice_loss += float(dice_loss.item())
+            total_area_loss += float(area_loss.item())
             total_dice_hard += float(dice_hard.item())
             total_dice_soft += float(dice_soft.item())
             total_pos_weight += float(pos_weight_value)
@@ -278,6 +289,7 @@ def evaluate(
         "loss": total_loss / max(1, n_batches),
         "bce": total_bce / max(1, n_batches),
         "dice_loss": total_dice_loss / max(1, n_batches),
+        "area_loss": total_area_loss / max(1, n_batches),
         "dice_hard": total_dice_hard / max(1, n_batches),
         "dice_soft": total_dice_soft / max(1, n_batches),
         "avg_pos_weight": total_pos_weight / max(1, n_batches),
@@ -299,12 +311,14 @@ def train_one_epoch(
     eval_threshold,
     manual_pos_weight,
     pos_weight_max,
+    area_loss_weight,
 ):
     model.train()
 
     total_loss = 0.0
     total_bce = 0.0
     total_dice_loss = 0.0
+    total_area_loss = 0.0
     total_dice_hard = 0.0
     total_dice_soft = 0.0
     total_pos_weight = 0.0
@@ -322,12 +336,13 @@ def train_one_epoch(
 
         with autocast_context(device, amp_enabled):
             logits = extract_logits(model(images))
-            loss, bce, dice_loss, pos_weight_value = segmentation_loss(
+            loss, bce, dice_loss, area_loss, pos_weight_value = segmentation_loss(
                 logits,
                 masks,
                 dice_weight=dice_weight,
                 manual_pos_weight=manual_pos_weight,
                 pos_weight_max=pos_weight_max,
+                area_loss_weight=area_loss_weight,
             )
 
         if amp_enabled:
@@ -348,6 +363,7 @@ def train_one_epoch(
         total_loss += float(loss.item())
         total_bce += float(bce.item())
         total_dice_loss += float(dice_loss.item())
+        total_area_loss += float(area_loss.item())
         total_dice_hard += float(dice_hard.item())
         total_dice_soft += float(dice_soft.item())
         total_pos_weight += float(pos_weight_value)
@@ -463,6 +479,7 @@ def parse_args():
     parser.add_argument("--eval-threshold", type=float, default=0.5)
     parser.add_argument("--pos-weight", type=float, default=None, help="Manual positive-class BCE weight; if omitted, auto-computed per batch")
     parser.add_argument("--pos-weight-max", type=float, default=8.0)
+    parser.add_argument("--area-loss-weight", type=float, default=0.20, help="Relative LV-area loss weight for segmentation training")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--checkpoint", type=str, default="best_stage4_segmentation.pth")
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage4"))
@@ -471,12 +488,13 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--model-name", type=str, default="deeplabv3_resnet50")
-    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--base-channels", type=int, default=32, help="Used only when model-name=unet")
     parser.add_argument("--optimizer", type=str, choices=["sgd", "adamw"], default="adamw")
     parser.add_argument("--lr-step-period", type=int, default=15, help="<=0 disables step scheduler")
     parser.add_argument("--lr-gamma", type=float, default=0.1)
     parser.add_argument("--normalize", type=str, choices=["auto", "none", "imagenet"], default="auto")
+    parser.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True, help="Enable lightweight geometric/intensity augmentation for train split")
     return parser.parse_args()
 
 
@@ -520,7 +538,7 @@ def main():
     print(f"Batch size: {args.batch_size} | Epochs: {args.epochs}")
     print(f"Model: {args.model_name} | Pretrained: {args.pretrained} | Normalize: {normalize_mode}")
     print(f"Optimizer: {args.optimizer} | LR: {args.learning_rate} | WD: {args.weight_decay}")
-    print(f"Dice weight: {args.dice_weight} | Eval threshold: {args.eval_threshold}")
+    print(f"Dice weight: {args.dice_weight} | Area loss weight: {args.area_loss_weight} | Eval threshold: {args.eval_threshold}")
     if args.pos_weight is None:
         print(f"BCE pos_weight: auto (clamped to <= {args.pos_weight_max})")
     else:
@@ -556,6 +574,7 @@ def main():
             eval_threshold=float(args.eval_threshold),
             manual_pos_weight=args.pos_weight,
             pos_weight_max=float(args.pos_weight_max),
+            area_loss_weight=float(args.area_loss_weight),
         )
 
         val_csv = os.path.join(args.output_dir, f"val_epoch{epoch:03d}_frame_areas.csv")
@@ -568,6 +587,7 @@ def main():
             eval_threshold=float(args.eval_threshold),
             manual_pos_weight=args.pos_weight,
             pos_weight_max=float(args.pos_weight_max),
+            area_loss_weight=float(args.area_loss_weight),
             csv_path=val_csv,
         )
 
@@ -598,10 +618,10 @@ def main():
         dt = time.perf_counter() - t0
         print(
             f"Epoch {epoch:03d}/{args.epochs} | "
-            f"Train loss {train_metrics['loss']:.4f} (bce {train_metrics['bce']:.4f}, diceL {train_metrics['dice_loss']:.4f}) "
+            f"Train loss {train_metrics['loss']:.4f} (bce {train_metrics['bce']:.4f}, diceL {train_metrics['dice_loss']:.4f}, areaL {train_metrics['area_loss']:.4f}) "
             f"dice@thr {train_metrics['dice_hard']:.4f} softDice {train_metrics['dice_soft']:.4f} "
             f"fg(pred/gt) {train_metrics['pred_fg_frac']:.4f}/{train_metrics['gt_fg_frac']:.4f} posW {train_metrics['avg_pos_weight']:.2f} | "
-            f"Val loss {val_metrics['loss']:.4f} (bce {val_metrics['bce']:.4f}, diceL {val_metrics['dice_loss']:.4f}) "
+            f"Val loss {val_metrics['loss']:.4f} (bce {val_metrics['bce']:.4f}, diceL {val_metrics['dice_loss']:.4f}, areaL {val_metrics['area_loss']:.4f}) "
             f"dice@thr {val_metrics['dice_hard']:.4f} softDice {val_metrics['dice_soft']:.4f} "
             f"fg(pred/gt) {val_metrics['pred_fg_frac']:.4f}/{val_metrics['gt_fg_frac']:.4f} posW {val_metrics['avg_pos_weight']:.2f} | "
             f"Val frame area MAE {val_metrics['frame_area_mae']:.2f} px | "
@@ -633,6 +653,7 @@ def main():
         eval_threshold=float(args.eval_threshold),
         manual_pos_weight=args.pos_weight,
         pos_weight_max=float(args.pos_weight_max),
+        area_loss_weight=float(args.area_loss_weight),
         csv_path=val_best_csv,
     )
 
@@ -646,6 +667,7 @@ def main():
         eval_threshold=float(args.eval_threshold),
         manual_pos_weight=args.pos_weight,
         pos_weight_max=float(args.pos_weight_max),
+        area_loss_weight=float(args.area_loss_weight),
         csv_path=test_csv,
     )
 

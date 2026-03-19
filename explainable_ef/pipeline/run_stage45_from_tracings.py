@@ -90,6 +90,65 @@ def _predict_mask_area_stage4(model, frame_bgr, image_size, normalize_mode, pret
     return mask_orig, float(mask_orig.sum())
 
 
+def _predict_video_area_curve_stage4(model, video_path, image_size, normalize_mode, pretrained_flag, device, eval_threshold, batch_size=16):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
+
+    frame_ids = []
+    frame_areas = []
+    batch_images = []
+    batch_sizes = []
+    batch_ids = []
+    frame_idx = 0
+
+    def flush_batch():
+        nonlocal batch_images, batch_sizes, batch_ids, frame_areas
+        if not batch_images:
+            return
+        image_batch = torch.stack(batch_images, dim=0).to(device)
+        with torch.no_grad():
+            logits = model(image_batch)
+            if isinstance(logits, dict):
+                logits = logits["out"]
+            probs = torch.sigmoid(logits[:, 0]).detach().cpu().numpy()
+
+        for prob, (h, w), fid in zip(probs, batch_sizes, batch_ids):
+            mask_small = (prob >= float(eval_threshold)).astype(np.uint8)
+            mask_orig = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+            frame_areas.append((int(fid), float(mask_orig.sum())))
+        batch_images = []
+        batch_sizes = []
+        batch_ids = []
+
+    while True:
+        ok, frame_bgr = cap.read()
+        if not ok or frame_bgr is None:
+            break
+        h, w = frame_bgr.shape[:2]
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(frame_rgb, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
+        image_t = torch.from_numpy(resized).permute(2, 0, 1).float() / 255.0
+        image_t = _normalize_stage4_input(image_t, normalize_mode, pretrained_flag=pretrained_flag)
+        batch_images.append(image_t)
+        batch_sizes.append((h, w))
+        batch_ids.append(frame_idx)
+        frame_ids.append(frame_idx)
+        frame_idx += 1
+        if len(batch_images) >= int(max(1, batch_size)):
+            flush_batch()
+
+    cap.release()
+    flush_batch()
+
+    if not frame_areas:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float64)
+
+    curve_frame_ids = np.array([fid for fid, _ in frame_areas], dtype=np.int32)
+    curve_areas = np.array([area for _, area in frame_areas], dtype=np.float64)
+    return curve_frame_ids, curve_areas
+
+
 def read_video_frame(video_path, frame_idx):
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
@@ -145,6 +204,8 @@ def parse_args():
     parser.add_argument("--stage4-model-name", type=str, default="deeplabv3_resnet50")
     parser.add_argument("--stage4-base-channels", type=int, default=32)
     parser.add_argument("--eval-threshold", type=float, default=0.5)
+    parser.add_argument("--curve-smooth-window", type=int, default=11, help="Smoothing window for full-video Stage4 size curve")
+    parser.add_argument("--curve-batch-size", type=int, default=16, help="Batch size for full-video Stage4 inference")
     parser.add_argument("--device", type=str, default="auto")
     return parser.parse_args()
 
@@ -245,8 +306,31 @@ def main():
         ef_gt_proxy = Stage45Pipeline.compute_ef_from_areas(gt_ed_area, gt_es_area)
 
         if args.mode == "predicted_masks":
-            pred_ed_frame, pred_ed_area = max(pred_frame_areas, key=lambda x: x[1])
-            pred_es_frame, pred_es_area = min(pred_frame_areas, key=lambda x: x[1])
+            curve_frame_ids, curve_areas = _predict_video_area_curve_stage4(
+                model=model4,
+                video_path=video_path,
+                image_size=int(model4_meta["image_size"]),
+                normalize_mode=model4_meta["normalize"],
+                pretrained_flag=bool(model4_meta.get("pretrained", False)),
+                device=device,
+                eval_threshold=float(args.eval_threshold),
+                batch_size=int(args.curve_batch_size),
+            )
+            if curve_frame_ids.size == 0:
+                print(f"Warning: empty Stage4 area curve for {fname_ext}")
+                continue
+
+            detected = stage45.detect_ed_es_from_size_curve(
+                frame_ids=curve_frame_ids,
+                areas=curve_areas,
+                smooth_window=int(args.curve_smooth_window),
+                enforce_es_after_ed=True,
+            )
+            curve_area_lookup = {int(fid): float(area) for fid, area in zip(curve_frame_ids.tolist(), curve_areas.tolist())}
+            pred_ed_frame = int(detected["ed_frame"])
+            pred_es_frame = int(detected["es_frame"])
+            pred_ed_area = float(curve_area_lookup.get(pred_ed_frame, float(np.max(curve_areas))))
+            pred_es_area = float(curve_area_lookup.get(pred_es_frame, float(np.min(curve_areas))))
             ef_pred = Stage45Pipeline.compute_ef_from_areas(pred_ed_area, pred_es_area)
         else:
             pred_ed_frame, pred_ed_area = gt_ed_frame, gt_ed_area
@@ -274,6 +358,9 @@ def main():
                 "gt_es_area": float(gt_es_area),
                 "pred_ed_area": float(pred_ed_area),
                 "pred_es_area": float(pred_es_area),
+                "pred_ed_frame_error": float(abs(pred_ed_frame - gt_ed_frame)),
+                "pred_es_frame_error": float(abs(pred_es_frame - gt_es_frame)),
+                "pred_curve_method": ("full_video_stage4_curve" if args.mode == "predicted_masks" else "tracing"),
             }
         )
 
@@ -284,6 +371,28 @@ def main():
 
                 ed_gt_mask = frame_masks_gt.get(int(pred_ed_frame))
                 es_gt_mask = frame_masks_gt.get(int(pred_es_frame))
+                if args.mode == "predicted_masks" and int(pred_ed_frame) not in frame_masks_pred:
+                    pred_mask_ed, _ = _predict_mask_area_stage4(
+                        model=model4,
+                        frame_bgr=read_video_frame(video_path, pred_ed_frame),
+                        image_size=int(model4_meta["image_size"]),
+                        normalize_mode=model4_meta["normalize"],
+                        pretrained_flag=bool(model4_meta.get("pretrained", False)),
+                        device=device,
+                        eval_threshold=float(args.eval_threshold),
+                    )
+                    frame_masks_pred[int(pred_ed_frame)] = pred_mask_ed
+                if args.mode == "predicted_masks" and int(pred_es_frame) not in frame_masks_pred:
+                    pred_mask_es, _ = _predict_mask_area_stage4(
+                        model=model4,
+                        frame_bgr=read_video_frame(video_path, pred_es_frame),
+                        image_size=int(model4_meta["image_size"]),
+                        normalize_mode=model4_meta["normalize"],
+                        pretrained_flag=bool(model4_meta.get("pretrained", False)),
+                        device=device,
+                        eval_threshold=float(args.eval_threshold),
+                    )
+                    frame_masks_pred[int(pred_es_frame)] = pred_mask_es
                 ed_pred_mask = frame_masks_pred.get(int(pred_ed_frame)) if args.mode == "predicted_masks" else ed_gt_mask
                 es_pred_mask = frame_masks_pred.get(int(pred_es_frame)) if args.mode == "predicted_masks" else es_gt_mask
 

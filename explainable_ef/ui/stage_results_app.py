@@ -46,17 +46,17 @@ def _inject_page_styles():
         <style>
             [data-testid="stAppViewContainer"] {
                 background:
-                    radial-gradient(circle at top left, rgba(30, 136, 229, 0.10), transparent 28%),
-                    radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 24%),
-                    linear-gradient(180deg, #f5f9ff 0%, #edf4fb 48%, #f8fbff 100%);
+                    radial-gradient(circle at top left, rgba(30, 136, 229, 0.07), transparent 26%),
+                    radial-gradient(circle at top right, rgba(14, 165, 140, 0.05), transparent 22%),
+                    linear-gradient(180deg, #f6faff 0%, #f1f6fb 46%, #f8fbfe 100%);
             }
             .block-container {
-                padding-top: 1.4rem;
-                padding-bottom: 2.5rem;
+                padding-top: 1.2rem;
+                padding-bottom: 2.8rem;
                 max-width: 1320px;
             }
             [data-testid="stSidebar"] {
-                background: linear-gradient(180deg, #f7fbff 0%, #eef5fd 100%);
+                background: linear-gradient(180deg, #f8fbfe 0%, #eef4fa 100%);
                 border-right: 1px solid rgba(148, 163, 184, 0.22);
             }
             h1, h2, h3 {
@@ -71,35 +71,154 @@ def _inject_page_styles():
                 font-weight: 700;
             }
             [data-testid="stMetric"] {
-                background: rgba(255, 255, 255, 0.88);
-                border: 1px solid rgba(148, 163, 184, 0.22);
-                border-radius: 18px;
-                padding: 0.85rem 1rem;
-                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+                background: rgba(255, 255, 255, 0.94);
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                border-radius: 16px;
+                padding: 0.8rem 0.95rem;
+                box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
             }
             [data-testid="stMetricLabel"] {
-                color: #5b7690;
-                font-weight: 600;
+                color: #6a8398;
+                font-weight: 700;
                 letter-spacing: 0.04em;
                 text-transform: uppercase;
             }
             [data-testid="stMetricValue"] {
-                color: #102a43;
+                color: #0f2940;
                 font-weight: 800;
             }
             div[data-testid="stDataFrame"] {
                 border-radius: 18px;
                 overflow: hidden;
-                border: 1px solid rgba(148, 163, 184, 0.20);
-                box-shadow: 0 12px 24px rgba(15, 23, 42, 0.05);
-                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                box-shadow: 0 10px 20px rgba(15, 23, 42, 0.04);
+                background: rgba(255, 255, 255, 0.94);
             }
             [data-testid="stImage"] img {
-                border-radius: 18px;
-                box-shadow: 0 14px 34px rgba(15, 23, 42, 0.10);
+                border-radius: 16px;
+                box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
             }
             [data-testid="stCaptionContainer"] {
-                color: #587086;
+                color: #688197;
+                font-size: 0.83rem;
+            }
+            .section-heading {
+                margin: 1.2rem 0 0.35rem 0;
+            }
+            .section-title {
+                color: #12324a;
+                font-size: 1.08rem;
+                font-weight: 800;
+                letter-spacing: -0.01em;
+            }
+            .section-subtitle {
+                color: #627d91;
+                font-size: 0.9rem;
+                line-height: 1.5;
+                margin-top: 0.12rem;
+            }
+            .media-shell {
+                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                border-radius: 20px;
+                padding: 0.95rem 1rem 0.8rem 1rem;
+                box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+                margin-bottom: 0.85rem;
+            }
+            .media-shell .shell-title {
+                color: #12324a;
+                font-size: 1rem;
+                font-weight: 800;
+                margin-bottom: 0.2rem;
+            }
+            .media-shell .shell-subtitle {
+                color: #647d91;
+                font-size: 0.86rem;
+                line-height: 1.45;
+                margin-bottom: 0.75rem;
+            }
+            .phase-group {
+                background: rgba(255, 255, 255, 0.88);
+                border: 1px solid rgba(148, 163, 184, 0.16);
+                border-radius: 20px;
+                padding: 0.95rem;
+                box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+                margin-bottom: 0.75rem;
+            }
+            .phase-group-title {
+                color: #173652;
+                font-size: 0.98rem;
+                font-weight: 800;
+                margin-bottom: 0.7rem;
+            }
+            .phase-card-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 0.85rem;
+            }
+            .phase-card {
+                background: linear-gradient(180deg, #ffffff 0%, #f8fbfe 100%);
+                border: 1px solid rgba(148, 163, 184, 0.14);
+                border-radius: 18px;
+                overflow: hidden;
+                box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+            }
+            .phase-card-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 0.6rem;
+                padding: 0.7rem 0.8rem 0.2rem 0.8rem;
+            }
+            .phase-card-title {
+                color: #18344d;
+                font-size: 0.91rem;
+                font-weight: 800;
+                line-height: 1.3;
+            }
+            .phase-pill {
+                border-radius: 999px;
+                padding: 0.22rem 0.55rem;
+                font-size: 0.72rem;
+                font-weight: 800;
+                letter-spacing: 0.04em;
+                white-space: nowrap;
+            }
+            .phase-pill-ed {
+                background: rgba(22, 163, 74, 0.12);
+                color: #177245;
+            }
+            .phase-pill-es {
+                background: rgba(220, 38, 38, 0.12);
+                color: #b42318;
+            }
+            .phase-frame-wrap {
+                padding: 0.45rem 0.8rem 0 0.8rem;
+            }
+            .phase-frame {
+                width: 100%;
+                display: block;
+                border-radius: 14px;
+                background: #020617;
+            }
+            .phase-frame-ed {
+                border: 2px solid rgba(22, 163, 74, 0.85);
+            }
+            .phase-frame-es {
+                border: 2px solid rgba(220, 38, 38, 0.85);
+            }
+            .phase-card-meta {
+                display: flex;
+                justify-content: space-between;
+                gap: 0.75rem;
+                color: #6b8297;
+                font-size: 0.8rem;
+                padding: 0.62rem 0.8rem 0.82rem 0.8rem;
+            }
+            @media (max-width: 900px) {
+                .phase-card-grid {
+                    grid-template-columns: 1fr;
+                }
             }
         </style>
         """,
@@ -533,6 +652,64 @@ def _frame_from_list(frames, idx):
     return frames[idx_clamped], idx_clamped
 
 
+def _annotate_temporal_frame(frame_rgb, _card_title, _phase_label, _frame_idx, accent_rgb):
+    if frame_rgb is None:
+        return None
+
+    canvas = np.ascontiguousarray(frame_rgb.copy())
+    height, width = canvas.shape[:2]
+    accent = tuple(int(v) for v in accent_rgb)
+    border = max(2, int(round(min(height, width) * 0.012)))
+    cv2.rectangle(canvas, (0, 0), (width - 1, height - 1), accent, thickness=border)
+    return canvas
+
+
+def _frame_to_data_uri(frame_rgb):
+    if frame_rgb is None:
+        return ""
+    bordered = np.ascontiguousarray(frame_rgb)
+    success, encoded = cv2.imencode('.png', cv2.cvtColor(bordered, cv2.COLOR_RGB2BGR))
+    if not success:
+        return ""
+    return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode('ascii')
+
+
+def _phase_card_html(frame_rgb, title, phase_code, frame_idx, accent_class, footnote):
+    image_uri = _frame_to_data_uri(frame_rgb)
+    safe_title = str(title)
+    safe_phase = str(phase_code)
+    safe_footnote = str(footnote)
+    return f"""
+    <div class="phase-card">
+      <div class="phase-card-head">
+        <div class="phase-card-title">{safe_title}</div>
+        <span class="phase-pill {accent_class}">{safe_phase}</span>
+      </div>
+      <div class="phase-frame-wrap">
+        <img class="phase-frame {'phase-frame-ed' if accent_class == 'phase-pill-ed' else 'phase-frame-es'}" src="{image_uri}" alt="{safe_title}" />
+      </div>
+      <div class="phase-card-meta">
+        <span>Frame {int(frame_idx)}</span>
+        <span>{safe_footnote}</span>
+      </div>
+    </div>
+    """
+
+
+def _render_phase_group(group_title, cards_html):
+    st.markdown(
+        f"""
+        <div class="phase-group">
+          <div class="phase-group-title">{group_title}</div>
+          <div class="phase-card-grid">
+            {cards_html}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _make_attention_plot(attn, gt_ed_idx, gt_es_idx, pred_ed_idx, pred_es_idx):
     fig, ax = plt.subplots(figsize=(8, 2.8))
     x = np.arange(attn.shape[0])
@@ -624,18 +801,107 @@ def _render_temporal_weight_video(result):
     peak_frame = int(np.argmax(frame_weights)) if frame_weights.size > 0 else 0
     peak_weight = float(frame_weights[peak_frame]) if frame_weights.size > 0 else 0.0
 
-    playback_col, summary_col = st.columns([1.65, 1.0])
+    gt_ed_frame_rgb, _ = _frame_from_list(result["full_frames"], result["ed_orig"])
+    gt_es_frame_rgb, _ = _frame_from_list(result["full_frames"], result["es_orig"])
+    pred_ed_frame_rgb, _ = _frame_from_list(result["full_frames"], result["pred_ed_orig"])
+    pred_es_frame_rgb, _ = _frame_from_list(result["full_frames"], result["pred_es_orig"])
+
+    st.markdown(
+        """
+        <div class="section-heading">
+          <div class="section-title">Temporal Media Overview</div>
+          <div class="section-subtitle">Animated preview, key ED/ES metrics, and temporal-weight interpretation for this study.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    playback_col, summary_col = st.columns([0.92, 1.08], gap="large")
     with playback_col:
+        st.markdown(
+            """
+            <div class="media-shell">
+              <div class="shell-title">Animated Source Preview</div>
+              <div class="shell-subtitle">Compact cine preview for quick review. The graph below remains the main temporal analysis surface.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
         if gif_bytes:
-            st.image(gif_bytes, caption="Animated source preview", use_container_width=True)
+            left_pad, image_col, right_pad = st.columns([0.08, 0.84, 0.08])
+            with image_col:
+                st.image(gif_bytes, caption="Animated source preview", width=PREVIEW_DISPLAY_WIDTH)
         else:
             st.caption(f"Animated preview unavailable: {gif_err}")
     with summary_col:
-        st.metric("Peak Weight", f"{peak_weight:.4f}")
-        st.metric("Peak Frame", str(peak_frame))
-        st.metric("Frames", str(total_frames))
-        st.caption("Only the animated preview is shown here. The graph below stays available for frame-wise temporal-weight inspection.")
+        st.markdown(
+            """
+            <div class="media-shell">
+              <div class="shell-title">Cardiac Phase Summary</div>
+              <div class="shell-subtitle">Ground truth and predicted frame landmarks are shown side by side for quick comparison.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        stat_row_1 = st.columns(2)
+        stat_row_1[0].metric("Peak Weight", f"{peak_weight:.4f}")
+        stat_row_1[1].metric("Peak Frame", str(peak_frame))
+        stat_row_2 = st.columns(2)
+        stat_row_2[0].metric("GT ED/ES", f"{int(result['ed_orig'])} / {int(result['es_orig'])}")
+        stat_row_2[1].metric("Pred ED/ES", f"{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}")
+
+    st.markdown(
+        """
+        <div class="section-heading">
+          <div class="section-title">Cardiac Phase Frames</div>
+          <div class="section-subtitle">Green indicates End-Diastole (ED) and red indicates End-Systole (ES). Labels stay outside the image so the echo frames remain unobstructed.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    compare_left, compare_right = st.columns(2, gap="large")
+    with compare_left:
+        _render_phase_group(
+            "Ground Truth",
+            _phase_card_html(
+                _annotate_temporal_frame(gt_ed_frame_rgb, "", "", result["ed_orig"], (22, 163, 74)),
+                "End-Diastole",
+                "ED",
+                result["ed_orig"],
+                "phase-pill-ed",
+                "Ground truth",
+            )
+            + _phase_card_html(
+                _annotate_temporal_frame(gt_es_frame_rgb, "", "", result["es_orig"], (220, 38, 38)),
+                "End-Systole",
+                "ES",
+                result["es_orig"],
+                "phase-pill-es",
+                "Ground truth",
+            ),
+        )
+    with compare_right:
+        _render_phase_group(
+            "Model Prediction",
+            _phase_card_html(
+                _annotate_temporal_frame(pred_ed_frame_rgb, "", "", result["pred_ed_orig"], (22, 163, 74)),
+                "End-Diastole",
+                "ED",
+                result["pred_ed_orig"],
+                "phase-pill-ed",
+                "Predicted",
+            )
+            + _phase_card_html(
+                _annotate_temporal_frame(pred_es_frame_rgb, "", "", result["pred_es_orig"], (220, 38, 38)),
+                "End-Systole",
+                "ES",
+                result["pred_es_orig"],
+                "phase-pill-es",
+                "Predicted",
+            ),
+        )
 
     payload = {
         "frameWeights": [round(float(v), 6) for v in frame_weights.tolist()],
@@ -648,51 +914,56 @@ def _render_temporal_weight_video(result):
         "peakFrame": peak_frame,
         "peakWeight": round(peak_weight, 6),
         "totalFrames": int(total_frames),
+        "gtSpan": abs(int(result["es_orig"]) - int(result["ed_orig"])),
+        "predSpan": abs(int(result["pred_es_orig"]) - int(result["pred_ed_orig"])),
     }
 
     component_id = hashlib.md5(
-        f"{result['video_path']}|{total_frames}|{result['fps']}".encode("utf-8")
+        f"{result['video_path']}|{total_frames}|{result['fps']}|{result['ed_orig']}|{result['pred_ed_orig']}".encode("utf-8")
     ).hexdigest()[:12]
     payload_json = json.dumps(payload)
 
     components.html(
         f"""
-        <div id="tw-{component_id}" style="font-family: 'Trebuchet MS', 'Segoe UI', sans-serif; color: #102a43;">
+        <div id="tw-{component_id}" style="font-family: 'Trebuchet MS', 'Segoe UI', sans-serif; color: #102a43; margin-top: 10px;">
           <style>
             #tw-{component_id} {{
               --tw-ink: #102a43;
-              --tw-muted: #587086;
-              --tw-line: #245fd9;
+              --tw-muted: #5f7689;
+              --tw-line: #255cc7;
               --tw-sample: #f97316;
               --tw-ed: #16a34a;
               --tw-es: #dc2626;
-              --tw-border: rgba(148, 163, 184, 0.22);
+              --tw-pred-band: rgba(37, 92, 199, 0.06);
+              --tw-gt-band: rgba(22, 163, 74, 0.05);
+              --tw-border: rgba(148, 163, 184, 0.18);
             }}
             #tw-{component_id} .tw-shell {{
-              background: linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(240,247,255,0.94) 100%);
+              background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(243,248,253,0.96) 100%);
               border: 1px solid var(--tw-border);
-              border-radius: 26px;
+              border-radius: 24px;
               padding: 18px;
-              box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+              box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
             }}
             #tw-{component_id} .tw-header {{
               display: flex;
               justify-content: space-between;
-              align-items: flex-end;
+              align-items: flex-start;
               gap: 12px;
-              margin-bottom: 14px;
+              margin-bottom: 12px;
             }}
             #tw-{component_id} .tw-title {{
               margin: 0;
-              font-size: 1.25rem;
+              font-size: 1.16rem;
               font-weight: 800;
               color: var(--tw-ink);
             }}
             #tw-{component_id} .tw-subtitle {{
               margin: 4px 0 0 0;
               color: var(--tw-muted);
-              font-size: 0.92rem;
+              font-size: 0.88rem;
               line-height: 1.45;
+              max-width: 560px;
             }}
             #tw-{component_id} .tw-chip-row {{
               display: flex;
@@ -702,52 +973,58 @@ def _render_temporal_weight_video(result):
             }}
             #tw-{component_id} .tw-chip {{
               border-radius: 999px;
-              padding: 8px 12px;
-              background: rgba(255,255,255,0.92);
+              padding: 6px 10px;
+              background: rgba(255,255,255,0.95);
               border: 1px solid var(--tw-border);
               color: var(--tw-muted);
-              font-size: 12px;
+              font-size: 11px;
               font-weight: 700;
-              letter-spacing: 0.03em;
+              letter-spacing: 0.02em;
             }}
             #tw-{component_id} .tw-grid {{
               display: grid;
               grid-template-columns: repeat(4, minmax(0, 1fr));
               gap: 10px;
-              margin-bottom: 14px;
+              margin-bottom: 12px;
             }}
             #tw-{component_id} .tw-stat {{
-              background: rgba(255,255,255,0.88);
+              background: rgba(255,255,255,0.92);
               border: 1px solid var(--tw-border);
               border-radius: 16px;
               padding: 12px 14px;
-              box-shadow: inset 0 1px 0 rgba(255,255,255,0.65);
             }}
             #tw-{component_id} .tw-stat-label {{
-              font-size: 11px;
+              font-size: 10px;
               text-transform: uppercase;
               letter-spacing: 0.08em;
-              color: #6b8297;
-              margin-bottom: 5px;
+              color: #71879a;
+              margin-bottom: 4px;
             }}
             #tw-{component_id} .tw-stat-value {{
-              font-size: 1.14rem;
+              font-size: 1.08rem;
               font-weight: 800;
               color: var(--tw-ink);
             }}
             #tw-{component_id} .tw-chart-card {{
-              background: radial-gradient(circle at top right, rgba(36,95,217,0.08), transparent 26%), #ffffff;
+              background: #ffffff;
               border: 1px solid var(--tw-border);
-              border-radius: 22px;
+              border-radius: 20px;
               padding: 14px;
             }}
             #tw-{component_id} .tw-chart {{
               width: 100%;
-              height: 310px;
+              height: 328px;
               display: block;
             }}
-            #tw-{component_id} .tw-slider-row {{
+            #tw-{component_id} .tw-footer {{
               margin-top: 10px;
+              display: grid;
+              grid-template-columns: 1fr auto;
+              gap: 10px;
+              align-items: center;
+            }}
+            #tw-{component_id} .tw-slider-block {{
+              min-width: 0;
             }}
             #tw-{component_id} .tw-slider-label {{
               display: flex;
@@ -763,19 +1040,19 @@ def _render_temporal_weight_video(result):
             #tw-{component_id} .tw-legend {{
               display: flex;
               flex-wrap: wrap;
-              gap: 14px;
-              margin-top: 12px;
+              justify-content: flex-end;
+              gap: 10px;
               color: var(--tw-muted);
-              font-size: 12px;
+              font-size: 11px;
             }}
             #tw-{component_id} .tw-legend-item {{
               display: inline-flex;
               align-items: center;
-              gap: 7px;
+              gap: 6px;
             }}
             #tw-{component_id} .tw-swatch {{
-              width: 12px;
-              height: 12px;
+              width: 11px;
+              height: 11px;
               border-radius: 999px;
               display: inline-block;
             }}
@@ -785,9 +1062,14 @@ def _render_temporal_weight_video(result):
               }}
               #tw-{component_id} .tw-header {{
                 flex-direction: column;
-                align-items: flex-start;
               }}
               #tw-{component_id} .tw-chip-row {{
+                justify-content: flex-start;
+              }}
+              #tw-{component_id} .tw-footer {{
+                grid-template-columns: 1fr;
+              }}
+              #tw-{component_id} .tw-legend {{
                 justify-content: flex-start;
               }}
             }}
@@ -795,13 +1077,14 @@ def _render_temporal_weight_video(result):
           <div class="tw-shell">
             <div class="tw-header">
               <div>
-                <div class="tw-title">Temporal Weight Graph</div>
-                <div class="tw-subtitle">Use the native video player above for playback. This graph remains available for frame-by-frame temporal-weight inspection.</div>
+                <div class="tw-title">Temporal Weight Timeline</div>
+                <div class="tw-subtitle">Stage 2 temporal weight across the full clip. Ground truth and predicted ED/ES markers remain visible while the curve stays visually primary.</div>
               </div>
               <div class="tw-chip-row">
                 <span class="tw-chip">{payload['totalFrames']} frames</span>
-                <span class="tw-chip">Peak frame {payload['peakFrame']}</span>
-                <span class="tw-chip">Peak weight {payload['peakWeight']:.4f}</span>
+                <span class="tw-chip">Peak {payload['peakFrame']}</span>
+                <span class="tw-chip">GT span {payload['gtSpan']} fr</span>
+                <span class="tw-chip">Pred span {payload['predSpan']} fr</span>
               </div>
             </div>
             <div class="tw-grid">
@@ -814,28 +1097,30 @@ def _render_temporal_weight_video(result):
                 <div class="tw-stat-value" id="tw-weight-{component_id}">0.0000</div>
               </div>
               <div class="tw-stat">
-                <div class="tw-stat-label">Ground truth ED/ES</div>
+                <div class="tw-stat-label">Ground truth</div>
                 <div class="tw-stat-value">{int(result['ed_orig'])} / {int(result['es_orig'])}</div>
               </div>
               <div class="tw-stat">
-                <div class="tw-stat-label">Predicted ED/ES</div>
+                <div class="tw-stat-label">Prediction</div>
                 <div class="tw-stat-value">{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}</div>
               </div>
             </div>
             <div class="tw-chart-card">
-              <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 820 310" preserveAspectRatio="none"></svg>
-              <div class="tw-slider-row">
-                <div class="tw-slider-label">
-                  <span>Inspect graph by frame</span>
-                  <span id="tw-slider-readout-{component_id}">Frame 0</span>
+              <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 820 328" preserveAspectRatio="none"></svg>
+              <div class="tw-footer">
+                <div class="tw-slider-block">
+                  <div class="tw-slider-label">
+                    <span>Inspect by frame</span>
+                    <span id="tw-slider-readout-{component_id}">Frame 0</span>
+                  </div>
+                  <input id="tw-slider-{component_id}" class="tw-slider" type="range" min="0" max="{max(0, payload['totalFrames'] - 1)}" value="0" step="1" />
                 </div>
-                <input id="tw-slider-{component_id}" class="tw-slider" type="range" min="0" max="{max(0, payload['totalFrames'] - 1)}" value="0" step="1" />
-              </div>
-              <div class="tw-legend">
-                <span class="tw-legend-item"><span class="tw-swatch" style="background:#245fd9;"></span>Temporal weight curve</span>
-                <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Sampled frames</span>
-                <span class="tw-legend-item"><span class="tw-swatch" style="background:#16a34a;"></span>ED markers</span>
-                <span class="tw-legend-item"><span class="tw-swatch" style="background:#dc2626;"></span>ES markers</span>
+                <div class="tw-legend">
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:#245fd9;"></span>Weight</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Samples</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:rgba(22,163,74,0.55);"></span>GT window</span>
+                  <span class="tw-legend-item"><span class="tw-swatch" style="background:rgba(37,92,199,0.35);"></span>Pred window</span>
+                </div>
               </div>
             </div>
           </div>
@@ -848,10 +1133,10 @@ def _render_temporal_weight_video(result):
           const slider = document.getElementById("tw-slider-{component_id}");
           const sliderReadout = document.getElementById("tw-slider-readout-{component_id}");
           const width = 820;
-          const height = 310;
+          const height = 328;
           const padLeft = 58;
-          const padRight = 20;
-          const padTop = 22;
+          const padRight = 18;
+          const padTop = 28;
           const padBottom = 42;
           const graphHeight = height - padTop - padBottom;
           const graphWidth = width - padLeft - padRight;
@@ -882,15 +1167,29 @@ def _render_temporal_weight_video(result):
             return `${{linePath}} L${{last[0].toFixed(2)}},${{(padTop + graphHeight).toFixed(2)}} L${{first[0].toFixed(2)}},${{(padTop + graphHeight).toFixed(2)}} Z`;
           }}
 
-          function eventMarkup(frame, color, dash, label, row) {{
+          function bandMarkup(startFrame, endFrame, fill, opacity) {{
+            const start = Math.max(0, Math.min(startFrame, endFrame));
+            const end = Math.min(payload.totalFrames - 1, Math.max(startFrame, endFrame));
+            const x1 = xForFrame(start);
+            const x2 = xForFrame(end);
+            return `<rect x="${{x1}}" y="${{padTop}}" width="${{Math.max(2, x2 - x1)}}" height="${{graphHeight}}" fill="${{fill}}" fill-opacity="${{opacity}}"></rect>`;
+          }}
+
+          function eventMarkup(frame, color, dash, label, y) {{
             const x = xForFrame(frame);
-            const labelWidth = Math.max(62, label.length * 7.4 + 20);
-            const rectX = Math.min(width - labelWidth - 8, Math.max(8, x - labelWidth / 2));
-            const rectY = padTop + 8 + row * 20;
             return `
-              <line x1="${{x}}" y1="${{padTop}}" x2="${{x}}" y2="${{padTop + graphHeight}}" stroke="${{color}}" stroke-width="2.2" stroke-dasharray="${{dash}}" opacity="0.85"></line>
-              <rect x="${{rectX}}" y="${{rectY}}" width="${{labelWidth}}" height="18" rx="9" fill="white" fill-opacity="0.92" stroke="${{color}}" stroke-opacity="0.35"></rect>
-              <text x="${{rectX + labelWidth / 2}}" y="${{rectY + 12.5}}" fill="${{color}}" text-anchor="middle" font-size="11.5" font-weight="800">${{label}}</text>
+              <line x1="${{x}}" y1="${{padTop}}" x2="${{x}}" y2="${{padTop + graphHeight}}" stroke="${{color}}" stroke-width="2.1" stroke-dasharray="${{dash}}" opacity="0.82"></line>
+              <text x="${{Math.min(width - 24, Math.max(24, x))}}" y="${{y}}" fill="${{color}}" text-anchor="middle" font-size="11" font-weight="800">${{label}}</text>
+            `;
+          }}
+
+          function curveEventDot(frame, color) {{
+            const clamped = Math.max(0, Math.min(payload.totalFrames - 1, frame));
+            const x = xForFrame(clamped);
+            const y = yForWeight(payload.frameWeights[clamped] || 0);
+            return `
+              <circle cx="${{x}}" cy="${{y}}" r="5.6" fill="white" stroke="${{color}}" stroke-width="2.4"></circle>
+              <circle cx="${{x}}" cy="${{y}}" r="2.2" fill="${{color}}"></circle>
             `;
           }}
 
@@ -898,45 +1197,48 @@ def _render_temporal_weight_video(result):
           const linePath = buildLinePath(points);
           const areaPath = buildAreaPath(points);
           const sampledDots = payload.sampledIndices.map((frame, idx) => `
-            <circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="4.2" fill="#f97316" stroke="white" stroke-width="1.4"></circle>
+            <circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="3.9" fill="#f97316" stroke="white" stroke-width="1.2"></circle>
           `).join('');
           const xTickFrames = [0, Math.max(0, Math.floor((payload.totalFrames - 1) / 2)), Math.max(0, payload.totalFrames - 1)];
           const xTicks = xTickFrames.map((frame) => `
             <line x1="${{xForFrame(frame)}}" y1="${{padTop + graphHeight}}" x2="${{xForFrame(frame)}}" y2="${{padTop + graphHeight + 6}}" stroke="#9db2c7"></line>
-            <text x="${{xForFrame(frame)}}" y="${{height - 10}}" fill="#627d98" text-anchor="middle" font-size="11.5">${{frame}}</text>
+            <text x="${{xForFrame(frame)}}" y="${{height - 10}}" fill="#627d98" text-anchor="middle" font-size="11.2">${{frame}}</text>
           `).join('');
           const yTickValues = [0, maxWeight / 2, maxWeight];
           const yTicks = yTickValues.map((weight) => `
-            <line x1="${{padLeft}}" y1="${{yForWeight(weight)}}" x2="${{width - padRight}}" y2="${{yForWeight(weight)}}" stroke="#e5edf6"></line>
-            <text x="14" y="${{yForWeight(weight) + 4}}" fill="#627d98" font-size="11.5">${{weight.toFixed(3)}}</text>
+            <line x1="${{padLeft}}" y1="${{yForWeight(weight)}}" x2="${{width - padRight}}" y2="${{yForWeight(weight)}}" stroke="#e7eef6"></line>
+            <text x="14" y="${{yForWeight(weight) + 4}}" fill="#627d98" font-size="11.2">${{weight.toFixed(3)}}</text>
           `).join('');
 
           svg.innerHTML = `
             <defs>
               <linearGradient id="tw-fill-{component_id}" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#245fd9" stop-opacity="0.28"></stop>
+                <stop offset="0%" stop-color="#245fd9" stop-opacity="0.22"></stop>
                 <stop offset="100%" stop-color="#245fd9" stop-opacity="0.02"></stop>
               </linearGradient>
-              <filter id="tw-glow-{component_id}" x="-10%" y="-10%" width="120%" height="120%">
-                <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#245fd9" flood-opacity="0.20"></feDropShadow>
-              </filter>
             </defs>
-            <rect x="0" y="0" width="820" height="310" rx="18" fill="#ffffff"></rect>
+            <rect x="0" y="0" width="820" height="328" rx="18" fill="#ffffff"></rect>
+            ${{bandMarkup(payload.gtEd, payload.gtEs, '#16a34a', 0.05)}}
+            ${{bandMarkup(payload.predEd, payload.predEs, '#255cc7', 0.06)}}
             ${{yTicks}}
             <path d="${{areaPath}}" fill="url(#tw-fill-{component_id})"></path>
-            <path d="${{linePath}}" fill="none" stroke="#245fd9" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#tw-glow-{component_id})"></path>
+            <path d="${{linePath}}" fill="none" stroke="#245fd9" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path>
             ${{sampledDots}}
-            ${{eventMarkup(payload.gtEd, '#16a34a', '5 5', 'GT ED', 0)}}
-            ${{eventMarkup(payload.gtEs, '#dc2626', '5 5', 'GT ES', 1)}}
-            ${{eventMarkup(payload.predEd, '#16a34a', '2 5', 'Pred ED', 2)}}
-            ${{eventMarkup(payload.predEs, '#dc2626', '2 5', 'Pred ES', 3)}}
-            <line x1="${{padLeft}}" y1="${{padTop + graphHeight}}" x2="${{width - padRight}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.3"></line>
-            <line x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.3"></line>
+            ${{eventMarkup(payload.gtEd, '#16a34a', '4 5', 'GT ED', 18)}}
+            ${{eventMarkup(payload.gtEs, '#dc2626', '4 5', 'GT ES', 34)}}
+            ${{eventMarkup(payload.predEd, '#16a34a', '2 6', 'P ED', 50)}}
+            ${{eventMarkup(payload.predEs, '#dc2626', '2 6', 'P ES', 66)}}
+            ${{curveEventDot(payload.gtEd, '#16a34a')}}
+            ${{curveEventDot(payload.gtEs, '#dc2626')}}
+            ${{curveEventDot(payload.predEd, '#16a34a')}}
+            ${{curveEventDot(payload.predEs, '#dc2626')}}
+            <line x1="${{padLeft}}" y1="${{padTop + graphHeight}}" x2="${{width - padRight}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.1"></line>
+            <line x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#9db2c7" stroke-width="1.1"></line>
             ${{xTicks}}
-            <text x="${{width / 2}}" y="${{height - 4}}" fill="#486581" text-anchor="middle" font-size="12.5" font-weight="700">Frame index</text>
-            <text x="14" y="16" fill="#486581" font-size="12.5" font-weight="700">Weight</text>
-            <line id="tw-marker-{component_id}" x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#0f172a" stroke-width="2.7"></line>
-            <circle id="tw-marker-dot-{component_id}" cx="${{padLeft}}" cy="${{yForWeight(payload.frameWeights[0] || 0)}}" r="6" fill="#0f172a" stroke="white" stroke-width="2"></circle>
+            <text x="${{width / 2}}" y="${{height - 3}}" fill="#486581" text-anchor="middle" font-size="12" font-weight="700">Frame index</text>
+            <text x="14" y="18" fill="#486581" font-size="12" font-weight="700">Weight</text>
+            <line id="tw-marker-{component_id}" x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{padTop + graphHeight}}" stroke="#0f172a" stroke-width="2.2"></line>
+            <circle id="tw-marker-dot-{component_id}" cx="${{padLeft}}" cy="${{yForWeight(payload.frameWeights[0] || 0)}}" r="5.2" fill="#0f172a" stroke="white" stroke-width="1.8"></circle>
           `;
 
           const marker = document.getElementById("tw-marker-{component_id}");

@@ -12,11 +12,12 @@ from pipeline.stage45_pipeline import Stage45Pipeline
 class Stage4SegmentationDataset(Dataset):
     """Frame-level Stage-4 dataset built from VolumeTracings.csv."""
 
-    def __init__(self, data_dir, split="TRAIN", image_size=112, max_videos=None, normalize="none"):
+    def __init__(self, data_dir, split="TRAIN", image_size=112, max_videos=None, normalize="none", augment=False):
         self.data_dir = data_dir
         self.split = str(split).upper()
         self.image_size = int(image_size)
         self.normalize = str(normalize).lower()
+        self.augment = bool(augment) and self.split == "TRAIN"
 
         filelist_path = os.path.join(data_dir, "FileList.csv")
         tracings_path = os.path.join(data_dir, "VolumeTracings.csv")
@@ -100,6 +101,37 @@ class Stage4SegmentationDataset(Dataset):
             image_tensor = (image_tensor - mean) / std
         return image_tensor
 
+    def _augment_frame_and_mask(self, frame_rgb, mask):
+        if not self.augment:
+            return frame_rgb, mask
+
+        frame_rgb = frame_rgb.copy()
+        mask = mask.copy().astype(np.uint8)
+        h, w = frame_rgb.shape[:2]
+
+        if np.random.rand() < 0.5:
+            frame_rgb = np.ascontiguousarray(frame_rgb[:, ::-1])
+            mask = np.ascontiguousarray(mask[:, ::-1])
+
+        if np.random.rand() < 0.9:
+            angle = float(np.random.uniform(-8.0, 8.0))
+            scale = float(np.random.uniform(0.94, 1.06))
+            tx = float(np.random.uniform(-0.05, 0.05) * w)
+            ty = float(np.random.uniform(-0.05, 0.05) * h)
+            matrix = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, scale)
+            matrix[:, 2] += np.array([tx, ty], dtype=np.float32)
+            frame_rgb = cv2.warpAffine(frame_rgb, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+            mask = cv2.warpAffine(mask, matrix, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+        if np.random.rand() < 0.8:
+            alpha = float(np.random.uniform(0.92, 1.08))
+            beta = float(np.random.uniform(-10.0, 10.0))
+            gamma = float(np.random.uniform(0.92, 1.08))
+            frame_rgb = np.clip(frame_rgb.astype(np.float32) * alpha + beta, 0.0, 255.0)
+            frame_rgb = np.clip(255.0 * np.power(frame_rgb / 255.0, gamma), 0.0, 255.0).astype(np.uint8)
+
+        return frame_rgb, mask
+
     def __getitem__(self, idx):
         sample = self.samples[idx]
         file_name_ext = sample["file_name_ext"]
@@ -111,7 +143,6 @@ class Stage4SegmentationDataset(Dataset):
 
         frame_bgr = self._read_video_frame(video_path, frame_id)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        frame_resized = cv2.resize(frame_rgb, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
 
         frame_rows = self.tracings.iloc[sample["trace_indices"]].sort_index()
         gt_mask_orig = Stage45Pipeline.tracing_to_mask(
@@ -119,6 +150,8 @@ class Stage4SegmentationDataset(Dataset):
             height=sample["frame_height"],
             width=sample["frame_width"],
         )
+        frame_rgb, gt_mask_orig = self._augment_frame_and_mask(frame_rgb, gt_mask_orig)
+        frame_resized = cv2.resize(frame_rgb, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
         gt_mask_resized = cv2.resize(
             gt_mask_orig.astype(np.uint8),
             (self.image_size, self.image_size),
