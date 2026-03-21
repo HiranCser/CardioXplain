@@ -623,6 +623,37 @@ def _interval_bucket(width_pct):
     return "Wide"
 
 
+def _agreement_explanation(disagreement_pct):
+    if not np.isfinite(disagreement_pct):
+        return "Agreement is unavailable because the Stage4/5 mask-based EF estimate is missing for this study."
+    d = abs(float(disagreement_pct))
+    if d <= 5.0:
+        return f"Good agreement means the Stage1-3 EF head and the Stage4/5 mask-based EF differ by only {d:.1f} percentage points."
+    if d <= 10.0:
+        return f"Borderline agreement means the Stage1-3 EF head and the Stage4/5 mask-based EF differ by {d:.1f} percentage points."
+    return f"High disagreement means the Stage1-3 EF head and the Stage4/5 mask-based EF differ by {d:.1f} percentage points, which is above the 10-point threshold."
+
+
+def _severity_thresholds_from_summary(summary):
+    stage67 = summary if isinstance(summary, dict) else {}
+    thresholds = stage67.get("severity_thresholds", {}) if isinstance(stage67.get("severity_thresholds", {}), dict) else {}
+    normal_threshold = float(thresholds.get("normal_threshold", 50.0))
+    severe_threshold = float(thresholds.get("severe_threshold", 30.0))
+    return normal_threshold, severe_threshold
+
+
+def _severity_rule_text(normal_threshold, severe_threshold):
+    return (
+        f"Dataset reference label is derived from the dataset EF ground truth using the Stage6 severity thresholds: "
+        f"Preserved if EF >= {normal_threshold:.1f}%, Reduced if {severe_threshold:.1f}% <= EF < {normal_threshold:.1f}%, "
+        f"and Severe if EF < {severe_threshold:.1f}%."
+    )
+
+
+def _possible_severity_labels_text():
+    return "Possible labels: Preserved LV systolic function, Reduced LV systolic function, Severe LV systolic dysfunction."
+
+
 def _render_stage67_section(selected_video, split, stage67_output_dir):
     pred_df, pred_path = load_stage67_predictions(stage67_output_dir, split)
     summary, summary_path = load_stage67_summary(stage67_output_dir)
@@ -655,8 +686,11 @@ def _render_stage67_section(selected_video, split, stage67_output_dir):
     confidence_text = _confidence_bucket(max_prob) if np.isfinite(max_prob) else "Unknown"
     disagreement_pct = float(row.get("ef_disagreement_pct", float("nan")))
     agreement_text = _agreement_bucket(disagreement_pct)
+    agreement_note = _agreement_explanation(disagreement_pct)
     ci90_width = float(ci90_hi - ci90_lo) if np.isfinite(ci90_hi) and np.isfinite(ci90_lo) else float("nan")
     uncertainty_text = _interval_bucket(ci90_width)
+    normal_threshold, severe_threshold = _severity_thresholds_from_summary(summary)
+    severity_rule_text = _severity_rule_text(normal_threshold, severe_threshold)
 
     c1, c2 = st.columns(2)
     c3, c4 = st.columns(2)
@@ -687,6 +721,13 @@ def _render_stage67_section(selected_video, split, stage67_output_dir):
             ]
         )
         st.dataframe(prob_table, width="stretch", hide_index=True)
+
+    st.markdown("**Reading Notes**")
+    st.write(f"- {agreement_note}")
+    if str(split).upper() in {"TEST", "VAL", "TRAIN"} and pd.notna(row.get("severity_text_gt", np.nan)):
+        gt_ef_text = f"{float(row.get('ef_gt_pct')):.1f}%" if pd.notna(row.get("ef_gt_pct", np.nan)) else "the dataset EF value"
+        st.write(f"- {severity_rule_text} This study's dataset EF is {gt_ef_text}, so the displayed reference label is {gt_text}.")
+    st.write(f"- {_possible_severity_labels_text()}")
 
     interpretation = []
     interpretation.append(f"Stage 6 classifies this study as {pred_text.lower()}.")
@@ -995,7 +1036,7 @@ def _make_phase_plot(phase_probs, gt_ed_idx, gt_es_idx, pred_ed_idx, pred_es_idx
 
 def _expand_attention_to_full_frames(attn, sampled_indices, total_frames):
     sampled = np.asarray(sampled_indices, dtype=np.int32).reshape(-1)
-    weights = np.asarray(attn, dtype=np.float64).reshape(-1)
+    weights = _summarize_temporal_weights(attn, expected_length=sampled.size)
     total_frames = int(total_frames)
 
     if total_frames <= 0:
@@ -1026,6 +1067,89 @@ def _expand_attention_to_full_frames(attn, sampled_indices, total_frames):
         right=float(unique_weights[-1]),
     )
     return np.clip(full_weights.astype(np.float64), 0.0, None)
+
+
+def _summarize_temporal_weights(attn, expected_length=None):
+    weights = np.asarray(attn, dtype=np.float64)
+    if weights.size == 0:
+        return np.zeros(0, dtype=np.float64)
+
+    if weights.ndim == 1:
+        summary = weights.reshape(-1)
+    else:
+        summary = None
+        if expected_length is not None:
+            for axis, axis_size in enumerate(weights.shape):
+                if int(axis_size) != int(expected_length):
+                    continue
+                reduce_axes = tuple(i for i in range(weights.ndim) if i != axis)
+                collapsed = weights.mean(axis=reduce_axes) if reduce_axes else weights
+                summary = np.asarray(collapsed, dtype=np.float64).reshape(-1)
+                break
+        if summary is None:
+            summary = weights.reshape(-1)
+
+    summary = np.clip(summary.astype(np.float64), 0.0, None)
+    return summary
+
+
+def _aligned_sampled_temporal_weights(attn, sampled_indices):
+    sampled = np.asarray(sampled_indices, dtype=np.int32).reshape(-1)
+    weights = _summarize_temporal_weights(attn, expected_length=sampled.size)
+    n = min(sampled.size, weights.size)
+    if n <= 0:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float64)
+    return sampled[:n], weights[:n]
+
+
+def _collapse_duplicate_sampled_frames(sampled_indices, sampled_weights):
+    sampled = np.asarray(sampled_indices, dtype=np.int32).reshape(-1)
+    weights = np.asarray(sampled_weights, dtype=np.float64).reshape(-1)
+    n = min(sampled.size, weights.size)
+    if n <= 0:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float64)
+
+    sampled = sampled[:n]
+    weights = weights[:n]
+    order = np.argsort(sampled, kind="stable")
+    sampled = sampled[order]
+    weights = weights[order]
+
+    unique_frames, inverse = np.unique(sampled, return_inverse=True)
+    collapsed_weights = np.zeros(unique_frames.shape[0], dtype=np.float64)
+    np.add.at(collapsed_weights, inverse, weights)
+    return unique_frames.astype(np.int32), collapsed_weights
+
+
+def _top_temporal_frame_specs(result, top_k=4):
+    sampled_indices, sampled_weights = _aligned_sampled_temporal_weights(
+        result["stage2_attention"],
+        result["sampled_indices"],
+    )
+    unique_indices, unique_weights = _collapse_duplicate_sampled_frames(sampled_indices, sampled_weights)
+    if unique_indices.size == 0 or unique_weights.size == 0:
+        return []
+
+    order = np.argsort(-unique_weights, kind="stable")
+    specs = []
+    for rank, pos in enumerate(order[:max(1, int(top_k))], start=1):
+        frame_idx = int(unique_indices[pos])
+        frame_rgb, resolved_idx = _frame_from_list(result["full_frames"], frame_idx)
+        if frame_rgb is None:
+            continue
+        specs.append(
+            {
+                "rank": rank,
+                "frame_idx": int(resolved_idx),
+                "weight": float(unique_weights[pos]),
+                "image": _annotate_temporal_frame(frame_rgb, "", "", resolved_idx, (37, 92, 199)),
+                "gt_context": _phase_window_label(resolved_idx, result["ed_orig"], result["es_orig"]),
+                "pred_context": _phase_window_label(resolved_idx, result["pred_ed_orig"], result["pred_es_orig"]),
+                "nearest_gt": _nearest_landmark_text(resolved_idx, result["ed_orig"], result["es_orig"], "GT"),
+                "nearest_pred": _nearest_landmark_text(resolved_idx, result["pred_ed_orig"], result["pred_es_orig"], "Pred"),
+            }
+        )
+    return specs
 
 
 def _phase_window_label(frame_idx, ed_idx, es_idx):
@@ -1080,10 +1204,11 @@ def _render_temporal_weight_video(result):
         return False
 
     sampled_indices = np.asarray(result["sampled_indices"], dtype=np.int32).reshape(-1)
-    sampled_weights = np.asarray(result["stage2_attention"], dtype=np.float64).reshape(-1)
+    sampled_weights = _summarize_temporal_weights(result["stage2_attention"], expected_length=sampled_indices.size)
     sample_count = min(sampled_indices.size, sampled_weights.size)
     peak_frame = int(np.argmax(frame_weights)) if frame_weights.size > 0 else 0
     peak_weight = float(frame_weights[peak_frame]) if frame_weights.size > 0 else 0.0
+    top_frame_specs = _top_temporal_frame_specs(result, top_k=4)
 
     gt_ed_frame_rgb, _ = _frame_from_list(result["full_frames"], result["ed_orig"])
     gt_es_frame_rgb, _ = _frame_from_list(result["full_frames"], result["es_orig"])
@@ -1123,15 +1248,18 @@ def _render_temporal_weight_video(result):
             """
             <div class="media-shell">
               <div class="shell-title">Cardiac Phase Summary</div>
-              <div class="shell-subtitle">Ground truth and predicted frame landmarks are shown side by side for quick comparison.</div>
+              <div class="shell-subtitle">Ground-truth and predicted frame landmarks are shown side by side for this case.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        stat_row = st.columns(2)
-        stat_row[0].metric("GT ED/ES", f"{int(result['ed_orig'])} / {int(result['es_orig'])}")
-        stat_row[1].metric("Pred ED/ES", f"{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}")
-        st.caption("This summary highlights the key frame landmarks only. The temporal-weight curve below remains available for technical review if needed.")
+        stat_row_1 = st.columns(2)
+        stat_row_1[0].metric("GT ED/ES", f"{int(result['ed_orig'])} / {int(result['es_orig'])}")
+        stat_row_1[1].metric("Pred ED/ES", f"{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}")
+        stat_row_2 = st.columns(2)
+        stat_row_2[0].metric("ED Error", f"{int(result['ed_err_orig'])} fr")
+        stat_row_2[1].metric("ES Error", f"{int(result['es_err_orig'])} fr")
+        st.caption("GT = dataset annotation for this case. Pred = model-predicted landmark mapped back to the original video frame number.")
 
     st.markdown(
         """
@@ -1189,17 +1317,37 @@ def _render_temporal_weight_video(result):
             ],
         )
 
+    st.markdown(
+        """
+        <div class="section-heading">
+          <div class="section-title">Top Temporal-Weight Frames</div>
+          <div class="section-subtitle">These are distinct sampled frames used by Stage 2, ranked by temporal weight after merging duplicate sampled slots that round to the same original frame.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if top_frame_specs:
+        top_cols = st.columns(len(top_frame_specs), gap="medium")
+        for col, spec in zip(top_cols, top_frame_specs):
+            with col:
+                st.metric(f"Top {spec['rank']}", f"Frame {spec['frame_idx']}")
+                st.image(
+                    spec["image"],
+                    caption=f"Exact sampled frame | weight {spec['weight']:.4f}",
+                    width=FRAME_DISPLAY_WIDTH,
+                )
+                st.caption(f"GT context: {spec['gt_context']}")
+                st.caption(f"Pred context: {spec['pred_context']}")
+                st.caption(f"{spec['nearest_gt']} | {spec['nearest_pred']}")
+    else:
+        st.caption("Top temporal-weight frames are unavailable for this case.")
+
     component_id = hashlib.md5(
         f"{result['video_path']}|{total_frames}|{result['fps']}|{result['ed_orig']}|{result['pred_ed_orig']}".encode("utf-8")
     ).hexdigest()[:12]
-    selected_frame = st.slider(
-        "Linked frame inspector",
-        min_value=0,
-        max_value=max(0, total_frames - 1),
-        value=int(np.clip(peak_frame, 0, max(0, total_frames - 1))),
-        key=f"tw_selected_frame_{component_id}",
-        help="This frame selection drives the preview card and the highlighted marker on the temporal-weight graph.",
-    )
+    selected_frame = int(np.clip(peak_frame, 0, max(0, total_frames - 1)))
+    zoom_start = 0
+    zoom_end = max(0, total_frames - 1)
 
     selected_frame_rgb, _ = _frame_from_list(result["full_frames"], selected_frame)
     selected_preview = _annotate_temporal_frame(selected_frame_rgb, "", "", selected_frame, (37, 92, 199))
@@ -1274,6 +1422,10 @@ def _render_temporal_weight_video(result):
         "gtContext": gt_context,
         "predContext": pred_context,
         "totalFrames": int(total_frames),
+        "zoomStart": int(zoom_start),
+        "zoomEnd": int(zoom_end),
+        "edErr": int(result["ed_err_orig"]),
+        "esErr": int(result["es_err_orig"]),
     }
 
     payload_json = json.dumps(payload)
@@ -1425,11 +1577,11 @@ def _render_temporal_weight_video(result):
             <div class="tw-header">
               <div>
                 <div class="tw-title">Temporal Weight Timeline</div>
-                <div class="tw-subtitle">The highlighted marker is linked to the selected frame above. Green shading shows the GT ED?ES interval and blue shading shows the predicted ED?ES interval.</div>
+                <div class="tw-subtitle">GT marks the ground-truth ED/ES landmarks for this case. Pred marks the model-predicted ED/ES landmarks mapped back to the original frame numbers.</div>
               </div>
               <div class="tw-chip-row">
                 <span class="tw-chip">{payload['totalFrames']} frames</span>
-                <span class="tw-chip">Selected {payload['selectedFrame']}</span>
+                <span class="tw-chip">Peak frame {payload['selectedFrame']}</span>
               </div>
             </div>
             <div class="tw-grid">
@@ -1453,7 +1605,7 @@ def _render_temporal_weight_video(result):
             <div class="tw-chart-card">
               <svg id="tw-chart-{component_id}" class="tw-chart" viewBox="0 0 820 344" preserveAspectRatio="none"></svg>
               <div class="tw-footer">
-                <div class="tw-footer-note">The timeline marker, the selected-frame preview, and the phase-context cards are synchronized to the same frame index.</div>
+                <div class="tw-footer-note">GT = ground-truth landmark for this case. Pred = model-predicted landmark. The selected marker, preview frame, and phase-context cards all refer to the same peak-weight frame.</div>
                 <div class="tw-legend">
                   <span class="tw-legend-item"><span class="tw-swatch" style="background:#245fd9;"></span>Weight curve</span>
                   <span class="tw-legend-item"><span class="tw-swatch" style="background:#f97316;"></span>Sampled frames</span>
@@ -1476,13 +1628,21 @@ def _render_temporal_weight_video(result):
           const padBottom = 58;
           const graphHeight = height - padTop - padBottom;
           const graphWidth = width - padLeft - padRight;
-          const maxWeight = Math.max(...payload.frameWeights, 1e-6);
+          const visibleStart = Math.max(0, Math.min(payload.zoomStart ?? 0, Math.max(0, payload.totalFrames - 1)));
+          const visibleEnd = Math.max(visibleStart, Math.min(payload.zoomEnd ?? Math.max(0, payload.totalFrames - 1), Math.max(0, payload.totalFrames - 1)));
+          const visibleSpan = Math.max(1, visibleEnd - visibleStart);
+          const visibleWeights = payload.frameWeights.slice(visibleStart, visibleEnd + 1);
+          const maxWeight = Math.max(...visibleWeights, 1e-6);
+
+          function inView(frame) {{
+            return frame >= visibleStart && frame <= visibleEnd;
+          }}
 
           function xForFrame(frame) {{
-            if (payload.totalFrames <= 1) {{
+            if (visibleEnd <= visibleStart) {{
               return padLeft + graphWidth / 2;
             }}
-            return padLeft + (frame / (payload.totalFrames - 1)) * graphWidth;
+            return padLeft + ((frame - visibleStart) / visibleSpan) * graphWidth;
           }}
 
           function yForWeight(weight) {{
@@ -1504,8 +1664,13 @@ def _render_temporal_weight_video(result):
           }}
 
           function bandMarkup(startFrame, endFrame, fill, opacity, label, labelY) {{
-            const start = Math.max(0, Math.min(startFrame, endFrame));
-            const end = Math.min(payload.totalFrames - 1, Math.max(startFrame, endFrame));
+            const rawStart = Math.max(0, Math.min(startFrame, endFrame));
+            const rawEnd = Math.min(payload.totalFrames - 1, Math.max(startFrame, endFrame));
+            if (rawEnd < visibleStart || rawStart > visibleEnd) {{
+              return '';
+            }}
+            const start = Math.max(visibleStart, rawStart);
+            const end = Math.min(visibleEnd, rawEnd);
             const x1 = xForFrame(start);
             const x2 = xForFrame(end);
             const bandWidth = Math.max(2, x2 - x1);
@@ -1516,6 +1681,9 @@ def _render_temporal_weight_video(result):
           }}
 
           function eventMarkup(frame, color, dash, label, anchor) {{
+            if (!inView(frame)) {{
+              return '';
+            }}
             const x = xForFrame(frame);
             const pillWidth = Math.max(54, label.length * 6.6 + 14);
             const pillX = Math.min(width - pillWidth - 12, Math.max(12, x - pillWidth / 2));
@@ -1529,6 +1697,9 @@ def _render_temporal_weight_video(result):
           }}
 
           function selectedMarkup(frame, weight) {{
+            if (!inView(frame)) {{
+              return '';
+            }}
             const x = xForFrame(frame);
             const y = yForWeight(weight);
             const pillWidth = 72;
@@ -1543,6 +1714,9 @@ def _render_temporal_weight_video(result):
 
           function curveEventDot(frame, color) {{
             const clamped = Math.max(0, Math.min(payload.totalFrames - 1, frame));
+            if (!inView(clamped)) {{
+              return '';
+            }}
             const x = xForFrame(clamped);
             const y = yForWeight(payload.frameWeights[clamped] || 0);
             return `
@@ -1551,17 +1725,23 @@ def _render_temporal_weight_video(result):
             `;
           }}
 
-          const points = payload.frameWeights.map((weight, frame) => [xForFrame(frame), yForWeight(weight)]);
+          const points = visibleWeights.map((weight, offset) => [xForFrame(visibleStart + offset), yForWeight(weight)]);
           const linePath = buildLinePath(points);
           const areaPath = buildAreaPath(points);
-          const sampledDots = payload.sampledIndices.map((frame, idx) => `
-            <circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="3.3" fill="#f97316" stroke="white" stroke-width="1"></circle>
-          `).join('');
+          const sampledDots = payload.sampledIndices.map((frame, idx) => {{
+            if (!inView(frame)) {{
+              return '';
+            }}
+            return `
+              <circle cx="${{xForFrame(frame)}}" cy="${{yForWeight(payload.sampledWeights[idx] ?? 0)}}" r="3.3" fill="#f97316" stroke="white" stroke-width="1"></circle>
+            `;
+          }}).join('');
           const xTickFrames = Array.from(new Set([
-            0,
-            Math.max(0, Math.floor((payload.totalFrames - 1) * 0.33)),
-            Math.max(0, Math.floor((payload.totalFrames - 1) * 0.66)),
-            Math.max(0, payload.totalFrames - 1),
+            visibleStart,
+            Math.max(visibleStart, Math.floor(visibleStart + visibleSpan * 0.25)),
+            Math.max(visibleStart, Math.floor(visibleStart + visibleSpan * 0.50)),
+            Math.max(visibleStart, Math.floor(visibleStart + visibleSpan * 0.75)),
+            visibleEnd,
           ])).sort((a, b) => a - b);
           const xTicks = xTickFrames.map((frame) => `
             <line x1="${{xForFrame(frame)}}" y1="${{padTop + graphHeight}}" x2="${{xForFrame(frame)}}" y2="${{padTop + graphHeight + 6}}" stroke="#9db2c7"></line>
