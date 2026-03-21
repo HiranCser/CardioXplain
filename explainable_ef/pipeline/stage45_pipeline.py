@@ -51,6 +51,48 @@ class Stage45Pipeline:
         return float(mask.sum())
 
     @staticmethod
+    def _odd_kernel(kernel_size):
+        k = int(max(0, kernel_size))
+        if k <= 1:
+            return 0
+        if k % 2 == 0:
+            k += 1
+        return k
+
+    @staticmethod
+    def postprocess_mask(mask, keep_largest=True, fill_holes=True, closing_kernel=5, opening_kernel=0):
+        """Clean binary LV masks with conservative morphology and largest-component filtering."""
+        m = (np.asarray(mask) > 0).astype(np.uint8)
+        if m.size == 0:
+            return m
+
+        close_k = Stage45Pipeline._odd_kernel(closing_kernel)
+        if close_k > 1:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k))
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+
+        open_k = Stage45Pipeline._odd_kernel(opening_kernel)
+        if open_k > 1:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_k, open_k))
+            m = cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel)
+
+        if keep_largest and int(m.sum()) > 0:
+            n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+            if n_labels > 1:
+                largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+                m = (labels == largest).astype(np.uint8)
+
+        if fill_holes and int(m.sum()) > 0:
+            flood = (m * 255).astype(np.uint8)
+            h, w = flood.shape[:2]
+            flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+            cv2.floodFill(flood, flood_mask, (0, 0), 255)
+            holes = cv2.bitwise_not(flood)
+            m = (((m * 255) | holes) > 0).astype(np.uint8)
+
+        return (m > 0).astype(np.uint8)
+
+    @staticmethod
     def canonicalize_ed_es_pair(ed_frame, ed_area, es_frame, es_area):
         """Return a physiologically ordered ED/ES pair where ED area is >= ES area."""
         ed_frame = int(ed_frame)

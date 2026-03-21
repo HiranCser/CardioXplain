@@ -12,12 +12,26 @@ from pipeline.stage45_pipeline import Stage45Pipeline
 class Stage4SegmentationDataset(Dataset):
     """Frame-level Stage-4 dataset built from VolumeTracings.csv."""
 
-    def __init__(self, data_dir, split="TRAIN", image_size=112, max_videos=None, normalize="none", augment=False):
+    def __init__(
+        self,
+        data_dir,
+        split="TRAIN",
+        image_size=112,
+        max_videos=None,
+        normalize="none",
+        augment=False,
+        augment_blur_prob=0.25,
+        augment_noise_prob=0.35,
+        augment_noise_std=6.0,
+    ):
         self.data_dir = data_dir
         self.split = str(split).upper()
         self.image_size = int(image_size)
         self.normalize = str(normalize).lower()
         self.augment = bool(augment) and self.split == "TRAIN"
+        self.augment_blur_prob = float(max(0.0, augment_blur_prob))
+        self.augment_noise_prob = float(max(0.0, augment_noise_prob))
+        self.augment_noise_std = float(max(0.0, augment_noise_std))
 
         filelist_path = os.path.join(data_dir, "FileList.csv")
         tracings_path = os.path.join(data_dir, "VolumeTracings.csv")
@@ -129,6 +143,16 @@ class Stage4SegmentationDataset(Dataset):
             gamma = float(np.random.uniform(0.92, 1.08))
             frame_rgb = np.clip(frame_rgb.astype(np.float32) * alpha + beta, 0.0, 255.0)
             frame_rgb = np.clip(255.0 * np.power(frame_rgb / 255.0, gamma), 0.0, 255.0).astype(np.uint8)
+
+        if self.augment_blur_prob > 0.0 and np.random.rand() < self.augment_blur_prob:
+            blur_k = 3 if np.random.rand() < 0.7 else 5
+            sigma = float(np.random.uniform(0.2, 1.0))
+            frame_rgb = cv2.GaussianBlur(frame_rgb, (blur_k, blur_k), sigmaX=sigma, sigmaY=sigma)
+
+        if self.augment_noise_prob > 0.0 and np.random.rand() < self.augment_noise_prob:
+            sigma = float(np.random.uniform(0.35, 1.0) * self.augment_noise_std)
+            noise = np.random.normal(loc=0.0, scale=sigma, size=frame_rgb.shape).astype(np.float32)
+            frame_rgb = np.clip(frame_rgb.astype(np.float32) + noise, 0.0, 255.0).astype(np.uint8)
 
         return frame_rgb, mask
 

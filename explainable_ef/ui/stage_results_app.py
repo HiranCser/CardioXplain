@@ -506,6 +506,12 @@ def _prepare_segmentation_gif(full_frames, model4, meta4, device, max_frames=80,
             normalize_mode=meta4["normalize"],
             pretrained_flag=bool(meta4.get("pretrained", False)),
             device=device,
+            eval_threshold=float(meta4.get("eval_threshold", 0.5)),
+            postprocess_masks=bool(meta4.get("postprocess_masks", True)),
+            closing_kernel=int(meta4.get("postprocess_closing_kernel", 5)),
+            opening_kernel=int(meta4.get("postprocess_opening_kernel", 0)),
+            fill_holes=bool(meta4.get("postprocess_fill_holes", True)),
+            keep_largest=bool(meta4.get("postprocess_keep_largest", True)),
         )
         overlay = _overlay_mask_rgb(frame_rgb, mask, color=(0, 255, 0), alpha=0.35)
 
@@ -787,6 +793,12 @@ def load_stage4_model(checkpoint_path, fallback_model_name, fallback_base_channe
         "image_size": int(args.get("image_size", 112)),
         "normalize": str(args.get("normalize", "none")),
         "pretrained": bool(args.get("pretrained", False)),
+        "eval_threshold": float(checkpoint_dict.get("best_eval_threshold", checkpoint_dict.get("eval_threshold", args.get("eval_threshold", 0.5)))),
+        "postprocess_masks": bool(args.get("postprocess_masks", True)),
+        "postprocess_closing_kernel": int(args.get("postprocess_closing_kernel", 5)),
+        "postprocess_opening_kernel": int(args.get("postprocess_opening_kernel", 0)),
+        "postprocess_fill_holes": bool(args.get("postprocess_fill_holes", True)),
+        "postprocess_keep_largest": bool(args.get("postprocess_keep_largest", True)),
     }
     return model, metadata, incompatible
 
@@ -800,7 +812,7 @@ def _resolve_stage123_temporal_settings(checkpoint_meta):
     if mode is None:
         mode = runtime_config.get("PHASE_TEMPORAL_WINDOW_MODE")
     if mode is None:
-        mode = "tracing"
+        mode = "full"
 
     margin = args.get("phase_temporal_window_margin_mult")
     if margin is None:
@@ -827,6 +839,18 @@ def load_dataset_resource(data_dir, split, num_frames, temporal_window_mode, tem
     )
 
 
+def _postprocess_stage4_mask(mask, postprocess_masks, closing_kernel, opening_kernel, fill_holes, keep_largest):
+    if not bool(postprocess_masks):
+        return (np.asarray(mask) > 0).astype(np.uint8)
+    return Stage45Pipeline.postprocess_mask(
+        mask,
+        keep_largest=bool(keep_largest),
+        fill_holes=bool(fill_holes),
+        closing_kernel=int(closing_kernel),
+        opening_kernel=int(opening_kernel),
+    )
+
+
 def _normalize_stage4_input(image_tensor, normalize_mode, pretrained_flag=False):
     mode = str(normalize_mode).lower()
     if mode == "auto":
@@ -838,7 +862,7 @@ def _normalize_stage4_input(image_tensor, normalize_mode, pretrained_flag=False)
     return image_tensor
 
 
-def _predict_mask_stage4(model, frame_rgb, image_size, normalize_mode, pretrained_flag, device):
+def _predict_mask_stage4(model, frame_rgb, image_size, normalize_mode, pretrained_flag, device, eval_threshold=0.5, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True):
     h, w = frame_rgb.shape[:2]
     resized = cv2.resize(frame_rgb, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
     image_t = torch.from_numpy(resized).permute(2, 0, 1).float() / 255.0
@@ -850,12 +874,20 @@ def _predict_mask_stage4(model, frame_rgb, image_size, normalize_mode, pretraine
             logits = logits["out"]
         prob = torch.sigmoid(logits)[0, 0].detach().cpu().numpy()
 
-    mask_small = (prob >= 0.5).astype(np.uint8)
+    mask_small = (prob >= float(eval_threshold)).astype(np.uint8)
     mask_orig = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+    mask_orig = _postprocess_stage4_mask(
+        mask_orig,
+        postprocess_masks=postprocess_masks,
+        closing_kernel=closing_kernel,
+        opening_kernel=opening_kernel,
+        fill_holes=fill_holes,
+        keep_largest=keep_largest,
+    )
     return mask_orig, float(mask_orig.sum())
 
 
-def _predict_area_curve_stage4_from_frames(model, frames_rgb, image_size, normalize_mode, pretrained_flag, device, eval_threshold=0.5, batch_size=16):
+def _predict_area_curve_stage4_from_frames(model, frames_rgb, image_size, normalize_mode, pretrained_flag, device, eval_threshold=0.5, batch_size=16, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True):
     if not frames_rgb:
         return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float64)
 
@@ -878,6 +910,14 @@ def _predict_area_curve_stage4_from_frames(model, frames_rgb, image_size, normal
         for prob, (h, w), fid in zip(probs, batch_sizes, batch_ids):
             mask_small = (prob >= float(eval_threshold)).astype(np.uint8)
             mask_orig = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+            mask_orig = _postprocess_stage4_mask(
+                mask_orig,
+                postprocess_masks=postprocess_masks,
+                closing_kernel=closing_kernel,
+                opening_kernel=opening_kernel,
+                fill_holes=fill_holes,
+                keep_largest=keep_largest,
+            )
             frame_areas.append((int(fid), float(mask_orig.sum())))
         batch_images = []
         batch_sizes = []
@@ -1924,8 +1964,13 @@ def run_case(
                     normalize_mode=meta4["normalize"],
                     pretrained_flag=bool(meta4.get("pretrained", False)),
                     device=device,
-                    eval_threshold=0.5,
+                    eval_threshold=float(meta4.get("eval_threshold", 0.5)),
                     batch_size=16,
+                    postprocess_masks=bool(meta4.get("postprocess_masks", True)),
+                    closing_kernel=int(meta4.get("postprocess_closing_kernel", 5)),
+                    opening_kernel=int(meta4.get("postprocess_opening_kernel", 0)),
+                    fill_holes=bool(meta4.get("postprocess_fill_holes", True)),
+                    keep_largest=bool(meta4.get("postprocess_keep_largest", True)),
                 )
 
                 if curve_frame_ids.size > 0:
@@ -1952,6 +1997,12 @@ def run_case(
                         normalize_mode=meta4["normalize"],
                         pretrained_flag=bool(meta4.get("pretrained", False)),
                         device=device,
+                        eval_threshold=float(meta4.get("eval_threshold", 0.5)),
+                        postprocess_masks=bool(meta4.get("postprocess_masks", True)),
+                        closing_kernel=int(meta4.get("postprocess_closing_kernel", 5)),
+                        opening_kernel=int(meta4.get("postprocess_opening_kernel", 0)),
+                        fill_holes=bool(meta4.get("postprocess_fill_holes", True)),
+                        keep_largest=bool(meta4.get("postprocess_keep_largest", True)),
                     )
                     _, pred_es_area = _predict_mask_stage4(
                         model4,
@@ -1960,6 +2011,12 @@ def run_case(
                         normalize_mode=meta4["normalize"],
                         pretrained_flag=bool(meta4.get("pretrained", False)),
                         device=device,
+                        eval_threshold=float(meta4.get("eval_threshold", 0.5)),
+                        postprocess_masks=bool(meta4.get("postprocess_masks", True)),
+                        closing_kernel=int(meta4.get("postprocess_closing_kernel", 5)),
+                        opening_kernel=int(meta4.get("postprocess_opening_kernel", 0)),
+                        fill_holes=bool(meta4.get("postprocess_fill_holes", True)),
+                        keep_largest=bool(meta4.get("postprocess_keep_largest", True)),
                     )
 
                 ed_frame_rgb, ed_frame_idx = _frame_from_list(full_frames, ed_frame_idx)

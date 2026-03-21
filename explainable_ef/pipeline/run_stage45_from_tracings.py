@@ -42,6 +42,18 @@ def _normalize_stage4_input(image_tensor, normalize_mode, pretrained_flag=False)
     return image_tensor
 
 
+def _postprocess_pred_mask(mask, postprocess_masks, closing_kernel, opening_kernel, fill_holes, keep_largest):
+    if not bool(postprocess_masks):
+        return (np.asarray(mask) > 0).astype(np.uint8)
+    return Stage45Pipeline.postprocess_mask(
+        mask,
+        keep_largest=bool(keep_largest),
+        fill_holes=bool(fill_holes),
+        closing_kernel=int(closing_kernel),
+        opening_kernel=int(opening_kernel),
+    )
+
+
 def _load_stage4_model(checkpoint_path, fallback_model_name, fallback_base_channels, device):
     if not checkpoint_path or not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Stage4 checkpoint not found: {checkpoint_path}")
@@ -67,11 +79,17 @@ def _load_stage4_model(checkpoint_path, fallback_model_name, fallback_base_chann
         "image_size": int(args.get("image_size", 112)),
         "normalize": str(args.get("normalize", "none")),
         "pretrained": bool(args.get("pretrained", False)),
+        "eval_threshold": float(checkpoint_dict.get("best_eval_threshold", checkpoint_dict.get("eval_threshold", args.get("eval_threshold", 0.5)))),
+        "postprocess_masks": bool(args.get("postprocess_masks", True)),
+        "postprocess_closing_kernel": int(args.get("postprocess_closing_kernel", 5)),
+        "postprocess_opening_kernel": int(args.get("postprocess_opening_kernel", 0)),
+        "postprocess_fill_holes": bool(args.get("postprocess_fill_holes", True)),
+        "postprocess_keep_largest": bool(args.get("postprocess_keep_largest", True)),
     }
     return model, metadata
 
 
-def _predict_mask_area_stage4(model, frame_bgr, image_size, normalize_mode, pretrained_flag, device, eval_threshold):
+def _predict_mask_area_stage4(model, frame_bgr, image_size, normalize_mode, pretrained_flag, device, eval_threshold, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True):
     h, w = frame_bgr.shape[:2]
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     resized = cv2.resize(frame_rgb, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
@@ -87,10 +105,18 @@ def _predict_mask_area_stage4(model, frame_bgr, image_size, normalize_mode, pret
 
     mask_small = (prob >= float(eval_threshold)).astype(np.uint8)
     mask_orig = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+    mask_orig = _postprocess_pred_mask(
+        mask_orig,
+        postprocess_masks=postprocess_masks,
+        closing_kernel=closing_kernel,
+        opening_kernel=opening_kernel,
+        fill_holes=fill_holes,
+        keep_largest=keep_largest,
+    )
     return mask_orig, float(mask_orig.sum())
 
 
-def _predict_video_area_curve_stage4(model, video_path, image_size, normalize_mode, pretrained_flag, device, eval_threshold, batch_size=16):
+def _predict_video_area_curve_stage4(model, video_path, image_size, normalize_mode, pretrained_flag, device, eval_threshold, batch_size=16, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {video_path}")
@@ -116,6 +142,14 @@ def _predict_video_area_curve_stage4(model, video_path, image_size, normalize_mo
         for prob, (h, w), fid in zip(probs, batch_sizes, batch_ids):
             mask_small = (prob >= float(eval_threshold)).astype(np.uint8)
             mask_orig = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+            mask_orig = _postprocess_pred_mask(
+                mask_orig,
+                postprocess_masks=postprocess_masks,
+                closing_kernel=closing_kernel,
+                opening_kernel=opening_kernel,
+                fill_holes=fill_holes,
+                keep_largest=keep_largest,
+            )
             frame_areas.append((int(fid), float(mask_orig.sum())))
         batch_images = []
         batch_sizes = []
@@ -303,7 +337,12 @@ def main():
                     normalize_mode=model4_meta["normalize"],
                     pretrained_flag=bool(model4_meta.get("pretrained", False)),
                     device=device,
-                    eval_threshold=float(args.eval_threshold),
+                    eval_threshold=float(model4_meta.get("eval_threshold", args.eval_threshold)),
+                    postprocess_masks=bool(model4_meta.get("postprocess_masks", True)),
+                    closing_kernel=int(model4_meta.get("postprocess_closing_kernel", 5)),
+                    opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
+                    fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
+                    keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
                 )
                 frame_masks_pred[int(frame_id)] = pred_mask
                 pred_frame_areas.append((int(frame_id), float(pred_area)))
@@ -335,8 +374,13 @@ def main():
                 normalize_mode=model4_meta["normalize"],
                 pretrained_flag=bool(model4_meta.get("pretrained", False)),
                 device=device,
-                eval_threshold=float(args.eval_threshold),
+                eval_threshold=float(model4_meta.get("eval_threshold", args.eval_threshold)),
                 batch_size=int(args.curve_batch_size),
+                postprocess_masks=bool(model4_meta.get("postprocess_masks", True)),
+                closing_kernel=int(model4_meta.get("postprocess_closing_kernel", 5)),
+                opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
+                fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
+                keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
             )
             if curve_frame_ids.size == 0:
                 print(f"Warning: empty Stage4 area curve for {fname_ext}")
@@ -414,7 +458,12 @@ def main():
                         normalize_mode=model4_meta["normalize"],
                         pretrained_flag=bool(model4_meta.get("pretrained", False)),
                         device=device,
-                        eval_threshold=float(args.eval_threshold),
+                        eval_threshold=float(model4_meta.get("eval_threshold", args.eval_threshold)),
+                        postprocess_masks=bool(model4_meta.get("postprocess_masks", True)),
+                        closing_kernel=int(model4_meta.get("postprocess_closing_kernel", 5)),
+                        opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
+                        fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
+                        keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
                     )
                     frame_masks_pred[int(pred_ed_frame)] = pred_mask_ed
                 if args.mode == "predicted_masks" and int(pred_es_frame) not in frame_masks_pred:
@@ -425,7 +474,12 @@ def main():
                         normalize_mode=model4_meta["normalize"],
                         pretrained_flag=bool(model4_meta.get("pretrained", False)),
                         device=device,
-                        eval_threshold=float(args.eval_threshold),
+                        eval_threshold=float(model4_meta.get("eval_threshold", args.eval_threshold)),
+                        postprocess_masks=bool(model4_meta.get("postprocess_masks", True)),
+                        closing_kernel=int(model4_meta.get("postprocess_closing_kernel", 5)),
+                        opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
+                        fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
+                        keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
                     )
                     frame_masks_pred[int(pred_es_frame)] = pred_mask_es
                 ed_pred_mask = frame_masks_pred.get(int(pred_ed_frame)) if args.mode == "predicted_masks" else ed_gt_mask

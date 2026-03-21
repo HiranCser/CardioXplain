@@ -19,6 +19,7 @@ if ROOT_DIR not in sys.path:
 import config
 from data.stage4_segmentation_dataset import Stage4SegmentationDataset
 from models.stage4_segmentation_model import build_stage4_segmentation_model
+from pipeline.stage45_pipeline import Stage45Pipeline
 
 
 def extract_logits(model_output):
@@ -56,7 +57,26 @@ def _resolve_pos_weight(targets, manual_pos_weight=None, pos_weight_max=20.0):
     return ratio.detach()
 
 
-def segmentation_loss(logits, targets, dice_weight=1.0, manual_pos_weight=None, pos_weight_max=20.0, area_loss_weight=0.0):
+def _boundary_map(mask, kernel_size=3):
+    k = int(max(1, kernel_size))
+    if k % 2 == 0:
+        k += 1
+    pad = k // 2
+    dilated = F.max_pool2d(mask, kernel_size=k, stride=1, padding=pad)
+    eroded = -F.max_pool2d(-mask, kernel_size=k, stride=1, padding=pad)
+    return (dilated - eroded).clamp(0.0, 1.0)
+
+
+def segmentation_loss(
+    logits,
+    targets,
+    dice_weight=1.0,
+    manual_pos_weight=None,
+    pos_weight_max=20.0,
+    area_loss_weight=0.0,
+    boundary_loss_weight=0.0,
+    boundary_kernel_size=3,
+):
     pos_weight = _resolve_pos_weight(targets, manual_pos_weight=manual_pos_weight, pos_weight_max=pos_weight_max)
     bce = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight)
 
@@ -70,8 +90,52 @@ def segmentation_loss(logits, targets, dice_weight=1.0, manual_pos_weight=None, 
     target_area = targets.sum(dim=(1, 2, 3))
     area_loss = torch.mean(torch.abs(pred_area - target_area) / target_area.clamp_min(1.0))
 
-    loss = bce + float(dice_weight) * dice_loss + float(area_loss_weight) * area_loss
-    return loss, bce.detach(), dice_loss.detach(), area_loss.detach(), float(pos_weight.item())
+    pred_boundary = _boundary_map(probs, kernel_size=boundary_kernel_size)
+    target_boundary = _boundary_map(targets, kernel_size=boundary_kernel_size)
+    boundary_inter = (pred_boundary * target_boundary).sum(dim=(1, 2, 3))
+    boundary_union = pred_boundary.sum(dim=(1, 2, 3)) + target_boundary.sum(dim=(1, 2, 3))
+    boundary_dice = (2.0 * boundary_inter + 1e-6) / (boundary_union + 1e-6)
+    boundary_loss = 1.0 - boundary_dice.mean()
+
+    loss = (
+        bce
+        + float(dice_weight) * dice_loss
+        + float(area_loss_weight) * area_loss
+        + float(boundary_loss_weight) * boundary_loss
+    )
+    return (
+        loss,
+        bce.detach(),
+        dice_loss.detach(),
+        area_loss.detach(),
+        boundary_loss.detach(),
+        float(pos_weight.item()),
+    )
+
+
+def _postprocess_binary_mask(mask, postprocess_masks, closing_kernel, opening_kernel, fill_holes, keep_largest):
+    if not bool(postprocess_masks):
+        return (np.asarray(mask) > 0).astype(np.uint8)
+    return Stage45Pipeline.postprocess_mask(
+        mask,
+        keep_largest=bool(keep_largest),
+        fill_holes=bool(fill_holes),
+        closing_kernel=int(closing_kernel),
+        opening_kernel=int(opening_kernel),
+    )
+
+
+def _parse_threshold_candidates(raw_value):
+    if raw_value is None:
+        return []
+    vals = []
+    for item in str(raw_value).split(','):
+        token = item.strip()
+        if not token:
+            continue
+        vals.append(float(token))
+    vals = [float(min(0.95, max(0.05, v))) for v in vals]
+    return sorted(set(vals))
 
 
 def configure_dataloader_runtime():
@@ -113,6 +177,9 @@ def build_loaders(args, device):
         max_videos=args.max_videos,
         normalize=normalize,
         augment=args.augment,
+        augment_blur_prob=args.augment_blur_prob,
+        augment_noise_prob=args.augment_noise_prob,
+        augment_noise_std=args.augment_noise_std,
     )
     val_ds = Stage4SegmentationDataset(
         data_dir=args.data_dir,
@@ -199,7 +266,14 @@ def evaluate(
     manual_pos_weight,
     pos_weight_max,
     area_loss_weight,
+    boundary_loss_weight,
+    boundary_kernel_size,
     csv_path=None,
+    postprocess_masks=True,
+    closing_kernel=5,
+    opening_kernel=0,
+    fill_holes=True,
+    keep_largest=True,
 ):
     model.eval()
 
@@ -207,6 +281,7 @@ def evaluate(
     total_bce = 0.0
     total_dice_loss = 0.0
     total_area_loss = 0.0
+    total_boundary_loss = 0.0
     total_dice_hard = 0.0
     total_dice_soft = 0.0
     total_pos_weight = 0.0
@@ -225,38 +300,62 @@ def evaluate(
 
             with autocast_context(device, amp_enabled):
                 logits = extract_logits(model(images))
-                loss, bce, dice_loss, area_loss, pos_weight_value = segmentation_loss(
+                loss, bce, dice_loss, area_loss, boundary_loss, pos_weight_value = segmentation_loss(
                     logits,
                     masks,
                     dice_weight=dice_weight,
                     manual_pos_weight=manual_pos_weight,
                     pos_weight_max=pos_weight_max,
                     area_loss_weight=area_loss_weight,
+                    boundary_loss_weight=boundary_loss_weight,
+                    boundary_kernel_size=boundary_kernel_size,
                 )
 
-            dice_hard = dice_from_logits(logits, masks, threshold=eval_threshold, soft=False)
             dice_soft = dice_from_logits(logits, masks, threshold=eval_threshold, soft=True)
 
-            probs = torch.sigmoid(logits)
-            pred_masks = (probs >= float(eval_threshold)).to(torch.uint8).cpu().numpy()
+            probs = torch.sigmoid(logits).detach().cpu().numpy()
+            masks_np = masks.detach().cpu().numpy()
+            batch_pred_fg = []
+            batch_dice_hard = []
 
             total_loss += float(loss.item())
             total_bce += float(bce.item())
             total_dice_loss += float(dice_loss.item())
             total_area_loss += float(area_loss.item())
-            total_dice_hard += float(dice_hard.item())
+            total_boundary_loss += float(boundary_loss.item())
             total_dice_soft += float(dice_soft.item())
             total_pos_weight += float(pos_weight_value)
-            total_pred_fg_frac += float(pred_masks.mean())
             total_gt_fg_frac += float(masks.detach().float().mean().item())
             n_batches += 1
 
-            for i in range(pred_masks.shape[0]):
-                pred_small = pred_masks[i, 0]
+            for i in range(probs.shape[0]):
+                pred_small = (probs[i, 0] >= float(eval_threshold)).astype(np.uint8)
+                pred_small = _postprocess_binary_mask(
+                    pred_small,
+                    postprocess_masks=postprocess_masks,
+                    closing_kernel=closing_kernel,
+                    opening_kernel=opening_kernel,
+                    fill_holes=fill_holes,
+                    keep_largest=keep_largest,
+                )
+                gt_small = (masks_np[i, 0] > 0.5).astype(np.uint8)
+                inter = float((pred_small & gt_small).sum())
+                union = float(pred_small.sum() + gt_small.sum())
+                batch_dice_hard.append((2.0 * inter + 1e-6) / (union + 1e-6))
+                batch_pred_fg.append(float(pred_small.mean()))
+
                 h = int(batch["frame_height"][i])
                 w = int(batch["frame_width"][i])
 
                 pred_orig = cv2.resize(pred_small, (w, h), interpolation=cv2.INTER_NEAREST)
+                pred_orig = _postprocess_binary_mask(
+                    pred_orig,
+                    postprocess_masks=postprocess_masks,
+                    closing_kernel=closing_kernel,
+                    opening_kernel=opening_kernel,
+                    fill_holes=fill_holes,
+                    keep_largest=keep_largest,
+                )
                 pred_area = float(pred_orig.sum())
                 gt_area = float(batch["gt_area_orig"][i])
 
@@ -276,8 +375,12 @@ def evaluate(
                         "abs_error": float(abs_err),
                         "pct_error": float(pct_err),
                         "eval_threshold": float(eval_threshold),
+                        "postprocess_masks": bool(postprocess_masks),
                     }
                 )
+
+            total_dice_hard += float(np.mean(batch_dice_hard)) if batch_dice_hard else 0.0
+            total_pred_fg_frac += float(np.mean(batch_pred_fg)) if batch_pred_fg else 0.0
 
     frame_area_mae = float(np.mean(area_abs_errors)) if area_abs_errors else float("nan")
     frame_area_mape = float(np.mean(area_pct_errors)) if area_pct_errors else float("nan")
@@ -290,6 +393,7 @@ def evaluate(
         "bce": total_bce / max(1, n_batches),
         "dice_loss": total_dice_loss / max(1, n_batches),
         "area_loss": total_area_loss / max(1, n_batches),
+        "boundary_loss": total_boundary_loss / max(1, n_batches),
         "dice_hard": total_dice_hard / max(1, n_batches),
         "dice_soft": total_dice_soft / max(1, n_batches),
         "avg_pos_weight": total_pos_weight / max(1, n_batches),
@@ -299,6 +403,69 @@ def evaluate(
         "frame_area_mape": frame_area_mape,
         "samples": len(area_abs_errors),
     }
+
+
+def search_best_eval_threshold(
+    model,
+    loader,
+    device,
+    amp_enabled,
+    dice_weight,
+    thresholds,
+    manual_pos_weight,
+    pos_weight_max,
+    area_loss_weight,
+    boundary_loss_weight,
+    boundary_kernel_size,
+    postprocess_masks,
+    closing_kernel,
+    opening_kernel,
+    fill_holes,
+    keep_largest,
+):
+    if not thresholds:
+        raise ValueError("threshold search requires at least one candidate")
+
+    rows = []
+    best_threshold = None
+    best_metrics = None
+    best_score = float("inf")
+
+    for threshold in thresholds:
+        metrics = evaluate(
+            model=model,
+            loader=loader,
+            device=device,
+            amp_enabled=amp_enabled,
+            dice_weight=dice_weight,
+            eval_threshold=float(threshold),
+            manual_pos_weight=manual_pos_weight,
+            pos_weight_max=pos_weight_max,
+            area_loss_weight=area_loss_weight,
+            boundary_loss_weight=boundary_loss_weight,
+            boundary_kernel_size=boundary_kernel_size,
+            csv_path=None,
+            postprocess_masks=postprocess_masks,
+            closing_kernel=closing_kernel,
+            opening_kernel=opening_kernel,
+            fill_holes=fill_holes,
+            keep_largest=keep_largest,
+        )
+        score = float(metrics["frame_area_mae"])
+        rows.append({
+            "threshold": float(threshold),
+            "frame_area_mae": float(metrics["frame_area_mae"]),
+            "frame_area_mape": float(metrics["frame_area_mape"]),
+            "dice_hard": float(metrics["dice_hard"]),
+            "dice_soft": float(metrics["dice_soft"]),
+            "pred_fg_frac": float(metrics["pred_fg_frac"]),
+        })
+        if np.isfinite(score) and score < best_score:
+            best_score = score
+            best_threshold = float(threshold)
+            best_metrics = metrics
+
+    return best_threshold, best_metrics, rows
 
 
 def train_one_epoch(
@@ -312,6 +479,8 @@ def train_one_epoch(
     manual_pos_weight,
     pos_weight_max,
     area_loss_weight,
+    boundary_loss_weight,
+    boundary_kernel_size,
 ):
     model.train()
 
@@ -319,6 +488,7 @@ def train_one_epoch(
     total_bce = 0.0
     total_dice_loss = 0.0
     total_area_loss = 0.0
+    total_boundary_loss = 0.0
     total_dice_hard = 0.0
     total_dice_soft = 0.0
     total_pos_weight = 0.0
@@ -336,13 +506,15 @@ def train_one_epoch(
 
         with autocast_context(device, amp_enabled):
             logits = extract_logits(model(images))
-            loss, bce, dice_loss, area_loss, pos_weight_value = segmentation_loss(
+            loss, bce, dice_loss, area_loss, boundary_loss, pos_weight_value = segmentation_loss(
                 logits,
                 masks,
                 dice_weight=dice_weight,
                 manual_pos_weight=manual_pos_weight,
                 pos_weight_max=pos_weight_max,
                 area_loss_weight=area_loss_weight,
+                boundary_loss_weight=boundary_loss_weight,
+                boundary_kernel_size=boundary_kernel_size,
             )
 
         if amp_enabled:
@@ -364,6 +536,7 @@ def train_one_epoch(
         total_bce += float(bce.item())
         total_dice_loss += float(dice_loss.item())
         total_area_loss += float(area_loss.item())
+        total_boundary_loss += float(boundary_loss.item())
         total_dice_hard += float(dice_hard.item())
         total_dice_soft += float(dice_soft.item())
         total_pos_weight += float(pos_weight_value)
@@ -376,6 +549,7 @@ def train_one_epoch(
         "bce": total_bce / max(1, n_batches),
         "dice_loss": total_dice_loss / max(1, n_batches),
         "area_loss": total_area_loss / max(1, n_batches),
+        "boundary_loss": total_boundary_loss / max(1, n_batches),
         "dice_hard": total_dice_hard / max(1, n_batches),
         "dice_soft": total_dice_soft / max(1, n_batches),
         "avg_pos_weight": total_pos_weight / max(1, n_batches),
@@ -478,9 +652,18 @@ def parse_args():
     parser.add_argument("--max-videos", type=int, default=None)
     parser.add_argument("--dice-weight", type=float, default=1.0)
     parser.add_argument("--eval-threshold", type=float, default=0.5)
+    parser.add_argument("--threshold-search", action=argparse.BooleanOptionalAction, default=True, help="Search validation thresholds and store the best one in the checkpoint")
+    parser.add_argument("--threshold-candidates", type=str, default="0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65", help="Comma-separated thresholds for validation search")
     parser.add_argument("--pos-weight", type=float, default=None, help="Manual positive-class BCE weight; if omitted, auto-computed per batch")
     parser.add_argument("--pos-weight-max", type=float, default=8.0)
     parser.add_argument("--area-loss-weight", type=float, default=0.20, help="Relative LV-area loss weight for segmentation training")
+    parser.add_argument("--boundary-loss-weight", type=float, default=0.10, help="Relative LV-boundary Dice loss weight for segmentation training")
+    parser.add_argument("--boundary-kernel-size", type=int, default=3, help="Boundary extraction kernel size for Stage4 contour supervision")
+    parser.add_argument("--postprocess-masks", action=argparse.BooleanOptionalAction, default=True, help="Apply LV-specific mask cleanup during validation/test/inference")
+    parser.add_argument("--postprocess-closing-kernel", type=int, default=5, help="Morphological closing kernel for Stage4 mask cleanup")
+    parser.add_argument("--postprocess-opening-kernel", type=int, default=0, help="Optional morphological opening kernel for Stage4 mask cleanup")
+    parser.add_argument("--postprocess-fill-holes", action=argparse.BooleanOptionalAction, default=True, help="Fill interior holes during Stage4 mask cleanup")
+    parser.add_argument("--postprocess-keep-largest", action=argparse.BooleanOptionalAction, default=True, help="Keep only the largest connected LV component during Stage4 mask cleanup")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--checkpoint", type=str, default=getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage4"))
@@ -496,6 +679,9 @@ def parse_args():
     parser.add_argument("--lr-gamma", type=float, default=0.1)
     parser.add_argument("--normalize", type=str, choices=["auto", "none", "imagenet"], default="auto")
     parser.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True, help="Enable lightweight geometric/intensity augmentation for train split")
+    parser.add_argument("--augment-blur-prob", type=float, default=0.25, help="Probability of mild Gaussian blur augmentation for Stage4 training")
+    parser.add_argument("--augment-noise-prob", type=float, default=0.35, help="Probability of mild additive noise augmentation for Stage4 training")
+    parser.add_argument("--augment-noise-std", type=float, default=6.0, help="Maximum standard deviation for additive noise augmentation in Stage4 training")
     return parser.parse_args()
 
 
@@ -539,7 +725,9 @@ def main():
     print(f"Batch size: {args.batch_size} | Epochs: {args.epochs}")
     print(f"Model: {args.model_name} | Pretrained: {args.pretrained} | Normalize: {normalize_mode}")
     print(f"Optimizer: {args.optimizer} | LR: {args.learning_rate} | WD: {args.weight_decay}")
-    print(f"Dice weight: {args.dice_weight} | Area loss weight: {args.area_loss_weight} | Eval threshold: {args.eval_threshold}")
+    print(f"Dice weight: {args.dice_weight} | Area loss weight: {args.area_loss_weight} | Boundary loss weight: {args.boundary_loss_weight} | Eval threshold: {args.eval_threshold}")
+    print(f"Mask postprocess: {args.postprocess_masks} | close={args.postprocess_closing_kernel} | open={args.postprocess_opening_kernel} | fill_holes={args.postprocess_fill_holes} | keep_largest={args.postprocess_keep_largest}")
+    print(f"Augment: {args.augment} | blur_prob={args.augment_blur_prob} | noise_prob={args.augment_noise_prob} | noise_std<={args.augment_noise_std}")
     if args.pos_weight is None:
         print(f"BCE pos_weight: auto (clamped to <= {args.pos_weight_max})")
     else:
@@ -576,6 +764,8 @@ def main():
             manual_pos_weight=args.pos_weight,
             pos_weight_max=float(args.pos_weight_max),
             area_loss_weight=float(args.area_loss_weight),
+            boundary_loss_weight=float(args.boundary_loss_weight),
+            boundary_kernel_size=int(args.boundary_kernel_size),
         )
 
         val_csv = os.path.join(args.output_dir, f"val_epoch{epoch:03d}_frame_areas.csv")
@@ -589,7 +779,14 @@ def main():
             manual_pos_weight=args.pos_weight,
             pos_weight_max=float(args.pos_weight_max),
             area_loss_weight=float(args.area_loss_weight),
+            boundary_loss_weight=float(args.boundary_loss_weight),
+            boundary_kernel_size=int(args.boundary_kernel_size),
             csv_path=val_csv,
+            postprocess_masks=bool(args.postprocess_masks),
+            closing_kernel=int(args.postprocess_closing_kernel),
+            opening_kernel=int(args.postprocess_opening_kernel),
+            fill_holes=bool(args.postprocess_fill_holes),
+            keep_largest=bool(args.postprocess_keep_largest),
         )
 
         if scheduler is not None:
@@ -605,6 +802,7 @@ def main():
                 "epoch": epoch,
                 "val_frame_area_mae": best_val_mae,
                 "eval_threshold": float(args.eval_threshold),
+                "best_eval_threshold": float(args.eval_threshold),
                 "args": vars(args),
             }
             save_variant = _save_checkpoint_resilient(
@@ -619,10 +817,10 @@ def main():
         dt = time.perf_counter() - t0
         print(
             f"Epoch {epoch:03d}/{args.epochs} | "
-            f"Train loss {train_metrics['loss']:.4f} (bce {train_metrics['bce']:.4f}, diceL {train_metrics['dice_loss']:.4f}, areaL {train_metrics['area_loss']:.4f}) "
+            f"Train loss {train_metrics['loss']:.4f} (bce {train_metrics['bce']:.4f}, diceL {train_metrics['dice_loss']:.4f}, areaL {train_metrics['area_loss']:.4f}, boundL {train_metrics['boundary_loss']:.4f}) "
             f"dice@thr {train_metrics['dice_hard']:.4f} softDice {train_metrics['dice_soft']:.4f} "
             f"fg(pred/gt) {train_metrics['pred_fg_frac']:.4f}/{train_metrics['gt_fg_frac']:.4f} posW {train_metrics['avg_pos_weight']:.2f} | "
-            f"Val loss {val_metrics['loss']:.4f} (bce {val_metrics['bce']:.4f}, diceL {val_metrics['dice_loss']:.4f}, areaL {val_metrics['area_loss']:.4f}) "
+            f"Val loss {val_metrics['loss']:.4f} (bce {val_metrics['bce']:.4f}, diceL {val_metrics['dice_loss']:.4f}, areaL {val_metrics['area_loss']:.4f}, boundL {val_metrics['boundary_loss']:.4f}) "
             f"dice@thr {val_metrics['dice_hard']:.4f} softDice {val_metrics['dice_soft']:.4f} "
             f"fg(pred/gt) {val_metrics['pred_fg_frac']:.4f}/{val_metrics['gt_fg_frac']:.4f} posW {val_metrics['avg_pos_weight']:.2f} | "
             f"Val frame area MAE {val_metrics['frame_area_mae']:.2f} px | "
@@ -644,6 +842,34 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
 
+    selected_threshold = float(ckpt.get("best_eval_threshold", ckpt.get("eval_threshold", args.eval_threshold)))
+    if bool(args.threshold_search):
+        thresholds = _parse_threshold_candidates(args.threshold_candidates)
+        if selected_threshold not in thresholds:
+            thresholds.append(selected_threshold)
+            thresholds = sorted(set(thresholds))
+        selected_threshold, _, threshold_rows = search_best_eval_threshold(
+            model=model,
+            loader=val_loader,
+            device=device,
+            amp_enabled=amp_enabled,
+            dice_weight=args.dice_weight,
+            thresholds=thresholds,
+            manual_pos_weight=args.pos_weight,
+            pos_weight_max=float(args.pos_weight_max),
+            area_loss_weight=float(args.area_loss_weight),
+            boundary_loss_weight=float(args.boundary_loss_weight),
+            boundary_kernel_size=int(args.boundary_kernel_size),
+            postprocess_masks=bool(args.postprocess_masks),
+            closing_kernel=int(args.postprocess_closing_kernel),
+            opening_kernel=int(args.postprocess_opening_kernel),
+            fill_holes=bool(args.postprocess_fill_holes),
+            keep_largest=bool(args.postprocess_keep_largest),
+        )
+        ckpt["best_eval_threshold"] = float(selected_threshold)
+        _save_checkpoint_resilient(args.checkpoint, ckpt)
+        pd.DataFrame(threshold_rows).to_csv(os.path.join(args.output_dir, "val_threshold_search.csv"), index=False)
+
     val_best_csv = os.path.join(args.output_dir, "val_best_frame_areas.csv")
     val_best_metrics = evaluate(
         model=model,
@@ -651,11 +877,18 @@ def main():
         device=device,
         amp_enabled=amp_enabled,
         dice_weight=args.dice_weight,
-        eval_threshold=float(args.eval_threshold),
+        eval_threshold=float(selected_threshold),
         manual_pos_weight=args.pos_weight,
         pos_weight_max=float(args.pos_weight_max),
         area_loss_weight=float(args.area_loss_weight),
+        boundary_loss_weight=float(args.boundary_loss_weight),
+        boundary_kernel_size=int(args.boundary_kernel_size),
         csv_path=val_best_csv,
+        postprocess_masks=bool(args.postprocess_masks),
+        closing_kernel=int(args.postprocess_closing_kernel),
+        opening_kernel=int(args.postprocess_opening_kernel),
+        fill_holes=bool(args.postprocess_fill_holes),
+        keep_largest=bool(args.postprocess_keep_largest),
     )
 
     test_csv = os.path.join(args.output_dir, "test_frame_areas.csv")
@@ -665,11 +898,18 @@ def main():
         device=device,
         amp_enabled=amp_enabled,
         dice_weight=args.dice_weight,
-        eval_threshold=float(args.eval_threshold),
+        eval_threshold=float(selected_threshold),
         manual_pos_weight=args.pos_weight,
         pos_weight_max=float(args.pos_weight_max),
         area_loss_weight=float(args.area_loss_weight),
+        boundary_loss_weight=float(args.boundary_loss_weight),
+        boundary_kernel_size=int(args.boundary_kernel_size),
         csv_path=test_csv,
+        postprocess_masks=bool(args.postprocess_masks),
+        closing_kernel=int(args.postprocess_closing_kernel),
+        opening_kernel=int(args.postprocess_opening_kernel),
+        fill_holes=bool(args.postprocess_fill_holes),
+        keep_largest=bool(args.postprocess_keep_largest),
     )
 
     print("=" * 96)
@@ -677,6 +917,7 @@ def main():
     print("=" * 96)
     print(f"Best checkpoint epoch: {ckpt.get('epoch')}")
     print(f"Best val frame area MAE (during training): {ckpt.get('val_frame_area_mae'):.2f} px")
+    print(f"Selected eval threshold: {selected_threshold:.2f}")
     print(
         f"Val(best) -> loss: {val_best_metrics['loss']:.4f} | bce: {val_best_metrics['bce']:.4f} | "
         f"dice@thr: {val_best_metrics['dice_hard']:.4f} | softDice: {val_best_metrics['dice_soft']:.4f} | "
