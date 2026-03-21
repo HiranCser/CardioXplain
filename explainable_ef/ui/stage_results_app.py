@@ -86,6 +86,21 @@ def _inject_page_styles():
             [data-testid="stMetricValue"] {
                 color: #0f2940;
                 font-weight: 800;
+                line-height: 1.05;
+                white-space: normal !important;
+                overflow: visible !important;
+                text-overflow: clip !important;
+                word-break: break-word;
+                overflow-wrap: anywhere;
+                font-size: clamp(1.65rem, 2.3vw, 2.35rem);
+            }
+            [data-testid="stMetricValue"] > div,
+            [data-testid="stMetricLabel"] > div {
+                white-space: normal !important;
+                overflow: visible !important;
+                text-overflow: clip !important;
+                word-break: break-word;
+                overflow-wrap: anywhere;
             }
             div[data-testid="stDataFrame"] {
                 border-radius: 18px;
@@ -541,6 +556,156 @@ def load_volume_tracings(data_dir):
     return pd.read_csv(path)
 
 
+@st.cache_data(show_spinner=False)
+def load_stage67_predictions(output_dir, split):
+    csv_path = os.path.join(output_dir, f"stage67_{str(split).lower()}_predictions.csv")
+    if not os.path.exists(csv_path):
+        return None, csv_path
+    return pd.read_csv(csv_path), csv_path
+
+
+@st.cache_data(show_spinner=False)
+def load_stage67_summary(output_dir):
+    path = os.path.join(output_dir, "stage67_summary.json")
+    if not os.path.exists(path):
+        return None, path
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f), path
+
+
+def _format_display_number(value, digits=2, suffix=""):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "NA"
+    if not np.isfinite(numeric):
+        return "NA"
+    return f"{numeric:.{digits}f}{suffix}"
+
+
+def _doctor_severity_text(value):
+    raw = str(value).strip().lower()
+    mapping = {
+        "normal_contraction": "Preserved LV systolic function",
+        "reduced_contraction": "Reduced LV systolic function",
+        "severe_dysfunction": "Severe LV systolic dysfunction",
+    }
+    return mapping.get(raw, str(value).replace("_", " ").title())
+
+
+def _confidence_bucket(prob):
+    p = float(prob)
+    if p >= 0.80:
+        return "High"
+    if p >= 0.60:
+        return "Moderate"
+    return "Low"
+
+
+def _agreement_bucket(disagreement_pct):
+    if not np.isfinite(disagreement_pct):
+        return "Stage5 unavailable"
+    d = abs(float(disagreement_pct))
+    if d <= 5.0:
+        return "Good agreement"
+    if d <= 10.0:
+        return "Borderline agreement"
+    return "High disagreement"
+
+
+def _interval_bucket(width_pct):
+    if not np.isfinite(width_pct):
+        return "Unknown"
+    if width_pct <= 8.0:
+        return "Tight"
+    if width_pct <= 15.0:
+        return "Moderate"
+    return "Wide"
+
+
+def _render_stage67_section(selected_video, split, stage67_output_dir):
+    pred_df, pred_path = load_stage67_predictions(stage67_output_dir, split)
+    summary, summary_path = load_stage67_summary(stage67_output_dir)
+
+    st.subheader("Clinical Summary (Stage 6/7)")
+    st.caption("Doctor-facing view of contraction class, fused EF estimate, and uncertainty based on the Stage 6 severity model and Stage 7 calibration.")
+
+    if pred_df is None or pred_df.empty:
+        st.info(f"Stage 6/7 predictions not found for {split} at {pred_path}")
+        return
+
+    row = pred_df[pred_df["file_name"].astype(str) == str(selected_video)]
+    if row.empty and "file_name_ext" in pred_df.columns:
+        row = pred_df[pred_df["file_name_ext"].astype(str) == f"{selected_video}.avi"]
+    if row.empty:
+        st.info(f"No Stage 6/7 row found for {selected_video} in {pred_path}")
+        return
+
+    row = row.iloc[0]
+    pred_text = _doctor_severity_text(row.get("pred_text_cal", row.get("pred_text_raw", "Unknown")))
+    gt_text = _doctor_severity_text(row.get("severity_text_gt", "Unknown"))
+    fused_ef = float(row.get("ef_fused_pct", float("nan")))
+    ci90_lo = float(row.get("ef_ci90_low", float("nan")))
+    ci90_hi = float(row.get("ef_ci90_high", float("nan")))
+    ci95_lo = float(row.get("ef_ci95_low", float("nan")))
+    ci95_hi = float(row.get("ef_ci95_high", float("nan")))
+    prob_cols = ["prob_cal_c0", "prob_cal_c1", "prob_cal_c2"]
+    probs = [float(row.get(col, float("nan"))) for col in prob_cols]
+    max_prob = max([p for p in probs if np.isfinite(p)], default=float("nan"))
+    confidence_text = _confidence_bucket(max_prob) if np.isfinite(max_prob) else "Unknown"
+    disagreement_pct = float(row.get("ef_disagreement_pct", float("nan")))
+    agreement_text = _agreement_bucket(disagreement_pct)
+    ci90_width = float(ci90_hi - ci90_lo) if np.isfinite(ci90_hi) and np.isfinite(ci90_lo) else float("nan")
+    uncertainty_text = _interval_bucket(ci90_width)
+
+    c1, c2 = st.columns(2)
+    c3, c4 = st.columns(2)
+    c1.metric("Likely Function", pred_text)
+    c2.metric("Fused EF (%)", f"{fused_ef:.1f}" if np.isfinite(fused_ef) else "NA")
+    c3.metric("Confidence", confidence_text)
+    c4.metric("Model Agreement", agreement_text)
+
+    n1, n2 = st.columns([1.1, 0.9])
+    with n1:
+        summary_rows = [
+            {"Clinical item": "Likely contractility class", "Value": pred_text},
+            {"Clinical item": "EF 90% interval", "Value": f"{ci90_lo:.1f} to {ci90_hi:.1f}%" if np.isfinite(ci90_lo) and np.isfinite(ci90_hi) else "NA"},
+            {"Clinical item": "EF 95% interval", "Value": f"{ci95_lo:.1f} to {ci95_hi:.1f}%" if np.isfinite(ci95_lo) and np.isfinite(ci95_hi) else "NA"},
+            {"Clinical item": "Uncertainty width (90%)", "Value": f"{ci90_width:.1f}% ({uncertainty_text})" if np.isfinite(ci90_width) else "NA"},
+            {"Clinical item": "Stage1-3 vs Stage4/5 EF gap", "Value": f"{disagreement_pct:.1f}%" if np.isfinite(disagreement_pct) else "NA"},
+        ]
+        if str(split).upper() in {"TEST", "VAL", "TRAIN"} and pd.notna(row.get("severity_text_gt", np.nan)):
+            summary_rows.append({"Clinical item": "Dataset reference label", "Value": gt_text})
+        st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
+
+    with n2:
+        prob_table = pd.DataFrame(
+            [
+                {"Contraction class": "Preserved LV systolic function", "Probability": _format_display_number(row.get("prob_cal_c0", float("nan")), digits=3)},
+                {"Contraction class": "Reduced LV systolic function", "Probability": _format_display_number(row.get("prob_cal_c1", float("nan")), digits=3)},
+                {"Contraction class": "Severe LV systolic dysfunction", "Probability": _format_display_number(row.get("prob_cal_c2", float("nan")), digits=3)},
+            ]
+        )
+        st.dataframe(prob_table, width="stretch", hide_index=True)
+
+    interpretation = []
+    interpretation.append(f"Stage 6 classifies this study as {pred_text.lower()}.")
+    if np.isfinite(fused_ef):
+        interpretation.append(f"Stage 7 fused EF estimate is {fused_ef:.1f}%.")
+    if np.isfinite(ci90_lo) and np.isfinite(ci90_hi):
+        interpretation.append(f"The 90% EF interval is {ci90_lo:.1f} to {ci90_hi:.1f}%, which is {uncertainty_text.lower()}.")
+    interpretation.append(f"Model confidence is {confidence_text.lower()}.")
+    interpretation.append(f"Cross-model agreement is {agreement_text.lower()}.")
+    if summary is not None and isinstance(summary, dict):
+        stage7 = summary.get("stage7", {}) if isinstance(summary.get("stage7", {}), dict) else {}
+        if stage7:
+            interpretation.append(
+                f"Calibration uses temperature {float(stage7.get('temperature', 1.0)):.2f} and fusion alpha {float(stage7.get('fusion_alpha', 0.5)):.2f}."
+            )
+    for line in interpretation:
+        st.write(f"- {line}")
+
+
 @st.cache_resource(show_spinner=False)
 def load_stage123_model(checkpoint_path, num_frames, device):
     model = EFModel(num_frames=int(num_frames)).to(device)
@@ -759,7 +924,7 @@ def _render_phase_card(frame_rgb, title, phase_code, frame_idx, accent_class, fo
         unsafe_allow_html=True,
     )
     if frame_rgb is not None:
-        st.image(frame_rgb, use_container_width=True)
+        st.image(frame_rgb, width="stretch")
     else:
         st.caption("Frame unavailable")
     st.markdown(
@@ -963,12 +1128,10 @@ def _render_temporal_weight_video(result):
             """,
             unsafe_allow_html=True,
         )
-        stat_row_1 = st.columns(2)
-        stat_row_1[0].metric("Peak Weight", f"{peak_weight:.4f}")
-        stat_row_1[1].metric("Peak Frame", str(peak_frame))
-        stat_row_2 = st.columns(2)
-        stat_row_2[0].metric("GT ED/ES", f"{int(result['ed_orig'])} / {int(result['es_orig'])}")
-        stat_row_2[1].metric("Pred ED/ES", f"{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}")
+        stat_row = st.columns(2)
+        stat_row[0].metric("GT ED/ES", f"{int(result['ed_orig'])} / {int(result['es_orig'])}")
+        stat_row[1].metric("Pred ED/ES", f"{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}")
+        st.caption("This summary highlights the key frame landmarks only. The temporal-weight curve below remains available for technical review if needed.")
 
     st.markdown(
         """
@@ -1266,7 +1429,6 @@ def _render_temporal_weight_video(result):
               </div>
               <div class="tw-chip-row">
                 <span class="tw-chip">{payload['totalFrames']} frames</span>
-                <span class="tw-chip">Peak {payload['peakFrame']}</span>
                 <span class="tw-chip">Selected {payload['selectedFrame']}</span>
               </div>
             </div>
@@ -1776,6 +1938,10 @@ def main():
         stage4_model_name = st.selectbox("Stage4 fallback model", options=["deeplabv3_resnet50", "fcn_resnet50", "unet"], index=0)
         stage4_base_channels = st.number_input("Stage4 UNet base channels", min_value=8, max_value=128, value=32, step=8)
 
+        st.subheader("Stage6/7")
+        show_stage67 = st.checkbox("Show Stage6/7 clinical summary", value=True)
+        stage67_output_dir = st.text_input("Stage6/7 output dir", value=_abs_path(os.path.join("validation", "outputs", "stage67")))
+
     if not os.path.exists(data_dir):
         st.error(f"Data directory not found: {data_dir}")
         return
@@ -1870,23 +2036,26 @@ def main():
 
         stage45_table = pd.DataFrame(
             [
-                {"metric": "Pred ED area (px)", "value": round(float(s4["pred_ed_area"]), 2)},
-                {"metric": "Pred ES area (px)", "value": round(float(s4["pred_es_area"]), 2)},
-                {"metric": "Stage5 EF from predicted masks (%)", "value": round(float(s4["ef_stage5_pred_pct"]), 2)},
-                {"metric": "GT EF from traced masks (%)", "value": round(float(result["ef_gt_area_pct"]), 2) if np.isfinite(result["ef_gt_area_pct"]) else "NA"},
-                {"metric": "GT ED area at predicted-ED frame (px)", "value": round(float(s4["gt_area_pred_ed"]), 2) if np.isfinite(s4["gt_area_pred_ed"]) else "NA"},
-                {"metric": "GT ES area at predicted-ES frame (px)", "value": round(float(s4["gt_area_pred_es"]), 2) if np.isfinite(s4["gt_area_pred_es"]) else "NA"},
-                {"metric": "Dice on predicted-ED frame", "value": round(float(s4["dice_pred_ed"]), 4) if np.isfinite(s4["dice_pred_ed"]) else "NA"},
-                {"metric": "Dice on predicted-ES frame", "value": round(float(s4["dice_pred_es"]), 4) if np.isfinite(s4["dice_pred_es"]) else "NA"},
-                {"metric": "Stage4/5 frame selection", "value": s4.get("pred_curve_method", "NA")},
+                {"metric": "Pred ED area (px)", "value": _format_display_number(s4["pred_ed_area"], digits=2)},
+                {"metric": "Pred ES area (px)", "value": _format_display_number(s4["pred_es_area"], digits=2)},
+                {"metric": "Stage5 EF from predicted masks (%)", "value": _format_display_number(s4["ef_stage5_pred_pct"], digits=2)},
+                {"metric": "GT EF from traced masks (%)", "value": _format_display_number(result["ef_gt_area_pct"], digits=2)},
+                {"metric": "GT ED area at predicted-ED frame (px)", "value": _format_display_number(s4["gt_area_pred_ed"], digits=2)},
+                {"metric": "GT ES area at predicted-ES frame (px)", "value": _format_display_number(s4["gt_area_pred_es"], digits=2)},
+                {"metric": "Dice on predicted-ED frame", "value": _format_display_number(s4["dice_pred_ed"], digits=4)},
+                {"metric": "Dice on predicted-ES frame", "value": _format_display_number(s4["dice_pred_es"], digits=4)},
+                {"metric": "Stage4/5 frame selection", "value": str(s4.get("pred_curve_method", "NA"))},
             ]
         )
-        st.dataframe(stage45_table, use_container_width=True, hide_index=True)
+        st.dataframe(stage45_table, width="stretch", hide_index=True)
         seg_bytes = s4.get("seg_preview_gif")
         if seg_bytes:
             _render_centered_image(seg_bytes, "Segmentation overlay animation")
         else:
             st.caption(s4.get("seg_preview_err", "Segmentation preview unavailable."))
+
+    if show_stage67:
+        _render_stage67_section(selected_video=selected_video, split=split, stage67_output_dir=stage67_output_dir)
 
     st.subheader("Auto Explanation")
     for line in result["explanation"]:
