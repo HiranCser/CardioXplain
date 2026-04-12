@@ -3,6 +3,7 @@ import io
 import sys
 import json
 import math
+import html
 import base64
 import shutil
 import hashlib
@@ -51,8 +52,8 @@ def _inject_page_styles():
                     linear-gradient(180deg, #f6faff 0%, #f1f6fb 46%, #f8fbfe 100%);
             }
             .block-container {
-                padding-top: 1.2rem;
-                padding-bottom: 2.8rem;
+                padding-top: 2.35rem;
+                padding-bottom: 2.4rem;
                 max-width: 1320px;
             }
             [data-testid="stSidebar"] {
@@ -214,6 +215,169 @@ def _inject_page_styles():
                 color: #688197;
                 font-size: 0.82rem;
                 margin-top: 0.35rem;
+            }
+            .dashboard-hero-title {
+                color: #102a43;
+                font-size: 2.15rem;
+                font-weight: 900;
+                line-height: 1.14;
+                letter-spacing: -0.03em;
+                margin: 0 0 0.18rem 0;
+                padding-top: 0.1rem;
+            }
+            .dashboard-hero-subtitle {
+                color: #5f778d;
+                font-size: 0.98rem;
+                line-height: 1.55;
+                margin-bottom: 0.85rem;
+            }
+            .dashboard-card {
+                background: rgba(255, 255, 255, 0.94);
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                border-radius: 22px;
+                padding: 1rem 1.05rem;
+                box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+                margin-bottom: 0.95rem;
+            }
+            .dashboard-card-title {
+                color: #12324a;
+                font-size: 1.05rem;
+                font-weight: 800;
+                margin-bottom: 0.7rem;
+            }
+            .dashboard-card-subtitle {
+                color: #667f93;
+                font-size: 0.88rem;
+                line-height: 1.5;
+                margin-top: -0.35rem;
+                margin-bottom: 0.7rem;
+            }
+            .dashboard-value-list {
+                display: grid;
+                gap: 0.55rem;
+            }
+            .dashboard-value-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 1rem;
+                padding-top: 0.45rem;
+                border-top: 1px solid rgba(226, 232, 240, 0.9);
+            }
+            .dashboard-value-row:first-child {
+                border-top: none;
+                padding-top: 0;
+            }
+            .dashboard-value-key {
+                color: #4f6a7f;
+                font-weight: 700;
+                line-height: 1.4;
+            }
+            .dashboard-value-val {
+                color: #0f2940;
+                font-weight: 800;
+                line-height: 1.4;
+                text-align: right;
+            }
+            .dashboard-bullet-list {
+                margin: 0;
+                padding-left: 1.1rem;
+                color: #27445b;
+            }
+            .dashboard-bullet-list li {
+                margin: 0.3rem 0;
+                line-height: 1.5;
+            }
+            .dashboard-note {
+                color: #5f778d;
+                font-size: 0.84rem;
+                line-height: 1.45;
+                margin-top: 0.65rem;
+            }
+            [data-testid="stTabs"] {
+                margin-top: 1.1rem;
+            }
+            [data-testid="stTabs"] [role="tablist"] {
+                gap: 0.7rem;
+                background: rgba(255, 255, 255, 0.84);
+                border: 1px solid rgba(148, 163, 184, 0.22);
+                border-radius: 24px;
+                padding: 0.55rem;
+                box-shadow: 0 14px 28px rgba(15, 23, 42, 0.06);
+                margin-bottom: 1.1rem;
+            }
+            [data-testid="stTabs"] [role="tab"] {
+                height: auto;
+                min-height: 56px;
+                border-radius: 18px;
+                padding: 0.8rem 1.15rem;
+                background: linear-gradient(180deg, rgba(244, 248, 252, 0.96) 0%, rgba(234, 241, 247, 0.96) 100%);
+                color: #4f677c;
+                border: 1px solid rgba(203, 213, 225, 0.95);
+                font-size: 0.98rem;
+                font-weight: 800;
+                letter-spacing: -0.01em;
+                transition: all 0.18s ease;
+            }
+            [data-testid="stTabs"] [role="tab"]:hover {
+                color: #173652;
+                border-color: rgba(37, 99, 235, 0.26);
+                transform: translateY(-1px);
+            }
+            [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+                background: linear-gradient(135deg, #12324a 0%, #245fd9 100%);
+                color: #ffffff;
+                border-color: transparent;
+                box-shadow: 0 14px 28px rgba(37, 99, 235, 0.24);
+            }
+            [data-testid="stTabs"] [role="tab"] p {
+                margin: 0;
+            }
+            .tab-banner {
+                background: linear-gradient(135deg, rgba(16, 42, 67, 0.96) 0%, rgba(36, 95, 217, 0.94) 100%);
+                border-radius: 24px;
+                padding: 1.15rem 1.2rem;
+                margin: 0 0 1rem 0;
+                box-shadow: 0 16px 32px rgba(15, 23, 42, 0.10);
+            }
+            .tab-banner-title {
+                color: #ffffff;
+                font-size: 1.15rem;
+                font-weight: 900;
+                letter-spacing: -0.02em;
+                margin-bottom: 0.2rem;
+            }
+            .tab-banner-subtitle {
+                color: rgba(255, 255, 255, 0.86);
+                font-size: 0.92rem;
+                line-height: 1.5;
+            }
+            .tab-section-label {
+                color: #173652;
+                font-size: 1rem;
+                font-weight: 900;
+                margin: 0.35rem 0 0.65rem 0;
+                letter-spacing: -0.01em;
+            }
+            .tab-panel-card {
+                background: rgba(255, 255, 255, 0.95);
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                border-radius: 22px;
+                padding: 1rem 1.05rem;
+                box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+                margin-bottom: 1rem;
+            }
+            .tab-panel-title {
+                color: #12324a;
+                font-size: 1rem;
+                font-weight: 800;
+                margin-bottom: 0.2rem;
+            }
+            .tab-panel-subtitle {
+                color: #667f93;
+                font-size: 0.87rem;
+                line-height: 1.45;
+                margin-bottom: 0.8rem;
             }
         </style>
         """,
@@ -660,43 +824,187 @@ def _possible_severity_labels_text():
     return "Possible labels: Preserved LV systolic function, Reduced LV systolic function, Severe LV systolic dysfunction."
 
 
-def _render_stage67_section(selected_video, split, stage67_output_dir):
+def _condition_from_ef(ef_value, normal_threshold=50.0, severe_threshold=30.0):
+    try:
+        ef_numeric = float(ef_value)
+    except (TypeError, ValueError):
+        return "Unknown"
+    if not np.isfinite(ef_numeric):
+        return "Unknown"
+    if ef_numeric >= float(normal_threshold):
+        return "Preserved LV systolic function"
+    if ef_numeric >= float(severe_threshold):
+        return "Reduced LV systolic function"
+    return "Severe LV systolic dysfunction"
+
+
+
+def _short_condition_label(value):
+    raw = str(value).strip().lower()
+    mapping = {
+        "preserved lv systolic function": "Preserved LV Function",
+        "reduced lv systolic function": "Reduced LV Function",
+        "severe lv systolic dysfunction": "Severe LV Dysfunction",
+    }
+    return mapping.get(raw, str(value).strip())
+
+
+
+def _agreement_doctor_label(disagreement_pct):
+    if not np.isfinite(disagreement_pct):
+        return "Unavailable"
+    d = abs(float(disagreement_pct))
+    if d <= 5.0:
+        return "High"
+    if d <= 10.0:
+        return "Moderate"
+    return "Low"
+
+
+
+def _load_stage67_case_summary(selected_video, split, stage67_output_dir):
     pred_df, pred_path = load_stage67_predictions(stage67_output_dir, split)
     summary, summary_path = load_stage67_summary(stage67_output_dir)
-
-    st.subheader("Clinical Summary (Stage 6/7)")
-    st.caption("Doctor-facing view of contraction class, fused EF estimate, and uncertainty based on the Stage 6 severity model and Stage 7 calibration.")
-
+    case = {
+        "available": False,
+        "pred_path": pred_path,
+        "summary_path": summary_path,
+        "summary": summary,
+    }
     if pred_df is None or pred_df.empty:
-        st.info(f"Stage 6/7 predictions not found for {split} at {pred_path}")
-        return
+        return case
 
     row = pred_df[pred_df["file_name"].astype(str) == str(selected_video)]
     if row.empty and "file_name_ext" in pred_df.columns:
         row = pred_df[pred_df["file_name_ext"].astype(str) == f"{selected_video}.avi"]
     if row.empty:
-        st.info(f"No Stage 6/7 row found for {selected_video} in {pred_path}")
-        return
+        return case
 
     row = row.iloc[0]
-    pred_text = _doctor_severity_text(row.get("pred_text_cal", row.get("pred_text_raw", "Unknown")))
-    gt_text = _doctor_severity_text(row.get("severity_text_gt", "Unknown"))
+    pred_text_full = _doctor_severity_text(row.get("pred_text_cal", row.get("pred_text_raw", "Unknown")))
+    gt_text_full = _doctor_severity_text(row.get("severity_text_gt", "Unknown"))
     fused_ef = float(row.get("ef_fused_pct", float("nan")))
     ci90_lo = float(row.get("ef_ci90_low", float("nan")))
     ci90_hi = float(row.get("ef_ci90_high", float("nan")))
     ci95_lo = float(row.get("ef_ci95_low", float("nan")))
     ci95_hi = float(row.get("ef_ci95_high", float("nan")))
-    prob_cols = ["prob_cal_c0", "prob_cal_c1", "prob_cal_c2"]
-    probs = [float(row.get(col, float("nan"))) for col in prob_cols]
+    probs = [float(row.get(col, float("nan"))) for col in ["prob_cal_c0", "prob_cal_c1", "prob_cal_c2"]]
     max_prob = max([p for p in probs if np.isfinite(p)], default=float("nan"))
     confidence_text = _confidence_bucket(max_prob) if np.isfinite(max_prob) else "Unknown"
     disagreement_pct = float(row.get("ef_disagreement_pct", float("nan")))
     agreement_text = _agreement_bucket(disagreement_pct)
     agreement_note = _agreement_explanation(disagreement_pct)
+    agreement_doctor = _agreement_doctor_label(disagreement_pct)
     ci90_width = float(ci90_hi - ci90_lo) if np.isfinite(ci90_hi) and np.isfinite(ci90_lo) else float("nan")
     uncertainty_text = _interval_bucket(ci90_width)
     normal_threshold, severe_threshold = _severity_thresholds_from_summary(summary)
-    severity_rule_text = _severity_rule_text(normal_threshold, severe_threshold)
+    case.update(
+        {
+            "available": True,
+            "row": row,
+            "pred_text_full": pred_text_full,
+            "pred_text_short": _short_condition_label(pred_text_full),
+            "gt_text_full": gt_text_full,
+            "fused_ef": fused_ef,
+            "ci90_lo": ci90_lo,
+            "ci90_hi": ci90_hi,
+            "ci95_lo": ci95_lo,
+            "ci95_hi": ci95_hi,
+            "ci90_width": ci90_width,
+            "uncertainty_text": uncertainty_text,
+            "confidence_text": confidence_text,
+            "agreement_text": agreement_text,
+            "agreement_doctor": agreement_doctor,
+            "agreement_note": agreement_note,
+            "disagreement_pct": disagreement_pct,
+            "normal_threshold": normal_threshold,
+            "severe_threshold": severe_threshold,
+            "severity_rule_text": _severity_rule_text(normal_threshold, severe_threshold),
+            "max_prob": max_prob,
+        }
+    )
+    return case
+
+
+
+def _render_value_card(title, rows, icon="", subtitle=None, note=None):
+    header = f"{icon} {title}".strip()
+    body_rows = []
+    for label, value in rows:
+        body_rows.append(
+            (
+                '<div class="dashboard-value-row">'
+                f'<div class="dashboard-value-key">{html.escape(str(label))}</div>'
+                f'<div class="dashboard-value-val">{html.escape(str(value))}</div>'
+                '</div>'
+            )
+        )
+    subtitle_html = f'<div class="dashboard-card-subtitle">{html.escape(str(subtitle))}</div>' if subtitle else ""
+    note_html = f'<div class="dashboard-note">{html.escape(str(note))}</div>' if note else ""
+    card_html = (
+        '<div class="dashboard-card">'
+        f'<div class="dashboard-card-title">{html.escape(header)}</div>'
+        f'{subtitle_html}'
+        f'<div class="dashboard-value-list">{"".join(body_rows)}</div>'
+        f'{note_html}'
+        '</div>'
+    )
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
+
+def _render_bullet_card(title, bullets, icon="", subtitle=None, note=None):
+    header = f"{icon} {title}".strip()
+    bullet_items = "".join(f"<li>{html.escape(str(line))}</li>" for line in bullets)
+    subtitle_html = f'<div class="dashboard-card-subtitle">{html.escape(str(subtitle))}</div>' if subtitle else ""
+    note_html = f'<div class="dashboard-note">{html.escape(str(note))}</div>' if note else ""
+    card_html = (
+        '<div class="dashboard-card">'
+        f'<div class="dashboard-card-title">{html.escape(header)}</div>'
+        f'{subtitle_html}'
+        f'<ul class="dashboard-bullet-list">{bullet_items}</ul>'
+        f'{note_html}'
+        '</div>'
+    )
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
+def _render_tab_banner(title, subtitle):
+    banner_html = (
+        '<div class="tab-banner">'
+        f'<div class="tab-banner-title">{html.escape(str(title))}</div>'
+        f'<div class="tab-banner-subtitle">{html.escape(str(subtitle))}</div>'
+        '</div>'
+    )
+    st.markdown(banner_html, unsafe_allow_html=True)
+
+
+def _render_stage67_section(selected_video, split, stage67_output_dir):
+    case = _load_stage67_case_summary(selected_video, split, stage67_output_dir)
+
+    st.subheader("Clinical Summary (Stage 6/7)")
+    st.caption("Doctor-facing view of contraction class, fused EF estimate, and uncertainty based on the Stage 6 severity model and Stage 7 calibration.")
+
+    if not case["available"]:
+        st.info(f"Stage 6/7 predictions not found for {split} at {case['pred_path']}")
+        return
+
+    row = case["row"]
+    summary = case["summary"]
+    pred_text = case["pred_text_full"]
+    gt_text = case["gt_text_full"]
+    fused_ef = case["fused_ef"]
+    ci90_lo = case["ci90_lo"]
+    ci90_hi = case["ci90_hi"]
+    ci95_lo = case["ci95_lo"]
+    ci95_hi = case["ci95_hi"]
+    confidence_text = case["confidence_text"]
+    disagreement_pct = case["disagreement_pct"]
+    agreement_text = case["agreement_text"]
+    agreement_note = case["agreement_note"]
+    ci90_width = case["ci90_width"]
+    uncertainty_text = case["uncertainty_text"]
+    severity_rule_text = case["severity_rule_text"]
 
     c1, c2 = st.columns(2)
     c3, c4 = st.columns(2)
@@ -754,6 +1062,7 @@ def _render_stage67_section(selected_video, split, stage67_output_dir):
 
 
 @st.cache_resource(show_spinner=False)
+
 def load_stage123_model(checkpoint_path, num_frames, device):
     model = EFModel(num_frames=int(num_frames)).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -984,14 +1293,27 @@ def _annotate_temporal_frame(frame_rgb, _card_title, _phase_label, _frame_idx, a
     return canvas
 
 
-def _frame_to_data_uri(frame_rgb):
+def _frame_to_data_uri(frame_rgb, max_width=560, quality=72, accent_rgb=None):
     if frame_rgb is None:
         return ""
-    bordered = np.ascontiguousarray(frame_rgb)
-    success, encoded = cv2.imencode('.png', cv2.cvtColor(bordered, cv2.COLOR_RGB2BGR))
+    canvas = np.ascontiguousarray(frame_rgb.copy())
+    if accent_rgb is not None:
+        height, width = canvas.shape[:2]
+        accent = tuple(int(v) for v in accent_rgb)
+        border = max(2, int(round(min(height, width) * 0.012)))
+        cv2.rectangle(canvas, (0, 0), (width - 1, height - 1), accent, thickness=border)
+    h, w = canvas.shape[:2]
+    if max_width and w > int(max_width):
+        scale = float(max_width) / float(w)
+        canvas = cv2.resize(canvas, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
+    success, encoded = cv2.imencode(
+        '.jpg',
+        cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR),
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)],
+    )
     if not success:
         return ""
-    return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode('ascii')
+    return "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode('ascii')
 
 
 def _render_phase_card(frame_rgb, title, phase_code, frame_idx, accent_class, footnote):
@@ -1037,15 +1359,31 @@ def _render_phase_group(group_title, card_specs):
 
 def _make_attention_plot(attn, gt_ed_idx, gt_es_idx, pred_ed_idx, pred_es_idx):
     fig, ax = plt.subplots(figsize=(8, 2.8))
-    x = np.arange(attn.shape[0])
-    ax.plot(x, attn, label="Stage2 attention", color="#1f77b4")
+    attn_np = np.asarray(attn, dtype=np.float64)
+
+    if attn_np.ndim == 1:
+        x = np.arange(attn_np.shape[0])
+        ax.plot(x, attn_np, label="Stage2 attention", color="#1f77b4", linewidth=2.2)
+    elif attn_np.ndim >= 2 and attn_np.shape[-1] >= 2:
+        attn_ed = attn_np[:, 0]
+        attn_es = attn_np[:, 1]
+        attn_mean = attn_np[:, :2].mean(axis=1)
+        x = np.arange(attn_mean.shape[0])
+        ax.plot(x, attn_ed, label="Stage2 ED attention", color="#16a34a", linewidth=2.0)
+        ax.plot(x, attn_es, label="Stage2 ES attention", color="#dc2626", linewidth=2.0)
+        ax.plot(x, attn_mean, label="Stage2 mean attention", color="#1f77b4", linewidth=2.2, alpha=0.9)
+    else:
+        flat = attn_np.reshape(-1)
+        x = np.arange(flat.shape[0])
+        ax.plot(x, flat, label="Stage2 attention", color="#1f77b4", linewidth=2.2)
+
     ax.axvline(gt_ed_idx, color="green", linestyle="--", label="GT ED")
     ax.axvline(gt_es_idx, color="red", linestyle="--", label="GT ES")
     ax.axvline(pred_ed_idx, color="green", linestyle=":", label="Pred ED")
     ax.axvline(pred_es_idx, color="red", linestyle=":", label="Pred ES")
     ax.set_xlabel("Sampled frame index")
     ax.set_ylabel("Weight")
-    ax.set_title("Stage 2 Temporal Weights")
+    ax.set_title("Stage 2 Temporal Attention")
     ax.grid(alpha=0.2)
     ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
@@ -1837,6 +2175,8 @@ def run_case(
     stage123_checkpoint,
     num_frames,
     device,
+    temporal_window_mode,
+    temporal_window_margin_mult,
     run_stage4,
     stage4_checkpoint,
     stage4_model_name,
@@ -1845,7 +2185,15 @@ def run_case(
     stage45 = Stage45Pipeline()
 
     model123, incompat123, stage123_meta = load_stage123_model(stage123_checkpoint, int(num_frames), device)
-    temporal_settings = _resolve_stage123_temporal_settings(stage123_meta)
+    checkpoint_temporal_settings = _resolve_stage123_temporal_settings(stage123_meta)
+    requested_mode = str(temporal_window_mode).strip().lower()
+    if requested_mode == "checkpoint":
+        temporal_settings = checkpoint_temporal_settings
+    else:
+        temporal_settings = {
+            "mode": requested_mode,
+            "margin_mult": float(temporal_window_margin_mult),
+        }
     dataset = load_dataset_resource(
         data_dir=data_dir,
         split=split,
@@ -2098,6 +2446,9 @@ def run_case(
     explanation.append(
         f"Stage1-3 temporal inference mode: {temporal_settings['mode']} (margin={temporal_settings['margin_mult']:.2f})."
     )
+    explanation.append(
+        f"Checkpoint temporal mode metadata: {checkpoint_temporal_settings['mode']} (margin={checkpoint_temporal_settings['margin_mult']:.2f})."
+    )
     if stage4_out.get("available"):
         explanation.append(
             f"Stage5 EF from Stage4 masks = {stage4_out['ef_stage5_pred_pct']:.2f}%. Compare with Stage1-3 EF head = {ef_pred_pct:.2f}% and GT EF = {ef_gt_pct:.2f}%."
@@ -2144,37 +2495,708 @@ def run_case(
         "gt_areas": gt_areas,
         "ef_gt_area_pct": ef_gt_area_pct,
         "stage4": stage4_out,
+        "temporal_settings": temporal_settings,
+        "checkpoint_temporal_settings": checkpoint_temporal_settings,
         "explanation": explanation,
         "incompatible_stage123": incompat123,
     }
 
 
+
+def _run_signature(data_dir, split, selected_video, num_frames, device, stage123_checkpoint, temporal_mode, temporal_margin_mult, run_stage4, stage4_checkpoint, stage4_model_name, stage4_base_channels, show_stage67, stage67_output_dir):
+    return {
+        "data_dir": str(data_dir),
+        "split": str(split),
+        "selected_video": str(selected_video),
+        "num_frames": int(num_frames),
+        "device": str(device),
+        "stage123_checkpoint": str(stage123_checkpoint),
+        "temporal_mode": str(temporal_mode),
+        "temporal_margin_mult": float(temporal_margin_mult),
+        "run_stage4": bool(run_stage4),
+        "stage4_checkpoint": str(stage4_checkpoint),
+        "stage4_model_name": str(stage4_model_name),
+        "stage4_base_channels": int(stage4_base_channels),
+        "show_stage67": bool(show_stage67),
+        "stage67_output_dir": str(stage67_output_dir),
+    }
+
+
+
+def _make_landmark_timeline_plot(result):
+    total_frames = max(1, len(result["full_frames"]))
+    fig, ax = plt.subplots(figsize=(10, 2.4))
+    ax.hlines(0, 0, total_frames - 1, color="#9fb3c8", linewidth=3)
+    markers = [
+        ("GT-ED", int(result["ed_orig"]), "#16a34a", 0.28),
+        ("GT-ES", int(result["es_orig"]), "#dc2626", -0.28),
+        ("Pred-ED", int(result["pred_ed_orig"]), "#15803d", 0.62),
+        ("Pred-ES", int(result["pred_es_orig"]), "#b91c1c", -0.62),
+    ]
+    for label, frame_idx, color, y in markers:
+        ax.vlines(frame_idx, 0, y, colors=color, linestyles="--", linewidth=1.8, alpha=0.9)
+        ax.scatter([frame_idx], [y], color=color, s=88, zorder=3)
+        text_y = y + 0.1 if y >= 0 else y - 0.14
+        va = "bottom" if y >= 0 else "top"
+        ax.text(frame_idx, text_y, label, color=color, fontsize=9.5, fontweight="bold", ha="center", va=va)
+    ax.set_xlim(0, total_frames - 1)
+    ax.set_ylim(-0.95, 0.95)
+    ax.set_yticks([])
+    ax.set_xlabel("Frame index")
+    ax.set_title("ED/ES Landmark Timeline")
+    ax.grid(axis="x", alpha=0.15)
+    for spine in ["left", "right", "top"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#9fb3c8")
+    fig.tight_layout()
+    return fig
+
+
+
+def _make_temporal_importance_plot(result):
+    frame_weights = _expand_attention_to_full_frames(result["stage2_attention"], result["sampled_indices"], len(result["full_frames"]))
+    fig, ax = plt.subplots(figsize=(10, 3.4))
+    if frame_weights.size == 0:
+        ax.set_title("Temporal Importance")
+        ax.text(0.5, 0.5, "Temporal weights unavailable", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        fig.tight_layout()
+        return fig, frame_weights
+    x = np.arange(frame_weights.size)
+    ax.plot(x, frame_weights, color="#245fd9", linewidth=2.6)
+    ax.fill_between(x, frame_weights, color="#245fd9", alpha=0.12)
+    markers = [
+        ("GT ED", int(result["ed_orig"]), "#16a34a", "--"),
+        ("GT ES", int(result["es_orig"]), "#dc2626", "--"),
+        ("Pred ED", int(result["pred_ed_orig"]), "#15803d", ":"),
+        ("Pred ES", int(result["pred_es_orig"]), "#b91c1c", ":"),
+    ]
+    ymax = max(float(frame_weights.max()), 1e-6)
+    for label, frame_idx, color, linestyle in markers:
+        ax.axvline(frame_idx, color=color, linestyle=linestyle, linewidth=1.6, alpha=0.9)
+        ax.text(frame_idx, ymax * 1.03, label, color=color, fontsize=8.5, ha="center", va="bottom")
+    ax.set_xlim(0, max(1, frame_weights.size - 1))
+    ax.set_ylim(0, ymax * 1.16)
+    ax.set_xlabel("Original frame index")
+    ax.set_ylabel("Temporal weight")
+    ax.set_title("Temporal Importance Graph")
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    return fig, frame_weights
+
+
+
+def _overview_interpretation_lines(result, stage67_case):
+    lines = []
+    disagreement_pct = float("nan")
+    if stage67_case and stage67_case.get("available"):
+        disagreement_pct = float(stage67_case.get("disagreement_pct", float("nan")))
+    elif result["stage4"].get("available"):
+        disagreement_pct = float(result["ef_pred_pct"] - result["stage4"].get("ef_stage5_pred_pct", float("nan")))
+    if np.isfinite(disagreement_pct):
+        gap = abs(disagreement_pct)
+        if gap > 10.0:
+            lines.append("Models disagree -> review recommended.")
+        elif gap > 5.0:
+            lines.append("Models show moderate disagreement -> correlate with visual review.")
+        else:
+            lines.append("Temporal and segmentation outputs are broadly aligned.")
+    else:
+        lines.append("Segmentation agreement is unavailable, so the EF readout is based on the temporal path alone.")
+    frame_weights = _expand_attention_to_full_frames(result["stage2_attention"], result["sampled_indices"], len(result["full_frames"]))
+    peak_frame = int(np.argmax(frame_weights)) if frame_weights.size > 0 else int(result["pred_es_orig"])
+    peak_context = _phase_window_label(peak_frame, result["ed_orig"], result["es_orig"])
+    if peak_context == "Post-ES":
+        lines.append("Temporal model focuses after systole.")
+    elif peak_context == "End-Systole":
+        lines.append("Temporal model focus lands directly on end-systole.")
+    elif peak_context == "Systolic window":
+        lines.append("Temporal model focus stays within the systolic window.")
+    else:
+        lines.append(f"Temporal model focus peaks around {peak_context.lower()}.")
+    if int(result["es_err_orig"]) >= max(15, int(result["ed_err_orig"]) + 5):
+        lines.append(f"End-systolic timing error is dominant ({int(result['es_err_orig'])} frames).")
+    elif int(result["ed_err_orig"]) >= 15:
+        lines.append(f"End-diastolic timing error is elevated ({int(result['ed_err_orig'])} frames).")
+    else:
+        lines.append(f"Phase timing error is {int(result['ed_err_orig'])} frames at ED and {int(result['es_err_orig'])} frames at ES.")
+    if stage67_case and stage67_case.get("available") and np.isfinite(stage67_case.get("ci90_width", float("nan"))):
+        lines.append(f"Calibrated 90% EF interval width is {stage67_case['ci90_width']:.1f}%, which is {stage67_case['uncertainty_text'].lower()}.")
+    return lines
+
+
+
+def _explainability_interpretation_lines(result):
+    frame_weights = _expand_attention_to_full_frames(result["stage2_attention"], result["sampled_indices"], len(result["full_frames"]))
+    peak_frame = int(np.argmax(frame_weights)) if frame_weights.size > 0 else int(result["pred_es_orig"])
+    peak_context = _phase_window_label(peak_frame, result["ed_orig"], result["es_orig"])
+    lines = [f"Peak temporal importance occurs at frame {peak_frame} ({peak_context})."]
+    if peak_context == "Post-ES":
+        lines.append("Model focus occurs after systole, which can contribute to phase drift and EF bias.")
+    elif peak_context in {"End-Systole", "Systolic window"}:
+        lines.append("Model focus remains around systole, which is consistent with expected contraction cues.")
+    else:
+        lines.append("Model focus is displaced away from the systolic peak and is worth reviewing visually.")
+    if int(result["es_err_orig"]) > int(result["ed_err_orig"]):
+        lines.append(f"ES error ({int(result['es_err_orig'])} frames) is larger than ED error ({int(result['ed_err_orig'])} frames).")
+    else:
+        lines.append(f"ED/ES timing errors are {int(result['ed_err_orig'])} / {int(result['es_err_orig'])} frames.")
+    entropy = float(result["stage2_entropy"])
+    if np.isfinite(entropy):
+        spread_text = "diffuse" if entropy >= 0.80 else "focused"
+        lines.append(f"Attention entropy is {entropy:.3f}, indicating a {spread_text} temporal weighting pattern.")
+    return lines
+
+
+def _render_overview_tab(result, stage67_case):
+    final_ef = float(result["ef_pred_pct"])
+    if stage67_case and stage67_case.get("available") and np.isfinite(stage67_case.get("fused_ef", float("nan"))):
+        final_ef = float(stage67_case["fused_ef"])
+
+    condition_text = _short_condition_label(_condition_from_ef(final_ef))
+    confidence_text = "Moderate"
+    agreement_text = "Unavailable"
+    agreement_note = "Agreement summary becomes available when both temporal and segmentation EF estimates are present."
+
+    if stage67_case and stage67_case.get("available"):
+        condition_text = stage67_case["pred_text_short"]
+        confidence_text = stage67_case["confidence_text"]
+        agreement_text = stage67_case["agreement_doctor"]
+        agreement_note = stage67_case["agreement_note"]
+    elif result["ef_abs_err_pct"] <= 5.0:
+        confidence_text = "High"
+    elif result["ef_abs_err_pct"] > 10.0:
+        confidence_text = "Low"
+
+    if result["stage4"].get("available") and not (stage67_case and stage67_case.get("available")):
+        agreement_text = _agreement_doctor_label(result["ef_pred_pct"] - result["stage4"].get("ef_stage5_pred_pct", float("nan")))
+        agreement_note = _agreement_explanation(result["ef_pred_pct"] - result["stage4"].get("ef_stage5_pred_pct", float("nan")))
+
+    agreement_display = "Low (review)" if agreement_text == "Low" else agreement_text
+    temporal_ef = _format_display_number(result["ef_pred_pct"], digits=1, suffix="%")
+    segmentation_ef = _format_display_number(result["stage4"].get("ef_stage5_pred_pct", float("nan")), digits=1, suffix="%") if result["stage4"].get("available") else "Unavailable"
+    fused_ef_text = _format_display_number(final_ef, digits=1, suffix="%")
+
+    summary_rows = [
+        ("Final EF", fused_ef_text),
+        ("Condition", condition_text),
+        ("Confidence", confidence_text),
+        ("Model Agreement", agreement_display),
+    ]
+    breakdown_rows = [
+        ("Temporal Model (Stage 1-3)", temporal_ef),
+        ("Segmentation Model (Stage 4-5)", segmentation_ef),
+        ("Fused Output (Stage 6-7)", fused_ef_text if stage67_case and stage67_case.get("available") else f"{fused_ef_text} (fallback)"),
+    ]
+
+    left_col, right_col = st.columns(2, gap="large")
+    with left_col:
+        _render_value_card("Clinical Summary", summary_rows, icon="")
+    with right_col:
+        _render_value_card(
+            "EF Breakdown",
+            breakdown_rows,
+            icon="",
+            note="Fused output falls back to the temporal EF when Stage 6/7 predictions are unavailable." if not (stage67_case and stage67_case.get("available")) else "Stage 6/7 provides the calibrated fused EF shown above.",
+        )
+
+    _render_bullet_card("Interpretation", _overview_interpretation_lines(result, stage67_case), icon="", note=agreement_note)
+
+
+
+def _render_frame_slider_player(result, key_prefix="video_analysis"):
+    total_frames = len(result["full_frames"])
+    if total_frames <= 0:
+        st.info("No frames available for this video.")
+        return
+
+    frame_payload = [
+        _frame_to_data_uri(frame_rgb, max_width=560, quality=72)
+        for frame_rgb in result["full_frames"]
+    ]
+    if not frame_payload or not all(frame_payload):
+        st.info("Video frames are unavailable for playback.")
+        return
+
+    component_id = hashlib.md5(f"{result['video_path']}|cine_player".encode("utf-8")).hexdigest()[:12]
+    payload = {
+        "frames": frame_payload,
+        "fps": max(8.0, min(20.0, float(result.get("fps", 12.0) or 12.0))),
+        "initialFrame": int(np.clip(int(result["ed_orig"]), 0, len(frame_payload) - 1)),
+        "gtEd": int(result["ed_orig"]),
+        "gtEs": int(result["es_orig"]),
+        "predEd": int(result["pred_ed_orig"]),
+        "predEs": int(result["pred_es_orig"]),
+    }
+    payload_json = json.dumps(payload)
+
+    components.html(
+        f"""
+        <div id="cine-{component_id}" style="font-family:'Trebuchet MS','Segoe UI',sans-serif; color:#102a43;">
+          <style>
+            #cine-{component_id} .cine-shell {{
+              background: rgba(255,255,255,0.95);
+              border: 1px solid rgba(148,163,184,0.18);
+              border-radius: 24px;
+              padding: 16px;
+              box-shadow: 0 12px 24px rgba(15,23,42,0.06);
+            }}
+            #cine-{component_id} .cine-controls {{
+              display:flex;
+              flex-wrap:wrap;
+              align-items:center;
+              gap:10px;
+              margin-bottom:12px;
+            }}
+            #cine-{component_id} .cine-btn {{
+              border:none;
+              border-radius:999px;
+              padding:10px 14px;
+              font-weight:800;
+              font-size:13px;
+              cursor:pointer;
+              color:#ffffff;
+              background:linear-gradient(135deg,#12324a 0%,#245fd9 100%);
+            }}
+            #cine-{component_id} .cine-chip {{
+              border:none;
+              border-radius:999px;
+              padding:8px 12px;
+              font-weight:800;
+              font-size:12px;
+              cursor:pointer;
+              color:#23415c;
+              background:#eef4fb;
+            }}
+            #cine-{component_id} .cine-slider {{
+              width:100%;
+              margin:12px 0 10px 0;
+            }}
+            #cine-{component_id} .cine-frame {{
+              width:100%;
+              max-width:520px;
+              border-radius:20px;
+              border:4px solid #245fd9;
+              display:block;
+              margin:0 auto;
+              background:#000;
+              box-shadow:0 14px 26px rgba(15,23,42,0.12);
+            }}
+            #cine-{component_id} .cine-info {{
+              display:grid;
+              grid-template-columns: repeat(4, minmax(0,1fr));
+              gap:10px;
+              margin-top:14px;
+            }}
+            #cine-{component_id} .cine-card {{
+              background:#f8fbff;
+              border:1px solid rgba(148,163,184,0.18);
+              border-radius:18px;
+              padding:12px 14px;
+              min-width:0;
+            }}
+            #cine-{component_id} .cine-label {{
+              color:#688197;
+              font-size:11px;
+              font-weight:800;
+              letter-spacing:0.08em;
+              text-transform:uppercase;
+              margin-bottom:4px;
+            }}
+            #cine-{component_id} .cine-value {{
+              color:#12324a;
+              font-size:1.05rem;
+              font-weight:900;
+              line-height:1.25;
+              word-break:break-word;
+            }}
+            #cine-{component_id} .cine-notes {{
+              margin-top:10px;
+              color:#5f778d;
+              font-size:12.5px;
+              line-height:1.5;
+            }}
+            @media (max-width: 900px) {{
+              #cine-{component_id} .cine-info {{
+                grid-template-columns: repeat(2, minmax(0,1fr));
+              }}
+            }}
+          </style>
+          <div class="cine-shell">
+            <div class="cine-controls">
+              <button class="cine-btn" id="cine-play-{component_id}">Pause</button>
+              <button class="cine-chip" data-frame="{int(result["ed_orig"])}">GT ED</button>
+              <button class="cine-chip" data-frame="{int(result["es_orig"])}">GT ES</button>
+              <button class="cine-chip" data-frame="{int(result["pred_ed_orig"])}">Pred ED</button>
+              <button class="cine-chip" data-frame="{int(result["pred_es_orig"])}">Pred ES</button>
+            </div>
+            <input class="cine-slider" id="cine-slider-{component_id}" type="range" min="0" max="{len(frame_payload) - 1}" step="1" value="{int(np.clip(int(result["ed_orig"]), 0, len(frame_payload) - 1))}" />
+            <img class="cine-frame" id="cine-image-{component_id}" alt="Echo cine frame" />
+            <div class="cine-info">
+              <div class="cine-card"><div class="cine-label">Shown Frame</div><div class="cine-value" id="cine-frame-value-{component_id}"></div></div>
+              <div class="cine-card"><div class="cine-label">Marker</div><div class="cine-value" id="cine-marker-{component_id}"></div></div>
+              <div class="cine-card"><div class="cine-label">GT Context</div><div class="cine-value" id="cine-gt-context-{component_id}"></div></div>
+              <div class="cine-card"><div class="cine-label">Pred Context</div><div class="cine-value" id="cine-pred-context-{component_id}"></div></div>
+            </div>
+            <div class="cine-notes">
+              <div id="cine-note-gt-{component_id}"></div>
+              <div id="cine-note-pred-{component_id}"></div>
+            </div>
+          </div>
+        </div>
+        <script>
+          const payload = {payload_json};
+          const img = document.getElementById('cine-image-{component_id}');
+          const slider = document.getElementById('cine-slider-{component_id}');
+          const playBtn = document.getElementById('cine-play-{component_id}');
+          const frameValue = document.getElementById('cine-frame-value-{component_id}');
+          const markerValue = document.getElementById('cine-marker-{component_id}');
+          const gtContextValue = document.getElementById('cine-gt-context-{component_id}');
+          const predContextValue = document.getElementById('cine-pred-context-{component_id}');
+          const gtNote = document.getElementById('cine-note-gt-{component_id}');
+          const predNote = document.getElementById('cine-note-pred-{component_id}');
+          const jumpButtons = document.querySelectorAll('#cine-{component_id} .cine-chip');
+          let current = Math.max(0, Math.min(payload.initialFrame, payload.frames.length - 1));
+          let timer = null;
+          let playing = true;
+          const delay = Math.max(40, Math.round(1000 / Math.max(1, payload.fps || 12)));
+
+          function phaseContext(frame, ed, es) {{
+            frame = Number(frame); ed = Number(ed); es = Number(es);
+            if (ed <= es) {{
+              if (frame < ed) return 'Pre-ED';
+              if (frame === ed) return 'End-Diastole';
+              if (frame < es) return 'Systolic window';
+              if (frame === es) return 'End-Systole';
+              return 'Post-ES';
+            }}
+            const lo = Math.min(ed, es);
+            const hi = Math.max(ed, es);
+            if (frame < lo) return 'Before landmarks';
+            if (frame > hi) return 'After landmarks';
+            if (frame === ed) return 'End-Diastole';
+            if (frame === es) return 'End-Systole';
+            return 'Between landmarks';
+          }}
+
+          function nearestLandmark(frame, ed, es, prefix) {{
+            const choices = [['ED', Number(ed)], ['ES', Number(es)]];
+            choices.sort((a, b) => Math.abs(frame - a[1]) - Math.abs(frame - b[1]));
+            const label = choices[0][0];
+            const ref = choices[0][1];
+            const delta = frame - ref;
+            if (delta === 0) return `At ${{prefix}} ${{label}}`;
+            if (delta < 0) return `${{Math.abs(delta)}} fr before ${{prefix}} ${{label}}`;
+            return `${{Math.abs(delta)}} fr after ${{prefix}} ${{label}}`;
+          }}
+
+          function markerText(frame) {{
+            const labels = [];
+            if (frame === Number(payload.gtEd)) labels.push('GT ED');
+            if (frame === Number(payload.gtEs)) labels.push('GT ES');
+            if (frame === Number(payload.predEd)) labels.push('Pred ED');
+            if (frame === Number(payload.predEs)) labels.push('Pred ES');
+            return labels.length ? labels.join(', ') : 'No landmark';
+          }}
+
+          function render() {{
+            img.src = payload.frames[current];
+            slider.value = String(current);
+            frameValue.textContent = String(current);
+            markerValue.textContent = markerText(current);
+            gtContextValue.textContent = phaseContext(current, payload.gtEd, payload.gtEs);
+            predContextValue.textContent = phaseContext(current, payload.predEd, payload.predEs);
+            gtNote.textContent = nearestLandmark(current, payload.gtEd, payload.gtEs, 'GT');
+            predNote.textContent = nearestLandmark(current, payload.predEd, payload.predEs, 'Pred');
+          }}
+
+          function stopPlayback() {{
+            if (timer) window.clearInterval(timer);
+            timer = null;
+            playing = false;
+            playBtn.textContent = 'Play';
+          }}
+
+          function startPlayback() {{
+            stopPlayback();
+            playing = true;
+            playBtn.textContent = 'Pause';
+            timer = window.setInterval(() => {{
+              current = (current + 1) % payload.frames.length;
+              render();
+            }}, delay);
+          }}
+
+          playBtn.addEventListener('click', () => {{
+            if (playing) stopPlayback(); else startPlayback();
+          }});
+          slider.addEventListener('input', (event) => {{
+            current = Number(event.target.value || 0);
+            render();
+          }});
+          jumpButtons.forEach((btn) => btn.addEventListener('click', () => {{
+            current = Math.max(0, Math.min(Number(btn.dataset.frame || 0), payload.frames.length - 1));
+            render();
+          }}));
+
+          render();
+          if (payload.frames.length > 1) startPlayback();
+        </script>
+        """,
+        height=660,
+    )
+
+
+def _render_video_analysis_tab(result):
+    _render_tab_banner("Video Analysis", "Review the cine, compare GT vs predicted landmarks, and inspect key frames side by side.")
+    player_col, info_col = st.columns([1.2, 0.8], gap="large")
+    with player_col:
+        st.markdown("#### Frame Viewer")
+        st.caption("This viewer uses the decoded frames directly, so the shown frame always matches the slider position.")
+        _render_frame_slider_player(result)
+
+    with info_col:
+        _render_value_card(
+            "Error Metrics",
+            [
+                ("ED Error", f"{int(result['ed_err_orig'])} frames"),
+                ("ES Error", f"{int(result['es_err_orig'])} frames"),
+                ("GT ED / ES", f"{int(result['ed_orig'])} / {int(result['es_orig'])}"),
+                ("Pred ED / ES", f"{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}"),
+            ],
+            icon="",
+        )
+        _render_value_card(
+            "Key Model Output",
+            [
+                ("Pred EF", _format_display_number(result['ef_pred_pct'], digits=1, suffix='%')),
+                ("GT EF", _format_display_number(result['ef_gt_pct'], digits=1, suffix='%')),
+                ("EF Abs Error", _format_display_number(result['ef_abs_err_pct'], digits=1, suffix='%')),
+            ],
+            icon="",
+        )
+        timeline_fig = _make_landmark_timeline_plot(result)
+        st.pyplot(timeline_fig, use_container_width=True)
+        plt.close(timeline_fig)
+
+    st.markdown("#### Key Frames")
+    gt_ed_frame_rgb, _ = _frame_from_list(result["full_frames"], result["ed_orig"])
+    gt_es_frame_rgb, _ = _frame_from_list(result["full_frames"], result["es_orig"])
+    pred_ed_frame_rgb, _ = _frame_from_list(result["full_frames"], result["pred_ed_orig"])
+    pred_es_frame_rgb, _ = _frame_from_list(result["full_frames"], result["pred_es_orig"])
+    first_row = st.columns(2, gap="large")
+    second_row = st.columns(2, gap="large")
+    frame_specs = [
+        (first_row[0], gt_ed_frame_rgb, "GT ED", int(result["ed_orig"]), (22, 163, 74)),
+        (first_row[1], gt_es_frame_rgb, "GT ES", int(result["es_orig"]), (220, 38, 38)),
+        (second_row[0], pred_ed_frame_rgb, "Pred ED", int(result["pred_ed_orig"]), (22, 163, 74)),
+        (second_row[1], pred_es_frame_rgb, "Pred ES", int(result["pred_es_orig"]), (220, 38, 38)),
+    ]
+    for col, frame_rgb, label, frame_idx, accent in frame_specs:
+        with col:
+            if frame_rgb is not None:
+                st.image(_annotate_temporal_frame(frame_rgb, "", "", frame_idx, accent), caption=f"{label} | frame {frame_idx}", width=FRAME_DISPLAY_WIDTH)
+            else:
+                st.caption(f"{label} unavailable")
+
+
+
+def _render_explainability_tab(result):
+    _render_tab_banner("Explainability", "See where the temporal model is focusing and whether that attention aligns with ED and ES.")
+    importance_fig, frame_weights = _make_temporal_importance_plot(result)
+    st.markdown("#### Temporal Importance Graph")
+    st.pyplot(importance_fig, use_container_width=True)
+    plt.close(importance_fig)
+
+    peak_frame = int(np.argmax(frame_weights)) if frame_weights.size > 0 else int(result["pred_es_orig"])
+    peak_weight = float(frame_weights[peak_frame]) if frame_weights.size > 0 else float("nan")
+    nearest_gt = _nearest_landmark_text(peak_frame, result["ed_orig"], result["es_orig"], "GT")
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Peak Frame", str(peak_frame))
+    metric_cols[1].metric("Peak Weight", f"{peak_weight:.4f}" if np.isfinite(peak_weight) else "NA")
+    metric_cols[2].metric("Attention Entropy", f"{float(result['stage2_entropy']):.3f}" if np.isfinite(float(result['stage2_entropy'])) else "NA")
+    st.caption(nearest_gt)
+
+    st.markdown("#### Top Important Frames")
+    top_frame_specs = _top_temporal_frame_specs(result, top_k=3)
+    if top_frame_specs:
+        top_cols = st.columns(len(top_frame_specs), gap="medium")
+        for col, spec in zip(top_cols, top_frame_specs):
+            with col:
+                st.image(spec["image"], caption=f"Frame {spec['frame_idx']} | weight {spec['weight']:.4f}", width=FRAME_DISPLAY_WIDTH)
+                st.caption(spec["gt_context"])
+                st.caption(spec["nearest_gt"])
+    else:
+        st.info("Top important frames are unavailable for this run.")
+
+    with st.expander("Interpretation", expanded=False):
+        for line in _explainability_interpretation_lines(result):
+            st.write(f"- {line}")
+
+
+
+def _render_segmentation_tab(result):
+    _render_tab_banner("Segmentation", "Mask-based ED and ES outputs, area measurements, and EF derived from segmentation.")
+    if not result["stage4"].get("enabled"):
+        st.info("Stage4/5 execution is disabled in the sidebar settings.")
+        return
+    if not result["stage4"].get("available"):
+        st.warning(result["stage4"].get("error", "Stage4/5 output is unavailable."))
+        return
+
+    s4 = result["stage4"]
+    pred_ed_frame_rgb, _ = _frame_from_list(result["full_frames"], s4["pred_ed_frame_idx"])
+    pred_es_frame_rgb, _ = _frame_from_list(result["full_frames"], s4["pred_es_frame_idx"])
+    st.markdown("#### Segmentation Output")
+    col_ed, col_es = st.columns(2, gap="large")
+    with col_ed:
+        st.image(_overlay_mask_rgb(pred_ed_frame_rgb, s4["pred_ed_mask"], color=(0, 255, 0), alpha=0.35), caption=f"ED frame {int(s4['pred_ed_frame_idx'])} + predicted mask", width=FRAME_DISPLAY_WIDTH)
+    with col_es:
+        st.image(_overlay_mask_rgb(pred_es_frame_rgb, s4["pred_es_mask"], color=(255, 165, 0), alpha=0.35), caption=f"ES frame {int(s4['pred_es_frame_idx'])} + predicted mask", width=FRAME_DISPLAY_WIDTH)
+    _render_value_card(
+        "Metrics",
+        [
+            ("ED Area", f"{float(s4['pred_ed_area']):.0f} px" if np.isfinite(float(s4['pred_ed_area'])) else "NA"),
+            ("ES Area", f"{float(s4['pred_es_area']):.0f} px" if np.isfinite(float(s4['pred_es_area'])) else "NA"),
+            ("EF (Mask-based)", _format_display_number(s4['ef_stage5_pred_pct'], digits=1, suffix='%')),
+            ("Dice at ED", _format_display_number(s4['dice_pred_ed'], digits=4)),
+            ("Dice at ES", _format_display_number(s4['dice_pred_es'], digits=4)),
+        ],
+        icon="",
+        note=f"Frame selection method: {s4.get('pred_curve_method', 'NA')}.",
+    )
+    if s4.get("seg_preview_gif"):
+        st.image(s4["seg_preview_gif"], caption="Segmentation overlay animation", width=PREVIEW_DISPLAY_WIDTH)
+
+
+
+def _render_debug_tab(result, selected_video, split, stage67_output_dir, show_stage67):
+    _render_tab_banner("Deep Debug", "Research-mode diagnostics, raw stage outputs, checkpoint mismatch details, and internal plots.")
+    st.caption("Research mode surfaces raw stage outputs, configs, and intermediate diagnostics.")
+
+    with st.expander("Stage Configs", expanded=True):
+        config_rows = [
+            {"stage": "Stage 1-3", "item": "Pred EF (%)", "value": _format_display_number(result['ef_pred_pct'], digits=3)},
+            {"stage": "Stage 1-3", "item": "GT EF (%)", "value": _format_display_number(result['ef_gt_pct'], digits=3)},
+            {"stage": "Stage 1", "item": "Feature norm", "value": _format_display_number(result['stage1_feat_norm'], digits=4)},
+            {"stage": "Stage 1", "item": "Temporal std", "value": _format_display_number(result['stage1_temp_std'], digits=4)},
+            {"stage": "Stage 2", "item": "Attention entropy", "value": _format_display_number(result['stage2_entropy'], digits=4)},
+            {"stage": "Stage 2", "item": "Peak sampled index", "value": str(int(result['stage2_peak_idx']))},
+            {"stage": "Stage 3", "item": "Pred ED / ES sampled idx", "value": f"{int(result['pred_ed_idx'])} / {int(result['pred_es_idx'])}"},
+            {"stage": "Stage 3", "item": "Pred ED / ES original frame", "value": f"{int(result['pred_ed_orig'])} / {int(result['pred_es_orig'])}"},
+            {"stage": "Stage 4-5", "item": "Available", "value": str(bool(result['stage4'].get('available')))},
+            {"stage": "Stage 4-5", "item": "Frame method", "value": str(result['stage4'].get('pred_curve_method', 'NA'))},
+        ]
+        st.dataframe(pd.DataFrame(config_rows), width="stretch", hide_index=True)
+
+    with st.expander("Checkpoint Logs", expanded=False):
+        mismatch_rows = [
+            {
+                "checkpoint": "Stage1-3",
+                "missing_keys": len(result['incompatible_stage123'].missing_keys),
+                "unexpected_keys": len(result['incompatible_stage123'].unexpected_keys),
+            }
+        ]
+        if result['stage4'].get('available') and result['stage4'].get('incompatible') is not None:
+            mismatch_rows.append(
+                {
+                    "checkpoint": "Stage4",
+                    "missing_keys": len(result['stage4']['incompatible'].missing_keys),
+                    "unexpected_keys": len(result['stage4']['incompatible'].unexpected_keys),
+                }
+            )
+        st.dataframe(pd.DataFrame(mismatch_rows), width="stretch", hide_index=True)
+
+    with st.expander("Frame-Level Weights", expanded=True):
+        attn_fig = _make_attention_plot(result['stage2_attention'], result['gt_ed_idx'], result['gt_es_idx'], result['pred_ed_idx'], result['pred_es_idx'])
+        st.pyplot(attn_fig, use_container_width=True)
+        plt.close(attn_fig)
+
+        phase_fig = _make_phase_plot(result['phase_probs'], result['gt_ed_idx'], result['gt_es_idx'], result['pred_ed_idx'], result['pred_es_idx'])
+        st.pyplot(phase_fig, use_container_width=True)
+        plt.close(phase_fig)
+
+        sampled_indices, sampled_weights = _aligned_sampled_temporal_weights(result['stage2_attention'], result['sampled_indices'])
+        if sampled_indices.size > 0 and sampled_weights.size > 0:
+            weight_df = pd.DataFrame({
+                'sampled_frame': sampled_indices.astype(int),
+                'temporal_weight': sampled_weights.astype(float),
+            }).sort_values('temporal_weight', ascending=False)
+            st.dataframe(weight_df, width="stretch", hide_index=True)
+        else:
+            st.info("Frame-level weights are unavailable.")
+
+    with st.expander("Raw Outputs", expanded=False):
+        stage4_raw = {
+            'enabled': bool(result['stage4'].get('enabled')),
+            'available': bool(result['stage4'].get('available')),
+            'error': result['stage4'].get('error'),
+        }
+        if result['stage4'].get('available'):
+            stage4_raw.update(
+                {
+                    'pred_ed_frame_idx': int(result['stage4']['pred_ed_frame_idx']),
+                    'pred_es_frame_idx': int(result['stage4']['pred_es_frame_idx']),
+                    'pred_ed_area': float(result['stage4']['pred_ed_area']),
+                    'pred_es_area': float(result['stage4']['pred_es_area']),
+                    'ef_stage5_pred_pct': float(result['stage4']['ef_stage5_pred_pct']),
+                    'pred_curve_method': result['stage4'].get('pred_curve_method'),
+                    'pred_pair_swapped': bool(result['stage4'].get('pred_pair_swapped')),
+                }
+            )
+        raw_payload = {
+            'video_path': result['video_path'],
+            'fps': float(result['fps']),
+            'ef_gt_pct': float(result['ef_gt_pct']),
+            'ef_pred_pct': float(result['ef_pred_pct']),
+            'ef_abs_err_pct': float(result['ef_abs_err_pct']),
+            'ed_orig': int(result['ed_orig']),
+            'es_orig': int(result['es_orig']),
+            'pred_ed_orig': int(result['pred_ed_orig']),
+            'pred_es_orig': int(result['pred_es_orig']),
+            'ed_err_orig': int(result['ed_err_orig']),
+            'es_err_orig': int(result['es_err_orig']),
+            'stage1_feat_norm': float(result['stage1_feat_norm']) if np.isfinite(float(result['stage1_feat_norm'])) else None,
+            'stage1_temp_std': float(result['stage1_temp_std']) if np.isfinite(float(result['stage1_temp_std'])) else None,
+            'stage2_entropy': float(result['stage2_entropy']) if np.isfinite(float(result['stage2_entropy'])) else None,
+            'explanation': list(result['explanation']),
+            'stage4': stage4_raw,
+        }
+        st.json(raw_payload)
+
+    with st.expander("Detailed Stage 6/7 Summary", expanded=False):
+        if show_stage67:
+            _render_stage67_section(selected_video=selected_video, split=split, stage67_output_dir=stage67_output_dir)
+        else:
+            st.info("Stage 6/7 summary is disabled in the sidebar settings.")
+
+
+
 def main():
     _inject_page_styles()
-    st.title("CardioXplain: Dashboard")
-    st.caption("Select a test video, run Stage1-5 inference, and inspect stage-wise outputs + metrics.")
+    st.markdown('<div class="dashboard-hero-title">CardioXplain Dashboard</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="dashboard-hero-subtitle">Doctor-first summary up top, explainability on demand, and deep research diagnostics in a separate debug tab.</div>',
+        unsafe_allow_html=True,
+    )
 
     default_stage123_ckpt = _abs_path(getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
     default_stage4_ckpt = _abs_path(getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
 
     with st.sidebar:
-        st.header("Run Settings")
+        st.header("Advanced Run Settings")
         data_dir = st.text_input("Data directory", value=_abs_path(config.DATA_DIR))
         split = st.selectbox("Dataset split", options=["TEST", "VAL", "TRAIN"], index=0)
         num_frames = st.number_input("Stage1-3 num frames", min_value=8, max_value=128, value=int(getattr(config, "NUM_FRAMES", 96)), step=8)
-
         device_choice = st.selectbox("Device", options=["auto", "cuda", "cpu"], index=0)
         device = _resolve_device(device_choice)
-
         st.subheader("Stage1-3")
         stage123_checkpoint = st.text_input("Stage1-3 checkpoint", value=default_stage123_ckpt)
-
         st.subheader("Stage4/5")
         run_stage4 = st.checkbox("Run Stage4 + Stage5", value=True)
         stage4_checkpoint = st.text_input("Stage4 checkpoint", value=default_stage4_ckpt)
         stage4_model_name = st.selectbox("Stage4 fallback model", options=["deeplabv3_resnet50", "fcn_resnet50", "unet"], index=0)
         stage4_base_channels = st.number_input("Stage4 UNet base channels", min_value=8, max_value=128, value=32, step=8)
-
         st.subheader("Stage6/7")
         show_stage67 = st.checkbox("Show Stage6/7 clinical summary", value=True)
         stage67_output_dir = st.text_input("Stage6/7 output dir", value=_abs_path(os.path.join("validation", "outputs", "stage67")))
@@ -2182,131 +3204,116 @@ def main():
     if not os.path.exists(data_dir):
         st.error(f"Data directory not found: {data_dir}")
         return
-
     try:
         filelist = load_split_filelist(data_dir, split)
     except Exception as exc:
         st.error(f"Failed to load split metadata: {exc}")
         return
-
     if filelist.empty:
         st.warning(f"No videos found for split {split} in FileList.csv")
         return
 
-    video_options = filelist["FileName"].astype(str).tolist()
-    selected_video = st.selectbox("Select video from split", options=video_options, index=0)
+    video_options = filelist['FileName'].astype(str).tolist()
+    control_col, button_col = st.columns([1.5, 0.55], gap='large')
+    with control_col:
+        selected_video = st.selectbox('Select Video', options=video_options, index=0)
+    with button_col:
+        st.write('')
+        run_now = st.button('Run Inference', type='primary', use_container_width=True)
 
-    run_now = st.button("Run Inference", type="primary")
-    if not run_now:
-        st.info("Choose a video and click Run Inference.")
-        return
+    temporal_mode = "tracing"
+    temporal_margin_mult = 1.0
+    st.caption(f"Split: {split} | Device: {device} | Stage4/5: {'On' if run_stage4 else 'Off'} | Stage6/7 summary: {'On' if show_stage67 else 'Off'}")
 
-    if not os.path.exists(stage123_checkpoint):
-        st.error(f"Stage1-3 checkpoint not found: {stage123_checkpoint}")
-        return
+    current_signature = _run_signature(
+        data_dir=data_dir,
+        split=split,
+        selected_video=selected_video,
+        num_frames=int(num_frames),
+        device=device,
+        stage123_checkpoint=stage123_checkpoint,
+        temporal_mode=temporal_mode,
+        temporal_margin_mult=float(temporal_margin_mult),
+        run_stage4=run_stage4,
+        stage4_checkpoint=stage4_checkpoint,
+        stage4_model_name=stage4_model_name,
+        stage4_base_channels=int(stage4_base_channels),
+        show_stage67=show_stage67,
+        stage67_output_dir=stage67_output_dir,
+    )
 
-    with st.spinner("Running all stages..."):
-        try:
-            result = run_case(
-                data_dir=data_dir,
-                split=split,
-                video_name=selected_video,
-                stage123_checkpoint=stage123_checkpoint,
-                num_frames=int(num_frames),
-                device=device,
-                run_stage4=bool(run_stage4),
-                stage4_checkpoint=stage4_checkpoint,
-                stage4_model_name=stage4_model_name,
-                stage4_base_channels=int(stage4_base_channels),
-            )
-        except Exception as exc:
-            st.error(f"Inference failed: {exc}")
-            return
-
-    st.subheader("Source Video")
-    st.write(f"Path: `{result['video_path']}`")
-
-    if not _render_temporal_weight_video(result):
-        gif_bytes, gif_err = _prepare_gif_preview(result["video_path"])
-        if gif_bytes:
-            _render_centered_image(gif_bytes, "Animated source preview")
+    if run_now:
+        if not os.path.exists(stage123_checkpoint):
+            st.error(f"Stage1-3 checkpoint not found: {stage123_checkpoint}")
         else:
-            st.caption(f"Animated preview unavailable: {gif_err}")
+            with st.spinner('Running all stages...'):
+                try:
+                    result = run_case(
+                        data_dir=data_dir,
+                        split=split,
+                        video_name=selected_video,
+                        stage123_checkpoint=stage123_checkpoint,
+                        num_frames=int(num_frames),
+                        device=device,
+                        temporal_window_mode=temporal_mode,
+                        temporal_window_margin_mult=float(temporal_margin_mult),
+                        run_stage4=bool(run_stage4),
+                        stage4_checkpoint=stage4_checkpoint,
+                        stage4_model_name=stage4_model_name,
+                        stage4_base_channels=int(stage4_base_channels),
+                    )
+                    st.session_state['cardioxplain_dashboard_result'] = result
+                    st.session_state['cardioxplain_dashboard_signature'] = current_signature
+                except Exception as exc:
+                    st.error(f"Inference failed: {exc}")
 
-    st.subheader("Key Metrics")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("GT EF (%)", f"{result['ef_gt_pct']:.2f}")
-    c2.metric("Pred EF (%)", f"{result['ef_pred_pct']:.2f}")
-    c3.metric("EF Abs Error (%)", f"{result['ef_abs_err_pct']:.2f}")
+    result = st.session_state.get('cardioxplain_dashboard_result')
+    stored_signature = st.session_state.get('cardioxplain_dashboard_signature')
+    if result is not None and stored_signature and stored_signature != current_signature:
+        st.warning('Controls changed since the last run. The dashboard below is showing the previous inference until you rerun.')
 
-    st.subheader("Stage 1")
-    s1c1, s1c2 = st.columns(2)
-    s1c1.metric("Feature Norm", f"{result['stage1_feat_norm']:.3f}")
-    s1c2.metric("Temporal Std", f"{result['stage1_temp_std']:.3f}")
-    st.caption(f"Temporal tokens after Stage1 pooling (T'): {result['stage1_tokens']}")
+    result_signature = stored_signature or current_signature
+    result_video = result_signature.get('selected_video', selected_video)
+    result_split = result_signature.get('split', split)
+    result_stage67_dir = result_signature.get('stage67_output_dir', stage67_output_dir)
+    result_show_stage67 = bool(result_signature.get('show_stage67', show_stage67))
 
+    stage67_case = None
+    if result is not None and result_show_stage67:
+        stage67_case = _load_stage67_case_summary(result_video, result_split, result_stage67_dir)
 
-   
+    tab_overview, tab_video, tab_explain, tab_seg, tab_debug = st.tabs(['Overview', 'Video Analysis', 'Explainability', 'Segmentation', 'Debug'])
 
-    st.subheader("Stage 4 + Stage 5")
-    if not result["stage4"].get("enabled"):
-        st.info("Stage4/5 execution disabled in sidebar.")
-    elif not result["stage4"].get("available"):
-        st.warning(result["stage4"].get("error", "Stage4 unavailable"))
-    else:
-        s4 = result["stage4"]
-        col_ed, col_es = st.columns(2)
-
-        pred_ed_frame_rgb, _ = _frame_from_list(result["full_frames"], s4["pred_ed_frame_idx"])
-        pred_es_frame_rgb, _ = _frame_from_list(result["full_frames"], s4["pred_es_frame_idx"])
-
-        col_ed.image(
-            _overlay_mask_rgb(pred_ed_frame_rgb, s4["pred_ed_mask"], color=(0, 255, 0), alpha=0.35),
-            caption=f"Pred ED frame {s4['pred_ed_frame_idx']} + predicted mask",
-            width=FRAME_DISPLAY_WIDTH,
-        )
-        col_es.image(
-            _overlay_mask_rgb(pred_es_frame_rgb, s4["pred_es_mask"], color=(255, 165, 0), alpha=0.35),
-            caption=f"Pred ES frame {s4['pred_es_frame_idx']} + predicted mask",
-            width=FRAME_DISPLAY_WIDTH,
-        )
-
-        stage45_table = pd.DataFrame(
-            [
-                {"metric": "Pred ED area (px)", "value": _format_display_number(s4["pred_ed_area"], digits=2)},
-                {"metric": "Pred ES area (px)", "value": _format_display_number(s4["pred_es_area"], digits=2)},
-                {"metric": "Stage5 EF from predicted masks (%)", "value": _format_display_number(s4["ef_stage5_pred_pct"], digits=2)},
-                {"metric": "GT EF from traced masks (%)", "value": _format_display_number(result["ef_gt_area_pct"], digits=2)},
-                {"metric": "GT ED area at predicted-ED frame (px)", "value": _format_display_number(s4["gt_area_pred_ed"], digits=2)},
-                {"metric": "GT ES area at predicted-ES frame (px)", "value": _format_display_number(s4["gt_area_pred_es"], digits=2)},
-                {"metric": "Dice on predicted-ED frame", "value": _format_display_number(s4["dice_pred_ed"], digits=4)},
-                {"metric": "Dice on predicted-ES frame", "value": _format_display_number(s4["dice_pred_es"], digits=4)},
-                {"metric": "Stage4/5 frame selection", "value": str(s4.get("pred_curve_method", "NA"))},
-            ]
-        )
-        st.dataframe(stage45_table, width="stretch", hide_index=True)
-        seg_bytes = s4.get("seg_preview_gif")
-        if seg_bytes:
-            _render_centered_image(seg_bytes, "Segmentation overlay animation")
+    with tab_overview:
+        if result is None:
+            st.info('Select a video and click Run Inference to populate the clinical summary.')
         else:
-            st.caption(s4.get("seg_preview_err", "Segmentation preview unavailable."))
+            _render_overview_tab(result, stage67_case)
 
-    if show_stage67:
-        _render_stage67_section(selected_video=selected_video, split=split, stage67_output_dir=stage67_output_dir)
+    with tab_video:
+        if result is None:
+            st.info('Run inference to inspect the video timeline, landmarks, and key frames.')
+        else:
+            _render_video_analysis_tab(result)
 
-    st.subheader("Auto Explanation")
-    for line in result["explanation"]:
-        st.write(f"- {line}")
+    with tab_explain:
+        if result is None:
+            st.info("Run inference to inspect temporal importance and the model's key frames.")
+        else:
+            _render_explainability_tab(result)
 
-    if result["incompatible_stage123"].missing_keys or result["incompatible_stage123"].unexpected_keys:
-        st.warning(
-            "Stage1-3 checkpoint loaded with key mismatch. "
-            f"Missing={len(result['incompatible_stage123'].missing_keys)}, "
-            f"Unexpected={len(result['incompatible_stage123'].unexpected_keys)}"
-        )
+    with tab_seg:
+        if result is None:
+            st.info('Run inference to inspect the segmentation output and mask-derived EF metrics.')
+        else:
+            _render_segmentation_tab(result)
+
+    with tab_debug:
+        if result is None:
+            st.info('Run inference to inspect raw stage outputs and research-mode diagnostics.')
+        else:
+            _render_debug_tab(result, result_video, result_split, result_stage67_dir, result_show_stage67)
 
 
 if __name__ == "__main__":
     main()
-
-
