@@ -34,6 +34,11 @@ def parse_args(argv=None):
     parser.add_argument("--learning-rate", "--lr", dest="learning_rate", type=float, default=None, help="Override config.LEARNING_RATE")
     parser.add_argument("--batch-size", type=int, default=None, help="Override config.BATCH_SIZE")
     parser.add_argument("--num-frames", type=int, default=None, help="Override config.NUM_FRAMES")
+    parser.add_argument("--dataset-period", type=int, default=None, help="Override config.DATASET_PERIOD")
+    parser.add_argument("--dataset-max-length", type=int, default=None, help="Override config.DATASET_MAX_LENGTH")
+    parser.add_argument("--eval-clips", type=int, default=None, help="Override config.EVAL_CLIPS")
+    parser.add_argument("--train-pad", type=int, default=None, help="Override config.TRAIN_PAD")
+    parser.add_argument("--train-noise", type=float, default=None, help="Override config.TRAIN_NOISE")
     parser.add_argument("--checkpoint", type=str, default=None, help="Override config.CHECKPOINT_PATH")
     parser.add_argument("--workers", type=int, default=None, help="Override config.NUM_WORKERS")
     parser.add_argument("--validate-every", type=int, default=None, help="Override config.VALIDATE_EVERY")
@@ -91,6 +96,16 @@ def apply_runtime_overrides(args, logger):
         overrides["BATCH_SIZE"] = args.batch_size
     if args.num_frames is not None:
         overrides["NUM_FRAMES"] = args.num_frames
+    if args.dataset_period is not None:
+        overrides["DATASET_PERIOD"] = args.dataset_period
+    if args.dataset_max_length is not None:
+        overrides["DATASET_MAX_LENGTH"] = args.dataset_max_length
+    if args.eval_clips is not None:
+        overrides["EVAL_CLIPS"] = args.eval_clips
+    if args.train_pad is not None:
+        overrides["TRAIN_PAD"] = args.train_pad
+    if args.train_noise is not None:
+        overrides["TRAIN_NOISE"] = args.train_noise
     if args.checkpoint is not None:
         overrides["CHECKPOINT_PATH"] = args.checkpoint
     if args.workers is not None:
@@ -203,8 +218,35 @@ def apply_runtime_overrides(args, logger):
             setattr(config, jitter_key, 0.0)
             logger.warning("Clamped %s from %.3f to 0.000", jitter_key, jitter_value)
         elif jitter_value > 0.10:
-            setattr(config, jitter_key, 0.10)
-            logger.warning("Clamped %s from %.3f to 0.100 to avoid over-augmentation", jitter_key, jitter_value)
+                setattr(config, jitter_key, 0.10)
+                logger.warning("Clamped %s from %.3f to 0.100 to avoid over-augmentation", jitter_key, jitter_value)
+
+    if hasattr(config, "DATASET_PERIOD"):
+        period_value = int(getattr(config, "DATASET_PERIOD", 1))
+        if period_value < 1:
+            setattr(config, "DATASET_PERIOD", 1)
+            logger.warning("Clamped DATASET_PERIOD from %d to 1", period_value)
+
+    if hasattr(config, "EVAL_CLIPS"):
+        eval_clips_value = int(getattr(config, "EVAL_CLIPS", 1))
+        if eval_clips_value < 1:
+            setattr(config, "EVAL_CLIPS", 1)
+            logger.warning("Clamped EVAL_CLIPS from %d to 1", eval_clips_value)
+
+    if hasattr(config, "TRAIN_PAD"):
+        train_pad_value = getattr(config, "TRAIN_PAD", None)
+        if train_pad_value is not None and int(train_pad_value) < 0:
+            setattr(config, "TRAIN_PAD", 0)
+            logger.warning("Clamped TRAIN_PAD from %s to 0", train_pad_value)
+
+    if hasattr(config, "TRAIN_NOISE"):
+        train_noise_value = getattr(config, "TRAIN_NOISE", None)
+        if train_noise_value is not None:
+            train_noise_value = float(train_noise_value)
+            clamped_noise = min(1.0, max(0.0, train_noise_value))
+            if clamped_noise != train_noise_value:
+                setattr(config, "TRAIN_NOISE", clamped_noise)
+                logger.warning("Clamped TRAIN_NOISE from %.3f to %.3f", train_noise_value, clamped_noise)
 
     attn_align_key = "PHASE_ATTN_ALIGN_WEIGHT"
     if hasattr(config, attn_align_key):
@@ -331,36 +373,44 @@ def build_dataloaders():
     temporal_window_mode = str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full"))
     temporal_window_margin_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5))
     temporal_window_jitter_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0))
+    dataset_period = int(getattr(config, "DATASET_PERIOD", 1))
+    dataset_max_length = getattr(config, "DATASET_MAX_LENGTH", None)
+    eval_clips = int(getattr(config, "EVAL_CLIPS", 1))
+    train_pad = getattr(config, "TRAIN_PAD", None)
+    train_noise = getattr(config, "TRAIN_NOISE", None)
+
+    common_kwargs = {
+        "data_dir": config.DATA_DIR,
+        "num_frames": config.NUM_FRAMES,
+        "max_videos": config.MAX_VIDEOS,
+        "normalize_input": bool(getattr(config, "NORMALIZE_INPUT", True)),
+        "period": dataset_period,
+        "max_length": dataset_max_length,
+        "temporal_window_mode": temporal_window_mode,
+        "temporal_window_margin_mult": temporal_window_margin_mult,
+        "temporal_window_jitter_mult": temporal_window_jitter_mult,
+    }
 
     train_dataset = EchoDataset(
-        config.DATA_DIR,
         split="TRAIN",
-        num_frames=config.NUM_FRAMES,
-        max_videos=config.MAX_VIDEOS,
-        normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=temporal_window_mode,
-        temporal_window_margin_mult=temporal_window_margin_mult,
-        temporal_window_jitter_mult=temporal_window_jitter_mult,
+        clips=1,
+        pad=train_pad,
+        noise=train_noise,
+        **common_kwargs,
     )
     val_dataset = EchoDataset(
-        config.DATA_DIR,
         split="VAL",
-        num_frames=config.NUM_FRAMES,
-        max_videos=config.MAX_VIDEOS,
-        normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=temporal_window_mode,
-        temporal_window_margin_mult=temporal_window_margin_mult,
-        temporal_window_jitter_mult=temporal_window_jitter_mult,
+        clips=eval_clips,
+        pad=None,
+        noise=None,
+        **common_kwargs,
     )
     test_dataset = EchoDataset(
-        config.DATA_DIR,
         split="TEST",
-        num_frames=config.NUM_FRAMES,
-        max_videos=config.MAX_VIDEOS,
-        normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=temporal_window_mode,
-        temporal_window_margin_mult=temporal_window_margin_mult,
-        temporal_window_jitter_mult=temporal_window_jitter_mult,
+        clips=eval_clips,
+        pad=None,
+        noise=None,
+        **common_kwargs,
     )
 
     train_loader = DataLoader(train_dataset, **dataloader_kwargs(shuffle=True))
@@ -694,11 +744,24 @@ def move_batch_to_device(videos, efs, ed_idx, es_idx):
     return videos, efs, ed_idx, es_idx
 
 
+def flatten_eval_clips(videos, ed_idx, es_idx):
+    """Flatten multi-clip batches into clip-wise batches for model evaluation."""
+    if videos.ndim != 6:
+        return videos, ed_idx, es_idx, 1
+
+    batch_size, num_clips = videos.shape[:2]
+    videos = videos.reshape(batch_size * num_clips, *videos.shape[2:])
+    ed_idx = ed_idx.reshape(batch_size * num_clips)
+    es_idx = es_idx.reshape(batch_size * num_clips)
+    return videos, ed_idx, es_idx, num_clips
+
+
 def evaluate(model, loader, amp_enabled):
     """Evaluate EF regression, phase localization, and stage-wise diagnostics."""
     model.eval()
 
-    total_samples = 0
+    total_ef_samples = 0
+    total_phase_samples = 0
     total_mae = 0.0
     total_mse = 0.0
     total_ed_correct = 0
@@ -731,6 +794,8 @@ def evaluate(model, loader, amp_enabled):
     with torch.no_grad():
         for videos, efs, ed_idx, es_idx in loader:
             videos, efs, ed_idx, es_idx = move_batch_to_device(videos, efs, ed_idx, es_idx)
+            sample_batch_size = videos.shape[0]
+            videos, ed_idx, es_idx, num_clips = flatten_eval_clips(videos, ed_idx, es_idx)
 
             with autocast_context(amp_enabled):
                 model_out = model(videos, return_stage_outputs=True)
@@ -744,10 +809,12 @@ def evaluate(model, loader, amp_enabled):
             batch_size = videos.size(0)
 
             if not phase_only:
-                mae = torch.abs(ef_pred - efs).mean()
-                mse = torch.mean((ef_pred - efs) ** 2)
-                total_mae += mae.item() * batch_size
-                total_mse += mse.item() * batch_size
+                ef_pred_eval = ef_pred.reshape(sample_batch_size, num_clips).mean(dim=1) if num_clips > 1 else ef_pred.reshape(sample_batch_size)
+                mae = torch.abs(ef_pred_eval - efs).mean()
+                mse = torch.mean((ef_pred_eval - efs) ** 2)
+                total_mae += mae.item() * sample_batch_size
+                total_mse += mse.item() * sample_batch_size
+                total_ef_samples += sample_batch_size
 
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
 
@@ -823,19 +890,19 @@ def evaluate(model, loader, amp_enabled):
             stage3_ed_ce_sum += ed_ce.item()
             stage3_es_ce_sum += es_ce.item()
 
-            total_samples += batch_size
+            total_phase_samples += batch_size
 
-    if total_samples == 0:
+    if total_phase_samples == 0:
         raise RuntimeError("No samples found during evaluation")
 
     metrics = {
-        "ef_mae": (total_mae / total_samples) if not phase_only else float("nan"),
-        "ef_rmse": ((total_mse / total_samples) ** 0.5) if not phase_only else float("nan"),
-        "ed_acc": total_ed_correct / total_samples,
-        "es_acc": total_es_correct / total_samples,
-        "joint_acc": total_joint_correct / total_samples,
-        "ed_mae_frames": total_ed_abs_err / total_samples,
-        "es_mae_frames": total_es_abs_err / total_samples,
+        "ef_mae": (total_mae / total_ef_samples) if (not phase_only and total_ef_samples > 0) else float("nan"),
+        "ef_rmse": ((total_mse / total_ef_samples) ** 0.5) if (not phase_only and total_ef_samples > 0) else float("nan"),
+        "ed_acc": total_ed_correct / total_phase_samples,
+        "es_acc": total_es_correct / total_phase_samples,
+        "joint_acc": total_joint_correct / total_phase_samples,
+        "ed_mae_frames": total_ed_abs_err / total_phase_samples,
+        "es_mae_frames": total_es_abs_err / total_phase_samples,
         "stage1_feature_norm": (stage1_feat_norm_sum / stage1_count) if stage1_count > 0 else float("nan"),
         "stage1_temporal_std": (stage1_temp_std_sum / stage1_count) if stage1_count > 0 else float("nan"),
         "stage1_temporal_tokens": (stage1_tokens_sum / stage1_count) if stage1_count > 0 else float("nan"),
@@ -844,8 +911,8 @@ def evaluate(model, loader, amp_enabled):
         "stage2_peak_to_event_mae_frames": (stage2_peak_to_event_sum / stage2_attn_count) if stage2_attn_count > 0 else float("nan"),
         "stage2_temporal_tokens": (stage2_tokens_sum / stage2_attn_count) if stage2_attn_count > 0 else float("nan"),
         "stage2_ed_es_feature_distance": (stage2_ed_es_feat_dist_sum / stage2_feat_count) if stage2_feat_count > 0 else float("nan"),
-        "stage3_ed_index_ce": stage3_ed_ce_sum / total_samples,
-        "stage3_es_index_ce": stage3_es_ce_sum / total_samples,
+        "stage3_ed_index_ce": stage3_ed_ce_sum / total_phase_samples,
+        "stage3_es_index_ce": stage3_es_ce_sum / total_phase_samples,
     }
     return metrics
 
@@ -991,12 +1058,22 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
             "epoch": epoch,
             "runtime_config": {
                 "NUM_FRAMES": int(getattr(config, "NUM_FRAMES", 32)),
+                "DATASET_PERIOD": int(getattr(config, "DATASET_PERIOD", 1)),
+                "DATASET_MAX_LENGTH": getattr(config, "DATASET_MAX_LENGTH", None),
+                "EVAL_CLIPS": int(getattr(config, "EVAL_CLIPS", 1)),
+                "TRAIN_PAD": getattr(config, "TRAIN_PAD", None),
+                "TRAIN_NOISE": getattr(config, "TRAIN_NOISE", None),
                 "PHASE_TEMPORAL_WINDOW_MODE": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
                 "PHASE_TEMPORAL_WINDOW_MARGIN_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
                 "PHASE_TEMPORAL_WINDOW_JITTER_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
             },
             "args": {
                 "num_frames": int(getattr(config, "NUM_FRAMES", 32)),
+                "dataset_period": int(getattr(config, "DATASET_PERIOD", 1)),
+                "dataset_max_length": getattr(config, "DATASET_MAX_LENGTH", None),
+                "eval_clips": int(getattr(config, "EVAL_CLIPS", 1)),
+                "train_pad": getattr(config, "TRAIN_PAD", None),
+                "train_noise": getattr(config, "TRAIN_NOISE", None),
                 "phase_temporal_window_mode": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
                 "phase_temporal_window_margin_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
                 "phase_temporal_window_jitter_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
@@ -1094,6 +1171,11 @@ def log_header(logger, amp_enabled):
     logger.info("Data directory: %s", config.DATA_DIR)
     logger.info("Batch size: %d", config.BATCH_SIZE)
     logger.info("Number of frames: %d", config.NUM_FRAMES)
+    logger.info("Dataset period: %d", int(getattr(config, "DATASET_PERIOD", 1)))
+    logger.info("Dataset max length: %s", getattr(config, "DATASET_MAX_LENGTH", None))
+    logger.info("Eval clips: %d", int(getattr(config, "EVAL_CLIPS", 1)))
+    logger.info("Train pad: %s", getattr(config, "TRAIN_PAD", None))
+    logger.info("Train noise: %s", getattr(config, "TRAIN_NOISE", None))
     logger.info("Max videos: %s", config.MAX_VIDEOS if config.MAX_VIDEOS else "All")
     logger.info("Learning rate: %s", config.LEARNING_RATE)
     logger.info("Epochs: %d", config.EPOCHS)

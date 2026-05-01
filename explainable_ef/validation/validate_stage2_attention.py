@@ -34,6 +34,8 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--num-frames", type=int, default=config.NUM_FRAMES)
+    parser.add_argument("--dataset-period", type=int, default=int(getattr(config, "DATASET_PERIOD", 1)))
+    parser.add_argument("--dataset-max-length", type=int, default=getattr(config, "DATASET_MAX_LENGTH", None))
     parser.add_argument("--max-videos", type=int, default=None)
     parser.add_argument("--radius", type=int, default=1, help="Neighborhood radius around ED/ES for attention mass")
     parser.add_argument("--topk", type=int, default=3, help="Top-k for hit-rate metrics")
@@ -53,6 +55,8 @@ def main():
         data_dir=config.DATA_DIR,
         split=args.split,
         num_frames=args.num_frames,
+        period=int(args.dataset_period),
+        max_length=args.dataset_max_length,
         max_videos=args.max_videos,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         temporal_window_mode=args.phase_temporal_window_mode,

@@ -66,6 +66,8 @@ def parse_args():
     parser.add_argument("--data-dir", type=str, default=config.DATA_DIR)
     parser.add_argument("--stage123-checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model.pth"))
     parser.add_argument("--num-frames", type=int, default=int(getattr(config, "NUM_FRAMES", 32)))
+    parser.add_argument("--dataset-period", type=int, default=int(getattr(config, "DATASET_PERIOD", 1)))
+    parser.add_argument("--dataset-max-length", type=int, default=getattr(config, "DATASET_MAX_LENGTH", None))
     parser.add_argument("--max-videos", type=int, default=None, help="Optional cap per split for faster runs")
     parser.add_argument("--device", type=str, default=("cuda" if torch.cuda.is_available() else "cpu"))
     parser.add_argument("--normal-threshold", type=float, default=50.0, help="EF >= threshold -> normal class")
@@ -195,6 +197,8 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         data_dir=args.data_dir,
         split=str(split).upper(),
         num_frames=int(args.num_frames),
+        period=int(args.dataset_period),
+        max_length=args.dataset_max_length,
         max_videos=args.max_videos,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         temporal_window_mode=str(args.temporal_window_mode),
@@ -481,6 +485,8 @@ def main():
     print(f"Data dir: {args.data_dir}")
     print(f"Stage1-3 checkpoint: {args.stage123_checkpoint}")
     print(f"Num frames: {args.num_frames}")
+    print(f"Dataset period: {args.dataset_period}")
+    print(f"Dataset max length: {args.dataset_max_length}")
     print(f"Temporal window: {args.temporal_window_mode} (margin={args.temporal_window_margin_mult})")
     print(f"Max videos per split: {args.max_videos if args.max_videos else 'All'}")
     print(f"Severity thresholds: severe<{args.severe_threshold}, normal>={args.normal_threshold}")

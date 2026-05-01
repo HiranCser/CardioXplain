@@ -36,6 +36,11 @@ def parse_args():
     parser.add_argument("--stage123-learning-rate", type=float, default=None)
     parser.add_argument("--stage123-batch-size", type=int, default=None)
     parser.add_argument("--stage123-num-frames", type=int, default=None)
+    parser.add_argument("--stage123-dataset-period", type=int, default=None)
+    parser.add_argument("--stage123-dataset-max-length", type=int, default=None)
+    parser.add_argument("--stage123-eval-clips", type=int, default=None)
+    parser.add_argument("--stage123-train-pad", type=int, default=None)
+    parser.add_argument("--stage123-train-noise", type=float, default=None)
     parser.add_argument("--stage123-workers", type=int, default=None)
     parser.add_argument("--stage123-max-videos", type=int, default=None)
 
@@ -105,6 +110,16 @@ def main():
             cmd += ["--batch-size", str(args.stage123_batch_size)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
+        if args.stage123_dataset_period is not None:
+            cmd += ["--dataset-period", str(args.stage123_dataset_period)]
+        if args.stage123_dataset_max_length is not None:
+            cmd += ["--dataset-max-length", str(args.stage123_dataset_max_length)]
+        if args.stage123_eval_clips is not None:
+            cmd += ["--eval-clips", str(args.stage123_eval_clips)]
+        if args.stage123_train_pad is not None:
+            cmd += ["--train-pad", str(args.stage123_train_pad)]
+        if args.stage123_train_noise is not None:
+            cmd += ["--train-noise", str(args.stage123_train_noise)]
         if args.stage123_workers is not None:
             cmd += ["--workers", str(args.stage123_workers)]
         if args.stage123_max_videos is not None:
@@ -216,6 +231,10 @@ def main():
             cmd += ["--data-dir", str(args.data_dir)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
+        if args.stage123_dataset_period is not None:
+            cmd += ["--dataset-period", str(args.stage123_dataset_period)]
+        if args.stage123_dataset_max_length is not None:
+            cmd += ["--dataset-max-length", str(args.stage123_dataset_max_length)]
         if args.stage67_max_videos is not None:
             cmd += ["--max-videos", str(args.stage67_max_videos)]
         if args.device is not None:

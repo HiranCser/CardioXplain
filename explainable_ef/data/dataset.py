@@ -17,25 +17,43 @@ class EchoDataset(Dataset):
         self,
         data_dir,
         num_frames=32,
+        length=None,
         frame_size=(112, 112),
         split="TRAIN",
         max_videos=None,
         transform=None,
         normalize_input=True,
+        period=1,
+        max_length=None,
+        clips=1,
+        pad=None,
+        noise=None,
         temporal_window_mode="full",
         temporal_window_margin_mult=1.5,
         temporal_window_jitter_mult=0.0,
     ):
         self.data_dir = data_dir
-        self.num_frames = num_frames
+        resolved_length = num_frames if length is None else length
+        self.num_frames = int(resolved_length) if resolved_length is not None else None
+        self.length = int(resolved_length) if resolved_length is not None else None
         self.frame_size = frame_size
         self.max_videos = max_videos
         self.transform = transform
         self.normalize_input = bool(normalize_input)
+        self.period = max(1, int(period))
+        self.max_length = None if max_length is None else max(1, int(max_length))
+        self.clips = clips if clips == "all" else max(1, int(clips))
+        self.pad = None if pad is None else max(0, int(pad))
+        self.noise = None if noise is None else float(min(1.0, max(0.0, noise)))
         self.split = str(split).strip().upper()
+        # Retained for caller compatibility; clip sampling no longer uses ED/ES
+        # labels to crop the video before sampling.
         self.temporal_window_mode = str(temporal_window_mode).strip().lower()
         self.temporal_window_margin_mult = float(max(0.0, temporal_window_margin_mult))
         self.temporal_window_jitter_mult = float(max(0.0, temporal_window_jitter_mult))
+
+        if self.length is not None and self.length <= 0:
+            raise ValueError("length/num_frames must be positive")
 
         self._mean = torch.tensor(KINETICS_MEAN, dtype=torch.float32).view(3, 1, 1, 1)
         self._std = torch.tensor(KINETICS_STD, dtype=torch.float32).view(3, 1, 1, 1)
@@ -77,40 +95,84 @@ class EchoDataset(Dataset):
     def __len__(self):
         return len(self.filelist)
 
-    def _focused_sample_indices(self, total_video_frames, ed_original, es_original):
-        if self.temporal_window_mode != "tracing":
-            return None
-        if total_video_frames <= self.num_frames:
-            return None
-        if ed_original < 0 or es_original < 0:
-            return None
+    def _resolve_clip_length(self, total_video_frames):
+        if self.length is None:
+            clip_length = max(1, int(total_video_frames) // int(self.period))
+            if self.max_length is not None:
+                clip_length = min(clip_length, int(self.max_length))
+        else:
+            clip_length = int(self.length)
 
-        ed_frame = int(ed_original)
-        es_frame = int(es_original)
-        left = min(ed_frame, es_frame)
-        right = max(ed_frame, es_frame)
-        span = max(1, right - left)
+        return max(1, int(clip_length))
 
-        margin = int(round(self.temporal_window_margin_mult * span))
-        start = max(0, left - margin)
-        end = min(total_video_frames - 1, right + margin)
+    def _sample_start_positions(self, total_video_frames, clip_length):
+        """
+        EchoNet-style clip starts over the padded video timeline.
 
-        if self.split == "TRAIN" and self.temporal_window_jitter_mult > 0.0:
-            jitter = int(round(self.temporal_window_jitter_mult * span))
-            if jitter > 0:
-                shift_low = max(-jitter, -margin, -start)
-                shift_high = min(jitter, margin, (total_video_frames - 1) - end)
-                if shift_high >= shift_low:
-                    shift = int(np.random.randint(shift_low, shift_high + 1))
-                    start += shift
-                    end += shift
+        For training, starts are random. For validation/test, starts are
+        deterministic so repeated evaluation is stable.
+        """
+        total_video_frames = int(total_video_frames)
+        clip_length = int(max(1, clip_length))
+        padded_frames = max(total_video_frames, clip_length * self.period)
+        num_start_positions = max(1, padded_frames - (clip_length - 1) * self.period)
 
-        if end <= start:
-            return None
+        if self.clips == "all":
+            return np.arange(num_start_positions, dtype=np.int32), padded_frames
 
-        return np.linspace(start, end, self.num_frames).round().astype(np.int32)
+        num_clips = int(self.clips)
+        if num_clips <= 1:
+            if self.split == "TRAIN":
+                start = int(np.random.randint(0, num_start_positions))
+            else:
+                start = num_start_positions // 2
+            return np.array([start], dtype=np.int32), padded_frames
+
+        if self.split == "TRAIN":
+            replace = num_clips > num_start_positions
+            starts = np.random.choice(num_start_positions, size=num_clips, replace=replace)
+            starts = np.sort(starts.astype(np.int32, copy=False))
+        else:
+            starts = np.linspace(0, num_start_positions - 1, num_clips).round().astype(np.int32)
+
+        return starts, padded_frames
+
+    def _apply_noise(self, frames_array):
+        if self.noise is None or self.noise <= 0.0:
+            return frames_array
+
+        noisy = frames_array.copy()
+        total_pixels = noisy.shape[0] * noisy.shape[1] * noisy.shape[2]
+        num_mask = int(round(self.noise * total_pixels))
+        if num_mask <= 0:
+            return noisy
+
+        ind = np.random.choice(total_pixels, num_mask, replace=False)
+        frame_idx = ind // (noisy.shape[1] * noisy.shape[2])
+        pixel_idx = ind % (noisy.shape[1] * noisy.shape[2])
+        row_idx = pixel_idx // noisy.shape[2]
+        col_idx = pixel_idx % noisy.shape[2]
+        noisy[frame_idx, row_idx, col_idx, :] = 0
+        return noisy
+
+    def _apply_pad_crop(self, frames_tensor):
+        if self.pad is None or self.pad <= 0:
+            return frames_tensor
+
+        if frames_tensor.ndim == 4:
+            c, t, h, w = frames_tensor.shape
+            padded = torch.zeros((c, t, h + 2 * self.pad, w + 2 * self.pad), dtype=frames_tensor.dtype)
+            padded[:, :, self.pad : self.pad + h, self.pad : self.pad + w] = frames_tensor
+            i, j = np.random.randint(0, 2 * self.pad + 1, size=2)
+            return padded[:, :, i : i + h, j : j + w]
+
+        clips = []
+        for clip in frames_tensor:
+            clips.append(self._apply_pad_crop(clip))
+        return torch.stack(clips, dim=0)
 
     def load_video(self, path, ed_original=-1, es_original=-1):
+        _ = ed_original, es_original
         cap = cv2.VideoCapture(path)
         frames = []
 
@@ -128,33 +190,35 @@ class EchoDataset(Dataset):
             raise ValueError(f"No frames loaded from video: {path}")
 
         frames_array = np.array(frames, dtype=np.uint8)
+        frames_array = self._apply_noise(frames_array)
         total_video_frames = len(frames_array)
+        clip_length = self._resolve_clip_length(total_video_frames)
+        start_positions, padded_frames = self._sample_start_positions(total_video_frames, clip_length)
 
-        focused_indices = self._focused_sample_indices(total_video_frames, ed_original, es_original)
-
-        if total_video_frames >= self.num_frames:
-            if focused_indices is not None:
-                sampled_indices = focused_indices
-            else:
-                sampled_indices = np.linspace(0, total_video_frames - 1, self.num_frames).round().astype(np.int32)
-            sampled_frames = frames_array[sampled_indices]
-        else:
-            sampled_indices = np.arange(total_video_frames, dtype=np.int32)
-            padding = self.num_frames - total_video_frames
-            sampled_frames = np.pad(
+        if padded_frames > total_video_frames:
+            frames_array = np.pad(
                 frames_array,
-                ((0, padding), (0, 0), (0, 0), (0, 0)),
+                ((0, padded_frames - total_video_frames), (0, 0), (0, 0), (0, 0)),
                 mode="constant",
                 constant_values=0,
             )
-            if padding > 0:
-                pad_indices = np.full((padding,), total_video_frames - 1, dtype=np.int32)
-                sampled_indices = np.concatenate([sampled_indices, pad_indices], axis=0)
 
-        frames_tensor = torch.from_numpy(sampled_frames).permute(3, 0, 1, 2).float() / 255.0
+        offsets = self.period * np.arange(clip_length, dtype=np.int32)
+        sampled_indices = start_positions[:, None] + offsets[None, :]
+        sampled_frames = frames_array[sampled_indices]
 
-        if self.normalize_input:
-            frames_tensor = (frames_tensor - self._mean) / self._std
+        if sampled_frames.shape[0] == 1:
+            sampled_frames = sampled_frames[0]
+            sampled_indices = sampled_indices[0]
+            frames_tensor = torch.from_numpy(sampled_frames).permute(3, 0, 1, 2).float() / 255.0
+            if self.normalize_input:
+                frames_tensor = (frames_tensor - self._mean) / self._std
+        else:
+            frames_tensor = torch.from_numpy(sampled_frames).permute(0, 4, 1, 2, 3).float() / 255.0
+            if self.normalize_input:
+                frames_tensor = (frames_tensor - self._mean.unsqueeze(0)) / self._std.unsqueeze(0)
+
+        frames_tensor = self._apply_pad_crop(frames_tensor)
 
         if self.transform is not None:
             frames_tensor = self.transform(frames_tensor)
@@ -179,14 +243,21 @@ class EchoDataset(Dataset):
             es_original=es_original,
         )
 
+        sampled_indices = np.asarray(sampled_indices, dtype=np.int32)
+
         if ed_original >= 0:
-            ed_idx = int(np.argmin(np.abs(sampled_indices - int(ed_original))))
+            ed_idx = np.argmin(np.abs(sampled_indices - int(ed_original)), axis=-1).astype(np.int64)
         else:
-            ed_idx = 0
+            ed_idx = np.zeros(sampled_indices.shape[:-1], dtype=np.int64)
 
         if es_original >= 0:
-            es_idx = int(np.argmin(np.abs(sampled_indices - int(es_original))))
+            es_idx = np.argmin(np.abs(sampled_indices - int(es_original)), axis=-1).astype(np.int64)
         else:
-            es_idx = 0
+            es_idx = np.zeros(sampled_indices.shape[:-1], dtype=np.int64)
+
+        if np.ndim(ed_idx) == 0:
+            ed_idx = int(ed_idx)
+        if np.ndim(es_idx) == 0:
+            es_idx = int(es_idx)
 
         return video, ef, ed_idx, es_idx

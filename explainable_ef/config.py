@@ -3,13 +3,19 @@ import os
 
 # Data configuration
 # Points to ../dynamic/a4c-video-dir (from cx/explainable_ef to cx/dynamic)
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+#DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+DATA_DIR = "/kaggle/input/echoefnet/a4c-video-dir"
 
 # Model configuration
 BATCH_SIZE = 20
 NUM_FRAMES = 96  # VolumeTracings.csv provides only two traced frames per video, so denser temporal sampling improves ED/ES localization
 IMAGE_SIZE = 112
 MAX_VIDEOS = None  # None = use all videos
+DATASET_PERIOD = 1  # EchoNet-style temporal stride within a clip
+DATASET_MAX_LENGTH = None  # Optional cap on sampled clip length
+EVAL_CLIPS = 1  # EchoNet-style multi-clip evaluation; training remains single-clip
+TRAIN_PAD = None  # EchoNet-style random spatial pad/crop augmentation
+TRAIN_NOISE = None  # EchoNet-style random blackout noise fraction
 PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss
 PHASE_LABEL_SMOOTHING = 0.0  # Label smoothing for hard CE on ED/ES temporal indices
 PHASE_ONLY = False  # If True, disable EF loss and optimize only phase detection
@@ -32,9 +38,9 @@ PHASE_PAIR_INDEX_WEIGHT = 0.18  # Direct Stage3 ED/ES expectation supervision us
 PHASE_PAIR_ORDER_WEIGHT = 0.08  # Encourage Stage3 ES expectation to remain after ED expectation
 PHASE_PAIR_MIN_GAP = 2  # Minimum frame gap enforced between Stage3 ED and ES expectations
 PHASE_UNFREEZE_LR_MULT = 0.5  # Multiply LR when unfreezing stage1 in phase-only mode
-PHASE_TEMPORAL_WINDOW_MODE = "full"  # "full" (entire clip) or "tracing" (crop around traced ED/ES)
-PHASE_TEMPORAL_WINDOW_MARGIN_MULT = 1.5  # Extra margin (in ED-ES span units) on both sides in tracing mode
-PHASE_TEMPORAL_WINDOW_JITTER_MULT = 0.0  # Train-only random shift (in ED-ES span units) within tracing window
+PHASE_TEMPORAL_WINDOW_MODE = "full"  # Legacy compatibility knob; dataset sampling is now label-free and EchoNet-style
+PHASE_TEMPORAL_WINDOW_MARGIN_MULT = 1.5  # Legacy compatibility knob
+PHASE_TEMPORAL_WINDOW_JITTER_MULT = 0.0  # Legacy compatibility knob
 
 # Training configuration
 LEARNING_RATE = 1e-4

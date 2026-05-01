@@ -122,6 +122,8 @@ def main():
     parser.add_argument("--split", type=str, default="TEST", help="Dataset split: TRAIN/VAL/TEST")
     parser.add_argument("--checkpoint", type=str, default=config.CHECKPOINT_PATH, help="Model checkpoint path")
     parser.add_argument("--batch-size", type=int, default=config.BATCH_SIZE, help="Batch size for validation")
+    parser.add_argument("--dataset-period", type=int, default=int(getattr(config, "DATASET_PERIOD", 1)), help="Temporal stride within each sampled clip")
+    parser.add_argument("--dataset-max-length", type=int, default=getattr(config, "DATASET_MAX_LENGTH", None), help="Optional max clip length when length is not fixed")
     parser.add_argument("--num-samples", type=int, default=8, help="Number of samples to visualize")
     parser.add_argument(
         "--output-dir",
@@ -138,6 +140,8 @@ def main():
         split=args.split,
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
+        period=int(args.dataset_period),
+        max_length=args.dataset_max_length,
     )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
