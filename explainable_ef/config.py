@@ -1,14 +1,13 @@
-import torch
+﻿import torch
 import os
 
 # Data configuration
 # Points to ../dynamic/a4c-video-dir (from cx/explainable_ef to cx/dynamic)
-#DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
-DATA_DIR = "/kaggle/input/echoefnet/a4c-video-dir"
+DATA_DIR = '/kaggle/input/datasets/hirancser/echoefnet/a4c-video-dir'
 
 # Model configuration
 BATCH_SIZE = 20
-NUM_FRAMES = 96  # VolumeTracings.csv provides only two traced frames per video, so denser temporal sampling improves ED/ES localization
+NUM_FRAMES = 32  # Increase to 48/64 for finer phase localization
 IMAGE_SIZE = 112
 MAX_VIDEOS = None  # None = use all videos
 DATASET_PERIOD = 1  # EchoNet-style temporal stride within a clip
@@ -53,7 +52,7 @@ VALIDATE_EVERY = 1  # Run validation every N epochs
 
 # Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CHECKPOINT_PATH = "best_model_stage123_96f.pth"
+CHECKPOINT_PATH = "best_model.pth"
 STAGE4_CHECKPOINT_PATH = "best_stage4_segmentation_area.pth"
 
 # ============================================================================
