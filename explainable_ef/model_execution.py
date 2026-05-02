@@ -218,9 +218,13 @@ def apply_runtime_overrides(args, logger):
         if args.dataset_period is None:
             overrides["DATASET_PERIOD"] = 2
         if args.eval_clips is None:
-            overrides["EVAL_CLIPS"] = 4
+            # Keep training-time validation cheap; use a larger value explicitly
+            # for final evaluation if desired.
+            overrides["EVAL_CLIPS"] = 1
+        if args.validate_every is None:
+            overrides["VALIDATE_EVERY"] = 2
         if args.train_pad is None:
-            overrides["TRAIN_PAD"] = 12
+            overrides["TRAIN_PAD"] = None
         if args.train_noise is None:
             overrides["TRAIN_NOISE"] = None
         if args.stage1_preserve_temporal_stride is None:

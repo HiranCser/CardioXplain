@@ -14,7 +14,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import load_ef_model_from_checkpoint
 from visualization.visualize_attention import plot_attention, plot_phase_curves
 
 
@@ -104,16 +104,12 @@ def save_sample_visualizations(model, dataset, out_dir, num_samples, device, see
 
 
 def load_model(checkpoint_path, device):
-    model = EFModel(num_frames=config.NUM_FRAMES).to(device)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
-    model_state = model.state_dict()
-    filtered_state_dict = {
-        key: value
-        for key, value in state_dict.items()
-        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
-    }
-    model.load_state_dict(filtered_state_dict, strict=False)
+    model, _, _ = load_ef_model_from_checkpoint(
+        checkpoint_path=checkpoint_path,
+        num_frames=config.NUM_FRAMES,
+        device=device,
+        default_preserve_temporal_stride=bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)),
+    )
     return model
 
 
