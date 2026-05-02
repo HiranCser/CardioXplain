@@ -39,6 +39,8 @@ def parse_args(argv=None):
     parser.add_argument("--eval-clips", type=int, default=None, help="Override config.EVAL_CLIPS")
     parser.add_argument("--train-pad", type=int, default=None, help="Override config.TRAIN_PAD")
     parser.add_argument("--train-noise", type=float, default=None, help="Override config.TRAIN_NOISE")
+    parser.add_argument("--stage1-preserve-temporal-stride", action=argparse.BooleanOptionalAction, default=None, help="Override config.STAGE1_PRESERVE_TEMPORAL_STRIDE")
+    parser.add_argument("--echonet-style-profile", action=argparse.BooleanOptionalAction, default=False, help="Use an EF-first training/eval profile closer to EchoNet defaults")
     parser.add_argument("--checkpoint", type=str, default=None, help="Override config.CHECKPOINT_PATH")
     parser.add_argument("--workers", type=int, default=None, help="Override config.NUM_WORKERS")
     parser.add_argument("--validate-every", type=int, default=None, help="Override config.VALIDATE_EVERY")
@@ -106,6 +108,8 @@ def apply_runtime_overrides(args, logger):
         overrides["TRAIN_PAD"] = args.train_pad
     if args.train_noise is not None:
         overrides["TRAIN_NOISE"] = args.train_noise
+    if args.stage1_preserve_temporal_stride is not None:
+        overrides["STAGE1_PRESERVE_TEMPORAL_STRIDE"] = args.stage1_preserve_temporal_stride
     if args.checkpoint is not None:
         overrides["CHECKPOINT_PATH"] = args.checkpoint
     if args.workers is not None:
@@ -206,6 +210,33 @@ def apply_runtime_overrides(args, logger):
         if args.phase_pair_min_gap is None:
             overrides["PHASE_PAIR_MIN_GAP"] = 2
         overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = 0
+
+    if bool(getattr(args, "echonet_style_profile", False)):
+        logger.info("Enabled EchoNet-style EF-first profile")
+        if args.num_frames is None:
+            overrides["NUM_FRAMES"] = 32
+        if args.dataset_period is None:
+            overrides["DATASET_PERIOD"] = 2
+        if args.eval_clips is None:
+            overrides["EVAL_CLIPS"] = 4
+        if args.train_pad is None:
+            overrides["TRAIN_PAD"] = 12
+        if args.train_noise is None:
+            overrides["TRAIN_NOISE"] = None
+        if args.stage1_preserve_temporal_stride is None:
+            overrides["STAGE1_PRESERVE_TEMPORAL_STRIDE"] = False
+        if args.phase_loss_weight is None:
+            overrides["PHASE_LOSS_WEIGHT"] = 0.10
+        if args.phase_attn_align_weight is None:
+            overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.0
+        if args.phase_attn_index_weight is None:
+            overrides["PHASE_ATTN_INDEX_WEIGHT"] = 0.0
+        if args.phase_attn_order_weight is None:
+            overrides["PHASE_ATTN_ORDER_WEIGHT"] = 0.0
+        if args.phase_pair_index_weight is None:
+            overrides["PHASE_PAIR_INDEX_WEIGHT"] = 0.0
+        if args.phase_pair_order_weight is None:
+            overrides["PHASE_PAIR_ORDER_WEIGHT"] = 0.0
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -518,7 +549,10 @@ def build_optimizer(model, logger):
 
 def build_model_stack(logger):
     """Create model, optimizer and losses."""
-    model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
+    model = EFModel(
+        num_frames=config.NUM_FRAMES,
+        preserve_temporal_stride=bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)),
+    ).to(config.DEVICE)
     model = maybe_wrap_model_for_multi_gpu(model, logger)
 
     maybe_freeze_ef_head(model, logger)
@@ -1101,6 +1135,7 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
                 "EVAL_CLIPS": int(getattr(config, "EVAL_CLIPS", 1)),
                 "TRAIN_PAD": getattr(config, "TRAIN_PAD", None),
                 "TRAIN_NOISE": getattr(config, "TRAIN_NOISE", None),
+                "STAGE1_PRESERVE_TEMPORAL_STRIDE": bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)),
                 "PHASE_TEMPORAL_WINDOW_MODE": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
                 "PHASE_TEMPORAL_WINDOW_MARGIN_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
                 "PHASE_TEMPORAL_WINDOW_JITTER_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
@@ -1112,6 +1147,7 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
                 "eval_clips": int(getattr(config, "EVAL_CLIPS", 1)),
                 "train_pad": getattr(config, "TRAIN_PAD", None),
                 "train_noise": getattr(config, "TRAIN_NOISE", None),
+                "stage1_preserve_temporal_stride": bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)),
                 "phase_temporal_window_mode": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
                 "phase_temporal_window_margin_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
                 "phase_temporal_window_jitter_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
@@ -1209,6 +1245,7 @@ def log_header(logger, amp_enabled):
     logger.info("Eval clips: %d", int(getattr(config, "EVAL_CLIPS", 1)))
     logger.info("Train pad: %s", getattr(config, "TRAIN_PAD", None))
     logger.info("Train noise: %s", getattr(config, "TRAIN_NOISE", None))
+    logger.info("Stage1 preserve temporal stride: %s", bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)))
     logger.info("Max videos: %s", config.MAX_VIDEOS if config.MAX_VIDEOS else "All")
     logger.info("Learning rate: %s", config.LEARNING_RATE)
     logger.info("Epochs: %d", config.EPOCHS)

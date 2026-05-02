@@ -15,7 +15,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import load_ef_model_from_checkpoint
 from pipeline.stage3_phase_detector import Stage3PhaseDetector
 from pipeline.stage45_pipeline import Stage45Pipeline
 from pipeline.stage67_similarity import (
@@ -178,17 +178,12 @@ def _load_stage123_model(checkpoint_path, num_frames, device):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Stage1-3 checkpoint not found: {checkpoint_path}")
 
-    model = EFModel(num_frames=int(num_frames)).to(device)
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    state_dict = ckpt.get("model_state_dict", ckpt)
-    model_state = model.state_dict()
-    filtered_state_dict = {
-        key: value
-        for key, value in state_dict.items()
-        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
-    }
-    incompatible = model.load_state_dict(filtered_state_dict, strict=False)
-    model.eval()
+    model, incompatible, _ = load_ef_model_from_checkpoint(
+        checkpoint_path=checkpoint_path,
+        num_frames=num_frames,
+        device=device,
+        default_preserve_temporal_stride=bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)),
+    )
     return model, incompatible
 
 

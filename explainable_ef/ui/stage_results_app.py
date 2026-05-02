@@ -23,7 +23,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import load_ef_model_from_checkpoint
 from models.stage4_segmentation_model import build_stage4_segmentation_model
 from pipeline.stage3_phase_detector import Stage3PhaseDetector
 from pipeline.stage45_pipeline import Stage45Pipeline
@@ -1064,17 +1064,12 @@ def _render_stage67_section(selected_video, split, stage67_output_dir):
 @st.cache_resource(show_spinner=False)
 
 def load_stage123_model(checkpoint_path, num_frames, device):
-    model = EFModel(num_frames=int(num_frames)).to(device)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    state_dict, checkpoint_dict = _safe_checkpoint_state_dict(checkpoint)
-    model_state = model.state_dict()
-    filtered_state_dict = {
-        key: value
-        for key, value in state_dict.items()
-        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
-    }
-    incompatible = model.load_state_dict(filtered_state_dict, strict=False)
-    model.eval()
+    model, incompatible, checkpoint_dict = load_ef_model_from_checkpoint(
+        checkpoint_path=checkpoint_path,
+        num_frames=int(num_frames),
+        device=device,
+        default_preserve_temporal_stride=bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)),
+    )
     metadata = checkpoint_dict if isinstance(checkpoint_dict, dict) else {}
     return model, incompatible, metadata
 

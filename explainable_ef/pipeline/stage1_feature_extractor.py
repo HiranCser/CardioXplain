@@ -6,7 +6,7 @@ from torchvision.models.video import R2Plus1D_18_Weights
 class Stage1FeatureExtractor(nn.Module):
     """Stage 1: spatial feature extraction from echo clips."""
 
-    def __init__(self, weights=R2Plus1D_18_Weights.DEFAULT):
+    def __init__(self, weights=R2Plus1D_18_Weights.DEFAULT, preserve_temporal_stride=True):
         super().__init__()
         try:
             backbone = models.r2plus1d_18(weights=weights)
@@ -15,11 +15,12 @@ class Stage1FeatureExtractor(nn.Module):
             # are unavailable; checkpoint loading will still populate weights.
             backbone = models.r2plus1d_18(weights=None)
 
-        # Preserve more temporal detail for phase localization:
-        # default backbone uses temporal stride=2 in layer4 block0, which makes T' too small.
-        layer4_block0 = backbone.layer4[0]
-        layer4_block0.conv1[0][3].stride = (1, 1, 1)
-        layer4_block0.downsample[0].stride = (1, 2, 2)
+        if bool(preserve_temporal_stride):
+            # Preserve more temporal detail for phase localization:
+            # default backbone uses temporal stride=2 in layer4 block0, which makes T' too small.
+            layer4_block0 = backbone.layer4[0]
+            layer4_block0.conv1[0][3].stride = (1, 1, 1)
+            layer4_block0.downsample[0].stride = (1, 2, 2)
 
         self.feature_extractor = nn.Sequential(
             backbone.stem,

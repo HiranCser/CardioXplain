@@ -41,6 +41,8 @@ def parse_args():
     parser.add_argument("--stage123-eval-clips", type=int, default=None)
     parser.add_argument("--stage123-train-pad", type=int, default=None)
     parser.add_argument("--stage123-train-noise", type=float, default=None)
+    parser.add_argument("--stage123-stage1-preserve-temporal-stride", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--stage123-echonet-style-profile", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--stage123-workers", type=int, default=None)
     parser.add_argument("--stage123-max-videos", type=int, default=None)
 
@@ -120,6 +122,13 @@ def main():
             cmd += ["--train-pad", str(args.stage123_train_pad)]
         if args.stage123_train_noise is not None:
             cmd += ["--train-noise", str(args.stage123_train_noise)]
+        if args.stage123_stage1_preserve_temporal_stride is not None:
+            if bool(args.stage123_stage1_preserve_temporal_stride):
+                cmd += ["--stage1-preserve-temporal-stride"]
+            else:
+                cmd += ["--no-stage1-preserve-temporal-stride"]
+        if bool(args.stage123_echonet_style_profile):
+            cmd += ["--echonet-style-profile"]
         if args.stage123_workers is not None:
             cmd += ["--workers", str(args.stage123_workers)]
         if args.stage123_max_videos is not None:

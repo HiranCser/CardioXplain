@@ -3,7 +3,8 @@ import os
 
 # Data configuration
 # Points to ../dynamic/a4c-video-dir (from cx/explainable_ef to cx/dynamic)
-DATA_DIR = '/kaggle/input/datasets/hirancser/echoefnet/a4c-video-dir'
+#DATA_DIR = '/kaggle/input/datasets/hirancser/echoefnet/a4c-video-dir'
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
 
 # Model configuration
 BATCH_SIZE = 20
@@ -15,6 +16,7 @@ DATASET_MAX_LENGTH = None  # Optional cap on sampled clip length
 EVAL_CLIPS = 1  # EchoNet-style multi-clip evaluation; training remains single-clip
 TRAIN_PAD = None  # EchoNet-style random spatial pad/crop augmentation
 TRAIN_NOISE = None  # EchoNet-style random blackout noise fraction
+STAGE1_PRESERVE_TEMPORAL_STRIDE = True  # False is closer to vanilla EchoNet R(2+1)D temporal downsampling
 PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss
 PHASE_LABEL_SMOOTHING = 0.0  # Label smoothing for hard CE on ED/ES temporal indices
 PHASE_ONLY = False  # If True, disable EF loss and optimize only phase detection
