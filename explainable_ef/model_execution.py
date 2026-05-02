@@ -213,6 +213,9 @@ def apply_runtime_overrides(args, logger):
 
     if bool(getattr(args, "echonet_style_profile", False)):
         logger.info("Enabled EchoNet-style EF-first profile")
+        train_stage123_requested = bool(getattr(args, "train_stage123", False))
+        if train_stage123_requested:
+            logger.info("EchoNet profile detected with Stage1-3 joint training; preserving phase-oriented Stage1-3 supervision defaults")
         if args.num_frames is None:
             overrides["NUM_FRAMES"] = 32
         if args.dataset_period is None:
@@ -228,19 +231,20 @@ def apply_runtime_overrides(args, logger):
         if args.train_noise is None:
             overrides["TRAIN_NOISE"] = None
         if args.stage1_preserve_temporal_stride is None:
-            overrides["STAGE1_PRESERVE_TEMPORAL_STRIDE"] = False
-        if args.phase_loss_weight is None:
-            overrides["PHASE_LOSS_WEIGHT"] = 0.10
-        if args.phase_attn_align_weight is None:
-            overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.0
-        if args.phase_attn_index_weight is None:
-            overrides["PHASE_ATTN_INDEX_WEIGHT"] = 0.0
-        if args.phase_attn_order_weight is None:
-            overrides["PHASE_ATTN_ORDER_WEIGHT"] = 0.0
-        if args.phase_pair_index_weight is None:
-            overrides["PHASE_PAIR_INDEX_WEIGHT"] = 0.0
-        if args.phase_pair_order_weight is None:
-            overrides["PHASE_PAIR_ORDER_WEIGHT"] = 0.0
+            overrides["STAGE1_PRESERVE_TEMPORAL_STRIDE"] = True if train_stage123_requested else False
+        if not train_stage123_requested:
+            if args.phase_loss_weight is None:
+                overrides["PHASE_LOSS_WEIGHT"] = 0.10
+            if args.phase_attn_align_weight is None:
+                overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.0
+            if args.phase_attn_index_weight is None:
+                overrides["PHASE_ATTN_INDEX_WEIGHT"] = 0.0
+            if args.phase_attn_order_weight is None:
+                overrides["PHASE_ATTN_ORDER_WEIGHT"] = 0.0
+            if args.phase_pair_index_weight is None:
+                overrides["PHASE_PAIR_INDEX_WEIGHT"] = 0.0
+            if args.phase_pair_order_weight is None:
+                overrides["PHASE_PAIR_ORDER_WEIGHT"] = 0.0
 
     for key, value in overrides.items():
         setattr(config, key, value)
