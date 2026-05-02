@@ -3,8 +3,8 @@ import os
 
 # Data configuration
 # Points to ../dynamic/a4c-video-dir (from cx/explainable_ef to cx/dynamic)
-DATA_DIR = '/kaggle/input/datasets/hirancser/echoefnet/a4c-video-dir'
-# DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+#DATA_DIR = '/kaggle/input/datasets/hirancser/echoefnet/a4c-video-dir'
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
 
 # Model configuration
 BATCH_SIZE = 20
@@ -13,6 +13,7 @@ IMAGE_SIZE = 112
 MAX_VIDEOS = None  # None = use all videos
 DATASET_PERIOD = 1  # EchoNet-style temporal stride within a clip
 DATASET_MAX_LENGTH = None  # Optional cap on sampled clip length
+DATASET_SAMPLING_MODE = "global"  # "global" spans the whole video without GT crop; "echonet" uses local clip windows
 EVAL_CLIPS = 1  # EchoNet-style multi-clip evaluation; training remains single-clip
 TRAIN_PAD = None  # EchoNet-style random spatial pad/crop augmentation
 TRAIN_NOISE = None  # EchoNet-style random blackout noise fraction

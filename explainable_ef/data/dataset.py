@@ -25,6 +25,7 @@ class EchoDataset(Dataset):
         normalize_input=True,
         period=1,
         max_length=None,
+        sampling_mode="global",
         clips=1,
         pad=None,
         noise=None,
@@ -42,6 +43,12 @@ class EchoDataset(Dataset):
         self.normalize_input = bool(normalize_input)
         self.period = max(1, int(period))
         self.max_length = None if max_length is None else max(1, int(max_length))
+        sampling_mode = str(sampling_mode).strip().lower()
+        if sampling_mode in {"full", "full_video"}:
+            sampling_mode = "global"
+        if sampling_mode not in {"global", "echonet"}:
+            raise ValueError("sampling_mode must be 'global' or 'echonet'")
+        self.sampling_mode = sampling_mode
         self.clips = clips if clips == "all" else max(1, int(clips))
         self.pad = None if pad is None else max(0, int(pad))
         self.noise = None if noise is None else float(min(1.0, max(0.0, noise)))
@@ -137,6 +144,30 @@ class EchoDataset(Dataset):
 
         return starts, padded_frames
 
+    def _sample_global_indices(self, total_video_frames, clip_length):
+        total_video_frames = int(total_video_frames)
+        clip_length = int(max(1, clip_length))
+
+        if total_video_frames >= clip_length:
+            indices = np.linspace(0, total_video_frames - 1, clip_length).round().astype(np.int32)
+        else:
+            observed = np.arange(total_video_frames, dtype=np.int32)
+            pad_count = clip_length - total_video_frames
+            if total_video_frames > 0 and pad_count > 0:
+                tail = np.full((pad_count,), total_video_frames - 1, dtype=np.int32)
+                indices = np.concatenate([observed, tail], axis=0)
+            else:
+                indices = observed
+
+        if self.clips == "all":
+            return np.expand_dims(indices, axis=0)
+
+        num_clips = 1 if self.clips == "all" else int(self.clips)
+        if num_clips <= 1:
+            return indices
+
+        return np.repeat(indices[None, :], num_clips, axis=0)
+
     def _apply_noise(self, frames_array):
         if self.noise is None or self.noise <= 0.0:
             return frames_array
@@ -193,18 +224,21 @@ class EchoDataset(Dataset):
         frames_array = self._apply_noise(frames_array)
         total_video_frames = len(frames_array)
         clip_length = self._resolve_clip_length(total_video_frames)
-        start_positions, padded_frames = self._sample_start_positions(total_video_frames, clip_length)
+        if self.sampling_mode == "global":
+            sampled_indices = self._sample_global_indices(total_video_frames, clip_length)
+        else:
+            start_positions, padded_frames = self._sample_start_positions(total_video_frames, clip_length)
 
-        if padded_frames > total_video_frames:
-            frames_array = np.pad(
-                frames_array,
-                ((0, padded_frames - total_video_frames), (0, 0), (0, 0), (0, 0)),
-                mode="constant",
-                constant_values=0,
-            )
+            if padded_frames > total_video_frames:
+                frames_array = np.pad(
+                    frames_array,
+                    ((0, padded_frames - total_video_frames), (0, 0), (0, 0), (0, 0)),
+                    mode="constant",
+                    constant_values=0,
+                )
 
-        offsets = self.period * np.arange(clip_length, dtype=np.int32)
-        sampled_indices = start_positions[:, None] + offsets[None, :]
+            offsets = self.period * np.arange(clip_length, dtype=np.int32)
+            sampled_indices = start_positions[:, None] + offsets[None, :]
         sampled_frames = frames_array[sampled_indices]
 
         if sampled_frames.shape[0] == 1:

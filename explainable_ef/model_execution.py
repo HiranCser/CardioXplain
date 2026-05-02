@@ -36,6 +36,7 @@ def parse_args(argv=None):
     parser.add_argument("--num-frames", type=int, default=None, help="Override config.NUM_FRAMES")
     parser.add_argument("--dataset-period", type=int, default=None, help="Override config.DATASET_PERIOD")
     parser.add_argument("--dataset-max-length", type=int, default=None, help="Override config.DATASET_MAX_LENGTH")
+    parser.add_argument("--dataset-sampling-mode", type=str, choices=["global", "echonet"], default=None, help="Override config.DATASET_SAMPLING_MODE")
     parser.add_argument("--eval-clips", type=int, default=None, help="Override config.EVAL_CLIPS")
     parser.add_argument("--train-pad", type=int, default=None, help="Override config.TRAIN_PAD")
     parser.add_argument("--train-noise", type=float, default=None, help="Override config.TRAIN_NOISE")
@@ -102,6 +103,8 @@ def apply_runtime_overrides(args, logger):
         overrides["DATASET_PERIOD"] = args.dataset_period
     if args.dataset_max_length is not None:
         overrides["DATASET_MAX_LENGTH"] = args.dataset_max_length
+    if args.dataset_sampling_mode is not None:
+        overrides["DATASET_SAMPLING_MODE"] = args.dataset_sampling_mode
     if args.eval_clips is not None:
         overrides["EVAL_CLIPS"] = args.eval_clips
     if args.train_pad is not None:
@@ -185,6 +188,8 @@ def apply_runtime_overrides(args, logger):
         logger.info("Enabled Stage1-3 end-to-end training profile (joint EF + phase)")
         # Stage1/2/3 should train jointly without disabling EF regression.
         # Respect explicit CLI values when present.
+        if args.dataset_sampling_mode is None:
+            overrides["DATASET_SAMPLING_MODE"] = "global"
         if args.phase_only is None:
             overrides["PHASE_ONLY"] = False
         if args.phase_loss_weight is None:
@@ -220,6 +225,8 @@ def apply_runtime_overrides(args, logger):
             overrides["NUM_FRAMES"] = 32
         if args.dataset_period is None:
             overrides["DATASET_PERIOD"] = 2
+        if args.dataset_sampling_mode is None:
+            overrides["DATASET_SAMPLING_MODE"] = "global" if train_stage123_requested else "echonet"
         if args.eval_clips is None:
             # Keep training-time validation cheap; use a larger value explicitly
             # for final evaluation if desired.
@@ -265,6 +272,15 @@ def apply_runtime_overrides(args, logger):
         if period_value < 1:
             setattr(config, "DATASET_PERIOD", 1)
             logger.warning("Clamped DATASET_PERIOD from %d to 1", period_value)
+
+    if hasattr(config, "DATASET_SAMPLING_MODE"):
+        sampling_mode_value = str(getattr(config, "DATASET_SAMPLING_MODE", "global")).strip().lower()
+        if sampling_mode_value in {"full", "full_video"}:
+            sampling_mode_value = "global"
+        if sampling_mode_value not in {"global", "echonet"}:
+            logger.warning("Invalid DATASET_SAMPLING_MODE=%s; falling back to 'global'", sampling_mode_value)
+            sampling_mode_value = "global"
+        setattr(config, "DATASET_SAMPLING_MODE", sampling_mode_value)
 
     if hasattr(config, "EVAL_CLIPS"):
         eval_clips_value = int(getattr(config, "EVAL_CLIPS", 1))
@@ -450,6 +466,7 @@ def build_dataloaders():
     temporal_window_jitter_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0))
     dataset_period = int(getattr(config, "DATASET_PERIOD", 1))
     dataset_max_length = getattr(config, "DATASET_MAX_LENGTH", None)
+    dataset_sampling_mode = str(getattr(config, "DATASET_SAMPLING_MODE", "global"))
     eval_clips = int(getattr(config, "EVAL_CLIPS", 1))
     train_pad = getattr(config, "TRAIN_PAD", None)
     train_noise = getattr(config, "TRAIN_NOISE", None)
@@ -461,6 +478,7 @@ def build_dataloaders():
         "normalize_input": bool(getattr(config, "NORMALIZE_INPUT", True)),
         "period": dataset_period,
         "max_length": dataset_max_length,
+        "sampling_mode": dataset_sampling_mode,
         "temporal_window_mode": temporal_window_mode,
         "temporal_window_margin_mult": temporal_window_margin_mult,
         "temporal_window_jitter_mult": temporal_window_jitter_mult,
@@ -1140,6 +1158,7 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
                 "NUM_FRAMES": int(getattr(config, "NUM_FRAMES", 32)),
                 "DATASET_PERIOD": int(getattr(config, "DATASET_PERIOD", 1)),
                 "DATASET_MAX_LENGTH": getattr(config, "DATASET_MAX_LENGTH", None),
+                "DATASET_SAMPLING_MODE": str(getattr(config, "DATASET_SAMPLING_MODE", "global")),
                 "EVAL_CLIPS": int(getattr(config, "EVAL_CLIPS", 1)),
                 "TRAIN_PAD": getattr(config, "TRAIN_PAD", None),
                 "TRAIN_NOISE": getattr(config, "TRAIN_NOISE", None),
@@ -1152,6 +1171,7 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
                 "num_frames": int(getattr(config, "NUM_FRAMES", 32)),
                 "dataset_period": int(getattr(config, "DATASET_PERIOD", 1)),
                 "dataset_max_length": getattr(config, "DATASET_MAX_LENGTH", None),
+                "dataset_sampling_mode": str(getattr(config, "DATASET_SAMPLING_MODE", "global")),
                 "eval_clips": int(getattr(config, "EVAL_CLIPS", 1)),
                 "train_pad": getattr(config, "TRAIN_PAD", None),
                 "train_noise": getattr(config, "TRAIN_NOISE", None),
@@ -1250,6 +1270,7 @@ def log_header(logger, amp_enabled):
     logger.info("Number of frames: %d", config.NUM_FRAMES)
     logger.info("Dataset period: %d", int(getattr(config, "DATASET_PERIOD", 1)))
     logger.info("Dataset max length: %s", getattr(config, "DATASET_MAX_LENGTH", None))
+    logger.info("Dataset sampling mode: %s", str(getattr(config, "DATASET_SAMPLING_MODE", "global")))
     logger.info("Eval clips: %d", int(getattr(config, "EVAL_CLIPS", 1)))
     logger.info("Train pad: %s", getattr(config, "TRAIN_PAD", None))
     logger.info("Train noise: %s", getattr(config, "TRAIN_NOISE", None))
