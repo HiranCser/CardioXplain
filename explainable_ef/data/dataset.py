@@ -241,16 +241,19 @@ class EchoDataset(Dataset):
             sampled_indices = start_positions[:, None] + offsets[None, :]
         sampled_frames = frames_array[sampled_indices]
 
-        if sampled_frames.shape[0] == 1:
-            sampled_frames = sampled_frames[0]
-            sampled_indices = sampled_indices[0]
+        if sampled_frames.ndim == 4 or (sampled_frames.ndim == 5 and sampled_frames.shape[0] == 1):
+            if sampled_frames.ndim == 5:
+                sampled_frames = sampled_frames[0]
+                sampled_indices = sampled_indices[0]
             frames_tensor = torch.from_numpy(sampled_frames).permute(3, 0, 1, 2).float() / 255.0
             if self.normalize_input:
                 frames_tensor = (frames_tensor - self._mean) / self._std
-        else:
+        elif sampled_frames.ndim == 5:
             frames_tensor = torch.from_numpy(sampled_frames).permute(0, 4, 1, 2, 3).float() / 255.0
             if self.normalize_input:
                 frames_tensor = (frames_tensor - self._mean.unsqueeze(0)) / self._std.unsqueeze(0)
+        else:
+            raise RuntimeError(f"Unexpected sampled frame shape {sampled_frames.shape} for video: {path}")
 
         frames_tensor = self._apply_pad_crop(frames_tensor)
 
