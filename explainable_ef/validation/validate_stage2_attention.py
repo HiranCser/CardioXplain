@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import load_ef_model_from_checkpoint
 
 
 def _window_bounds(center, radius, num_frames):
@@ -72,21 +72,16 @@ def main():
         pin_memory=torch.cuda.is_available() and str(device).startswith("cuda"),
     )
 
-    model = EFModel(num_frames=args.num_frames).to(device)
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
-    model_state = model.state_dict()
-    filtered_state_dict = {
-        key: value
-        for key, value in state_dict.items()
-        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
-    }
-    incompatible = model.load_state_dict(filtered_state_dict, strict=False)
+    model, incompatible, _ = load_ef_model_from_checkpoint(
+        checkpoint_path=args.checkpoint,
+        num_frames=args.num_frames,
+        device=device,
+        default_preserve_temporal_stride=bool(getattr(config, "STAGE1_PRESERVE_TEMPORAL_STRIDE", True)),
+    )
     if incompatible.missing_keys or incompatible.unexpected_keys:
         print(
             f"Warning: checkpoint loaded with key mismatch | missing={len(incompatible.missing_keys)} unexpected={len(incompatible.unexpected_keys)}"
         )
-    model.eval()
 
     rows = []
     sample_offset = 0
