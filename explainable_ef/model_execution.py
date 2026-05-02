@@ -286,6 +286,42 @@ def is_phase_only_mode():
     return bool(getattr(config, "PHASE_ONLY", False))
 
 
+def unwrap_model(model):
+    return model.module if isinstance(model, nn.DataParallel) else model
+
+
+def maybe_wrap_model_for_multi_gpu(model, logger):
+    if not is_cuda_runtime():
+        return model
+
+    gpu_count = torch.cuda.device_count()
+    if gpu_count <= 1:
+        return model
+
+    logger.info("Detected %d CUDA devices; enabling DataParallel", gpu_count)
+    return nn.DataParallel(model)
+
+
+def load_model_state_dict_flexible(model, state_dict, strict=False):
+    target_model = unwrap_model(model)
+    target_state = target_model.state_dict()
+
+    filtered_state_dict = {}
+    for key, value in state_dict.items():
+        candidate_keys = [key]
+        if key.startswith("module."):
+            candidate_keys.append(key[len("module."):])
+        else:
+            candidate_keys.append(f"module.{key}")
+
+        for candidate in candidate_keys:
+            if candidate in target_state and tuple(value.shape) == tuple(target_state[candidate].shape):
+                filtered_state_dict[candidate] = value
+                break
+
+    return target_model.load_state_dict(filtered_state_dict, strict=strict)
+
+
 def make_grad_scaler(amp_enabled):
     if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
         return torch.amp.GradScaler("cuda", enabled=amp_enabled)
@@ -420,6 +456,7 @@ def build_dataloaders():
 
 
 def get_pipeline(model):
+    model = unwrap_model(model)
     return model.pipeline if hasattr(model, "pipeline") else model
 
 
@@ -482,6 +519,7 @@ def build_optimizer(model, logger):
 def build_model_stack(logger):
     """Create model, optimizer and losses."""
     model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
+    model = maybe_wrap_model_for_multi_gpu(model, logger)
 
     maybe_freeze_ef_head(model, logger)
 
@@ -1050,7 +1088,7 @@ def train_one_epoch(
 def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_mae=None):
     torch.save(
         {
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": unwrap_model(model).state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "monitor_name": monitor_name,
             "monitor_value": monitor_value,
@@ -1097,13 +1135,7 @@ def maybe_warm_start_from_checkpoint(model, logger, enabled=True):
     try:
         checkpoint = torch.load(ckpt_path, map_location=config.DEVICE)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
-        model_state = model.state_dict()
-        filtered_state_dict = {
-            key: value
-            for key, value in state_dict.items()
-            if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
-        }
-        incompatible = model.load_state_dict(filtered_state_dict, strict=False)
+        incompatible = load_model_state_dict_flexible(model, state_dict, strict=False)
         missing = list(getattr(incompatible, "missing_keys", []))
         unexpected = list(getattr(incompatible, "unexpected_keys", []))
 
@@ -1168,6 +1200,7 @@ def log_header(logger, amp_enabled):
     logger.info("TRAINING SCRIPT STARTED")
     logger.info("=" * 80)
     logger.info("Using device: %s", config.DEVICE)
+    logger.info("CUDA device count visible: %d", torch.cuda.device_count())
     logger.info("Data directory: %s", config.DATA_DIR)
     logger.info("Batch size: %d", config.BATCH_SIZE)
     logger.info("Number of frames: %d", config.NUM_FRAMES)
@@ -1406,7 +1439,7 @@ def main(argv=None):
 
     logger.info("Loading best model for final testing")
     checkpoint = torch.load(config.CHECKPOINT_PATH, map_location=config.DEVICE)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    load_model_state_dict_flexible(model, checkpoint["model_state_dict"], strict=False)
 
     monitor_name_ckpt = checkpoint.get("monitor_name", "val_mae")
     monitor_value_ckpt = checkpoint.get("monitor_value", checkpoint.get("val_mae", float("nan")))

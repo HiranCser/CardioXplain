@@ -626,6 +626,42 @@ def count_parameters(model):
     return total, trainable
 
 
+def unwrap_model(model):
+    return model.module if isinstance(model, torch.nn.DataParallel) else model
+
+
+def maybe_wrap_model_for_multi_gpu(model, device):
+    if not str(device).startswith("cuda") or not torch.cuda.is_available():
+        return model
+
+    gpu_count = torch.cuda.device_count()
+    if gpu_count <= 1:
+        return model
+
+    print(f"Detected {gpu_count} CUDA devices; enabling DataParallel for Stage 4")
+    return torch.nn.DataParallel(model)
+
+
+def load_model_state_dict_flexible(model, state_dict, strict=True):
+    target_model = unwrap_model(model)
+    target_state = target_model.state_dict()
+
+    filtered_state_dict = {}
+    for key, value in state_dict.items():
+        candidate_keys = [key]
+        if key.startswith("module."):
+            candidate_keys.append(key[len("module."):])
+        else:
+            candidate_keys.append(f"module.{key}")
+
+        for candidate in candidate_keys:
+            if candidate in target_state and tuple(value.shape) == tuple(target_state[candidate].shape):
+                filtered_state_dict[candidate] = value
+                break
+
+    return target_model.load_state_dict(filtered_state_dict, strict=strict)
+
+
 def build_optimizer(args, model):
     if args.optimizer == "sgd":
         return torch.optim.SGD(
@@ -708,6 +744,7 @@ def main():
         in_channels=3,
         base_channels=args.base_channels,
     ).to(device)
+    model = maybe_wrap_model_for_multi_gpu(model, device)
 
     optimizer = build_optimizer(args, model)
     scheduler = None
@@ -720,6 +757,7 @@ def main():
     print("STAGE 4 TRAINING (LV SEGMENTATION)")
     print("=" * 96)
     print(f"Device: {device} | AMP: {amp_enabled}")
+    print(f"CUDA device count visible: {torch.cuda.device_count()}")
     print(f"Data dir: {args.data_dir}")
     print(f"Image size: {args.image_size}")
     print(f"Batch size: {args.batch_size} | Epochs: {args.epochs}")
@@ -797,7 +835,7 @@ def main():
             best_val_mae = val_metrics["frame_area_mae"]
             epochs_without_improvement = 0
             checkpoint_payload = {
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": unwrap_model(model).state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "epoch": epoch,
                 "val_frame_area_mae": best_val_mae,
@@ -840,7 +878,7 @@ def main():
         raise RuntimeError("No checkpoint saved. Training did not produce a valid model.")
 
     ckpt = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    load_model_state_dict_flexible(model, ckpt["model_state_dict"], strict=True)
 
     selected_threshold = float(ckpt.get("best_eval_threshold", ckpt.get("eval_threshold", args.eval_threshold)))
     if bool(args.threshold_search):
