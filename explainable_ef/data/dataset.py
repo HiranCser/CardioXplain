@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from data.frame_homogenization import apply_video_homogenization, load_homogenization_stats
 from data.phase_ground_truth import compute_ed_es_from_video_rows
 
 
@@ -29,6 +30,7 @@ class EchoDataset(Dataset):
         clips=1,
         pad=None,
         noise=None,
+        homogenization_stats=None,
     ):
         self.data_dir = data_dir
         resolved_length = num_frames if length is None else length
@@ -50,6 +52,7 @@ class EchoDataset(Dataset):
         self.pad = None if pad is None else max(0, int(pad))
         self.noise = None if noise is None else float(min(1.0, max(0.0, noise)))
         self.split = str(split).strip().upper()
+        self.homogenization = load_homogenization_stats(homogenization_stats)
 
         if self.length is not None and self.length <= 0:
             raise ValueError("length/num_frames must be positive")
@@ -213,6 +216,7 @@ class EchoDataset(Dataset):
             raise ValueError(f"No frames loaded from video: {path}")
 
         frames_array = np.array(frames, dtype=np.uint8)
+        frames_array = apply_video_homogenization(frames_array, self.homogenization)
         frames_array = self._apply_noise(frames_array)
         total_video_frames = len(frames_array)
         clip_length = self._resolve_clip_length(total_video_frames)

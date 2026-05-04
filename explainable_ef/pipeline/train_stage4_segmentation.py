@@ -180,6 +180,7 @@ def build_loaders(args, device):
         augment_blur_prob=args.augment_blur_prob,
         augment_noise_prob=args.augment_noise_prob,
         augment_noise_std=args.augment_noise_std,
+        homogenization_stats=args.homogenization_stats,
     )
     val_ds = Stage4SegmentationDataset(
         data_dir=args.data_dir,
@@ -188,6 +189,7 @@ def build_loaders(args, device):
         max_videos=args.max_videos,
         normalize=normalize,
         augment=False,
+        homogenization_stats=args.homogenization_stats,
     )
     test_ds = Stage4SegmentationDataset(
         data_dir=args.data_dir,
@@ -196,6 +198,7 @@ def build_loaders(args, device):
         max_videos=args.max_videos,
         normalize=normalize,
         augment=False,
+        homogenization_stats=args.homogenization_stats,
     )
 
     train_loader = DataLoader(
@@ -714,6 +717,7 @@ def parse_args():
     parser.add_argument("--lr-step-period", type=int, default=15, help="<=0 disables step scheduler")
     parser.add_argument("--lr-gamma", type=float, default=0.1)
     parser.add_argument("--normalize", type=str, choices=["auto", "none", "imagenet"], default="auto")
+    parser.add_argument("--homogenization-stats", type=str, default=None, help="Optional Stage0 frame homogenization JSON")
     parser.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True, help="Enable lightweight geometric/intensity augmentation for train split")
     parser.add_argument("--augment-blur-prob", type=float, default=0.25, help="Probability of mild Gaussian blur augmentation for Stage4 training")
     parser.add_argument("--augment-noise-prob", type=float, default=0.35, help="Probability of mild additive noise augmentation for Stage4 training")
@@ -762,6 +766,7 @@ def main():
     print(f"Image size: {args.image_size}")
     print(f"Batch size: {args.batch_size} | Epochs: {args.epochs}")
     print(f"Model: {args.model_name} | Pretrained: {args.pretrained} | Normalize: {normalize_mode}")
+    print(f"Homogenization stats: {args.homogenization_stats}")
     print(f"Optimizer: {args.optimizer} | LR: {args.learning_rate} | WD: {args.weight_decay}")
     print(f"Dice weight: {args.dice_weight} | Area loss weight: {args.area_loss_weight} | Boundary loss weight: {args.boundary_loss_weight} | Eval threshold: {args.eval_threshold}")
     print(f"Mask postprocess: {args.postprocess_masks} | close={args.postprocess_closing_kernel} | open={args.postprocess_opening_kernel} | fill_holes={args.postprocess_fill_holes} | keep_largest={args.postprocess_keep_largest}")

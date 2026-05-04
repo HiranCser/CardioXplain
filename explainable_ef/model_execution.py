@@ -43,6 +43,7 @@ def parse_args(argv=None):
     parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable TF32 matmul/cuDNN")
     parser.add_argument("--benchmark", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable cuDNN benchmark")
     parser.add_argument("--normalize-input", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable Kinetics input normalization")
+    parser.add_argument("--homogenization-stats", type=str, default=None, help="Optional Stage0 frame homogenization JSON")
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
@@ -95,6 +96,8 @@ def apply_runtime_overrides(args, logger):
         overrides["CUDNN_BENCHMARK"] = args.benchmark
     if args.normalize_input is not None:
         overrides["NORMALIZE_INPUT"] = args.normalize_input
+    if args.homogenization_stats is not None:
+        overrides["HOMOGENIZATION_STATS"] = args.homogenization_stats
     if args.phase_loss_weight is not None:
         overrides["PHASE_LOSS_WEIGHT"] = args.phase_loss_weight
     if args.phase_label_smoothing is not None:
@@ -227,6 +230,7 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
     )
     val_dataset = EchoDataset(
         config.DATA_DIR,
@@ -234,6 +238,7 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
     )
     test_dataset = EchoDataset(
         config.DATA_DIR,
@@ -241,6 +246,7 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
     )
 
     train_loader = DataLoader(train_dataset, **dataloader_kwargs(shuffle=True))
@@ -640,6 +646,7 @@ def log_header(logger, amp_enabled):
     logger.info("Prefetch factor: %s", getattr(config, "PREFETCH_FACTOR", None))
     logger.info("AMP enabled: %s", amp_enabled)
     logger.info("Normalize input: %s", bool(getattr(config, "NORMALIZE_INPUT", True)))
+    logger.info("Homogenization stats: %s", getattr(config, "HOMOGENIZATION_STATS", None))
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
     logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))

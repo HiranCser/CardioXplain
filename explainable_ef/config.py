@@ -69,6 +69,7 @@ USE_MIXED_PRECISION = True
 ENABLE_TF32 = True
 CUDNN_BENCHMARK = True
 NORMALIZE_INPUT = True
+HOMOGENIZATION_STATS = None  # Optional Stage0 frame homogenization JSON
 
 # Use gradient accumulation (slower but uses less memory)
 GRADIENT_ACCUMULATION_STEPS = 1

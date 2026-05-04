@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from data.frame_homogenization import apply_frame_homogenization, load_homogenization_stats
 from pipeline.stage45_pipeline import Stage45Pipeline
 
 
@@ -23,6 +24,7 @@ class Stage4SegmentationDataset(Dataset):
         augment_blur_prob=0.25,
         augment_noise_prob=0.35,
         augment_noise_std=6.0,
+        homogenization_stats=None,
     ):
         self.data_dir = data_dir
         self.split = str(split).upper()
@@ -32,6 +34,7 @@ class Stage4SegmentationDataset(Dataset):
         self.augment_blur_prob = float(max(0.0, augment_blur_prob))
         self.augment_noise_prob = float(max(0.0, augment_noise_prob))
         self.augment_noise_std = float(max(0.0, augment_noise_std))
+        self.homogenization = load_homogenization_stats(homogenization_stats)
 
         filelist_path = os.path.join(data_dir, "FileList.csv")
         tracings_path = os.path.join(data_dir, "VolumeTracings.csv")
@@ -167,6 +170,7 @@ class Stage4SegmentationDataset(Dataset):
 
         frame_bgr = self._read_video_frame(video_path, frame_id)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_rgb = apply_frame_homogenization(frame_rgb, self.homogenization)
 
         frame_rows = self.tracings.iloc[sample["trace_indices"]].sort_index()
         gt_mask_orig = Stage45Pipeline.tracing_to_mask(

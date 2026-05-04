@@ -26,12 +26,17 @@ def parse_args():
 
     parser.add_argument("--data-dir", type=str, default=None, help="Override data dir passed to stage scripts")
 
+    parser.add_argument("--skip-homogenization", action="store_true")
     parser.add_argument("--skip-stage123", action="store_true")
     parser.add_argument("--skip-stage4", action="store_true")
     parser.add_argument("--skip-stage5", action="store_true")
     parser.add_argument("--skip-stage67", action="store_true")
 
     parser.add_argument("--stage123-checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
+    parser.add_argument("--homogenization-stats", type=str, default=os.path.join("validation", "outputs", "homogenization", "frame_homogenization.json"))
+    parser.add_argument("--homogenization-max-videos", type=int, default=0)
+    parser.add_argument("--homogenization-sample-every", type=int, default=10)
+    parser.add_argument("--homogenization-clahe-clip-limit", type=float, default=2.0)
     parser.add_argument("--stage123-epochs", type=int, default=None)
     parser.add_argument("--stage123-learning-rate", type=float, default=None)
     parser.add_argument("--stage123-batch-size", type=int, default=None)
@@ -88,6 +93,25 @@ def main():
 
     t0 = time.perf_counter()
 
+    if not args.skip_homogenization:
+        cmd = [
+            python_bin,
+            os.path.join(ROOT_DIR, "pipeline", "train_frame_homogenization.py"),
+            "--output",
+            str(args.homogenization_stats),
+            "--sample-every",
+            str(args.homogenization_sample_every),
+            "--clahe-clip-limit",
+            str(args.homogenization_clahe_clip_limit),
+        ]
+        if args.data_dir is not None:
+            cmd += ["--data-dir", str(args.data_dir)]
+        if args.homogenization_max_videos and int(args.homogenization_max_videos) > 0:
+            cmd += ["--max-videos", str(args.homogenization_max_videos)]
+        _run_step("Stage0 frame homogenization fitting", cmd)
+    else:
+        print("Skipping Stage0 frame homogenization fitting")
+
     # Stage 1-3
     if not args.skip_stage123:
         ignored_stage123_args = {
@@ -121,6 +145,8 @@ def main():
             cmd += ["--batch-size", str(args.stage123_batch_size)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
+        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
+            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
         if args.stage123_workers is not None:
             cmd += ["--workers", str(args.stage123_workers)]
         if args.stage123_max_videos is not None:
@@ -157,6 +183,8 @@ def main():
 
         if args.data_dir is not None:
             cmd += ["--data-dir", str(args.data_dir)]
+        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
+            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
         if args.stage4_max_videos is not None:
             cmd += ["--max-videos", str(args.stage4_max_videos)]
         if args.device is not None:
@@ -201,6 +229,8 @@ def main():
                 "--eval-threshold",
                 str(args.stage5_eval_threshold),
             ]
+            if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
+                cmd += ["--homogenization-stats", str(args.homogenization_stats)]
             if args.device is not None:
                 cmd += ["--device", str(args.device)]
 
@@ -231,6 +261,8 @@ def main():
             cmd += ["--data-dir", str(args.data_dir)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
+        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
+            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
         if args.stage123_dataset_period is not None:
             cmd += ["--dataset-period", str(args.stage123_dataset_period)]
         if args.stage123_dataset_max_length is not None:

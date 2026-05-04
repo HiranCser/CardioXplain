@@ -78,6 +78,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage67"))
     parser.add_argument("--stage5-metrics-dir", type=str, default=os.path.join("validation", "outputs", "stage45"))
     parser.add_argument("--stage5-video-metrics-name", type=str, default="stage5_video_metrics.csv")
+    parser.add_argument("--homogenization-stats", type=str, default=None, help="Optional Stage0 frame homogenization JSON for Stage1-3 feature extraction")
     parser.add_argument("--save-per-split-csv", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--stage6-backend", type=str, choices=["similarity", "mlp"], default="similarity")
@@ -160,6 +161,7 @@ def _collect_split_rows(split, args, model, device, stage5_metrics):
         max_length=args.dataset_max_length,
         max_videos=args.max_videos,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        homogenization_stats=args.homogenization_stats,
     )
 
     rows = []
@@ -444,6 +446,7 @@ def main():
     print(f"Data dir: {args.data_dir}")
     print(f"Stage1-3 checkpoint: {args.stage123_checkpoint}")
     print(f"Stage5 metrics dir: {args.stage5_metrics_dir}")
+    print(f"Homogenization stats: {args.homogenization_stats}")
     print(f"Num frames: {args.num_frames}")
     print(f"Dataset period: {args.dataset_period}")
     print(f"Dataset max length: {args.dataset_max_length}")

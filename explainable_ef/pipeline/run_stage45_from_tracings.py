@@ -12,6 +12,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 import config
+from data.frame_homogenization import apply_frame_homogenization, load_homogenization_stats
 from models.stage4_segmentation_model import build_stage4_segmentation_model
 from pipeline.stage45_pipeline import Stage45Pipeline
 
@@ -85,13 +86,15 @@ def _load_stage4_model(checkpoint_path, fallback_model_name, fallback_base_chann
         "postprocess_opening_kernel": int(args.get("postprocess_opening_kernel", 0)),
         "postprocess_fill_holes": bool(args.get("postprocess_fill_holes", True)),
         "postprocess_keep_largest": bool(args.get("postprocess_keep_largest", True)),
+        "homogenization_stats": args.get("homogenization_stats", None),
     }
     return model, metadata
 
 
-def _predict_mask_area_stage4(model, frame_bgr, image_size, normalize_mode, pretrained_flag, device, eval_threshold, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True):
+def _predict_mask_area_stage4(model, frame_bgr, image_size, normalize_mode, pretrained_flag, device, eval_threshold, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True, homogenization=None):
     h, w = frame_bgr.shape[:2]
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    frame_rgb = apply_frame_homogenization(frame_rgb, homogenization)
     resized = cv2.resize(frame_rgb, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
 
     image_t = torch.from_numpy(resized).permute(2, 0, 1).float() / 255.0
@@ -116,7 +119,7 @@ def _predict_mask_area_stage4(model, frame_bgr, image_size, normalize_mode, pret
     return mask_orig, float(mask_orig.sum())
 
 
-def _predict_video_area_curve_stage4(model, video_path, image_size, normalize_mode, pretrained_flag, device, eval_threshold, batch_size=16, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True):
+def _predict_video_area_curve_stage4(model, video_path, image_size, normalize_mode, pretrained_flag, device, eval_threshold, batch_size=16, postprocess_masks=True, closing_kernel=5, opening_kernel=0, fill_holes=True, keep_largest=True, homogenization=None):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {video_path}")
@@ -161,6 +164,7 @@ def _predict_video_area_curve_stage4(model, video_path, image_size, normalize_mo
             break
         h, w = frame_bgr.shape[:2]
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_rgb = apply_frame_homogenization(frame_rgb, homogenization)
         resized = cv2.resize(frame_rgb, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
         image_t = torch.from_numpy(resized).permute(2, 0, 1).float() / 255.0
         image_t = _normalize_stage4_input(image_t, normalize_mode, pretrained_flag=pretrained_flag)
@@ -255,6 +259,7 @@ def parse_args():
     parser.add_argument("--eval-threshold", type=float, default=0.5)
     parser.add_argument("--curve-smooth-window", type=int, default=11, help="Smoothing window for full-video Stage4 size curve")
     parser.add_argument("--curve-batch-size", type=int, default=16, help="Batch size for full-video Stage4 inference")
+    parser.add_argument("--homogenization-stats", type=str, default=None, help="Optional Stage0 frame homogenization JSON; defaults to checkpoint metadata when available")
     parser.add_argument("--device", type=str, default="auto")
     return parser.parse_args()
 
@@ -283,6 +288,8 @@ def main():
         fallback_base_channels=args.stage4_base_channels,
         device=device,
     )
+    homogenization_path = args.homogenization_stats if args.homogenization_stats else model4_meta.get("homogenization_stats", None)
+    homogenization = load_homogenization_stats(homogenization_path)
 
     per_video_rows = []
     per_frame_rows = []
@@ -331,6 +338,7 @@ def main():
                 opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
                 fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
                 keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
+                homogenization=homogenization,
             )
             frame_masks_pred[int(frame_id)] = pred_mask
             pred_frame_areas.append((int(frame_id), float(pred_area)))
@@ -368,6 +376,7 @@ def main():
             opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
             fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
             keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
+            homogenization=homogenization,
         )
         if curve_frame_ids.size == 0:
             print(f"Warning: empty Stage4 area curve for {fname_ext}")
@@ -456,6 +465,7 @@ def main():
                         opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
                         fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
                         keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
+                        homogenization=homogenization,
                     )
                     frame_masks_pred[int(pred_ed_frame)] = pred_mask_ed
                 if int(pred_es_frame) not in frame_masks_pred:
@@ -472,6 +482,7 @@ def main():
                         opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
                         fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
                         keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
+                        homogenization=homogenization,
                     )
                     frame_masks_pred[int(pred_es_frame)] = pred_mask_es
                 ed_pred_mask = frame_masks_pred.get(int(pred_ed_frame))
