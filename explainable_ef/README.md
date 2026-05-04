@@ -149,10 +149,10 @@ python pipeline\train_all_stages.py --stage123-num-frames 32 --stage123-epochs 5
 
 This orchestrates:
 
-- Stage1-3 joint training (`model_execution.py --train-stage123 --no-phase-only`)
+- Stage1-3 EF-oriented training (`model_execution.py --no-phase-only`)
 - Stage4 segmentation training
-- Stage5 EF evaluation from predicted Stage4 masks (VAL/TEST)
-- Stage6 similarity training + Stage7 uncertainty calibration
+- Stage5 EF evaluation from predicted Stage4 masks (TRAIN/VAL/TEST)
+- Stage6 similarity training + Stage7 uncertainty calibration using Stage5 predicted-mask metrics
 
 Stage4 defaults are now class-imbalance aware (`--eval-threshold 0.5`, auto BCE `pos_weight`) to prevent empty-mask collapse.
 
@@ -295,6 +295,8 @@ Run any script with `--help` for the latest values/defaults.
 - `--normal-threshold NORMAL_THRESHOLD`
 - `--severe-threshold SEVERE_THRESHOLD`
 - `--output-dir OUTPUT_DIR`
+- `--stage5-metrics-dir STAGE5_METRICS_DIR`
+- `--stage5-video-metrics-name STAGE5_VIDEO_METRICS_NAME`
 - `--save-per-split-csv, --no-save-per-split-csv`
 
 ### `pipeline/train_all_stages.py` options
@@ -325,6 +327,7 @@ Run any script with `--help` for the latest values/defaults.
 - `--stage5-max-videos STAGE5_MAX_VIDEOS`
 - `--stage5-save-overlays`
 - `--stage67-output-dir STAGE67_OUTPUT_DIR`
+- `--stage67-stage5-metrics-dir STAGE67_STAGE5_METRICS_DIR`
 - `--stage67-max-videos STAGE67_MAX_VIDEOS`
 - `--stage67-normal-threshold STAGE67_NORMAL_THRESHOLD`
 - `--stage67-severe-threshold STAGE67_SEVERE_THRESHOLD`
@@ -387,18 +390,20 @@ Use this after Stage4 training to evaluate EF using **predicted segmentation mas
 python pipeline\run_stage45_from_tracings.py --split VAL --stage4-checkpoint best_stage4_segmentation.pth --eval-threshold 0.5 --max-videos 25 --save-overlays
 ```
 
+Run it for `TRAIN`, `VAL`, and `TEST` before Stage6/7 so the calibrator uses the same predicted-mask features that deployment will have.
+
 ### Stage6 backend options
 
 Prototype backend (default):
 
 ```powershell
-python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32 --stage6-backend similarity
+python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32 --stage5-metrics-dir validation/outputs/stage45 --stage6-backend similarity
 ```
 
 Trainable MLP backend (creates `.pth` artifact):
 
 ```powershell
-python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32 --stage6-backend mlp --stage6-mlp-epochs 80 --stage6-mlp-hidden-dim 64
+python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32 --stage5-metrics-dir validation/outputs/stage45 --stage6-backend mlp --stage6-mlp-epochs 80 --stage6-mlp-hidden-dim 64
 ```
 
 Artifacts:
@@ -410,5 +415,6 @@ Artifacts:
 
 `train_all_stages.py` now supports:
 - `--stage5-stage4-checkpoint ...`
+- `--stage67-stage5-metrics-dir ...`
 - `--stage67-backend similarity|mlp`
 - `--stage67-mlp-*` training flags

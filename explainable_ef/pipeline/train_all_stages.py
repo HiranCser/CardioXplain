@@ -65,6 +65,7 @@ def parse_args():
     parser.add_argument("--stage5-eval-threshold", type=float, default=0.5)
 
     parser.add_argument("--stage67-output-dir", type=str, default=os.path.join("validation", "outputs", "stage67"))
+    parser.add_argument("--stage67-stage5-metrics-dir", type=str, default=os.path.join("validation", "outputs", "stage45"))
     parser.add_argument("--stage67-max-videos", type=int, default=None)
     parser.add_argument("--stage67-normal-threshold", type=float, default=50.0)
     parser.add_argument("--stage67-severe-threshold", type=float, default=30.0)
@@ -173,7 +174,7 @@ def main():
     if not args.skip_stage5:
         stage5_ckpt = args.stage5_stage4_checkpoint if args.stage5_stage4_checkpoint else args.stage4_checkpoint
 
-        for split in ("VAL", "TEST"):
+        for split in ("TRAIN", "VAL", "TEST"):
             cmd = [
                 python_bin,
                 os.path.join(ROOT_DIR, "pipeline", "run_stage45_from_tracings.py"),
@@ -216,6 +217,8 @@ def main():
             str(args.stage123_checkpoint),
             "--output-dir",
             str(args.stage67_output_dir),
+            "--stage5-metrics-dir",
+            str(args.stage67_stage5_metrics_dir),
             "--normal-threshold",
             str(args.stage67_normal_threshold),
             "--severe-threshold",

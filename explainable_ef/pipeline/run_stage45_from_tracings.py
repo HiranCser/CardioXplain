@@ -240,7 +240,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run Stage 4/5 evaluation from Stage4 predicted masks.")
     parser.add_argument("--split", type=str, default="VAL", help="Dataset split: TRAIN/VAL/TEST")
     parser.add_argument("--data-dir", type=str, default=config.DATA_DIR)
-    parser.add_argument("--max-videos", type=int, default=25, help="Number of videos to process")
+    parser.add_argument("--max-videos", type=int, default=0, help="Number of videos to process; 0 means all")
     parser.add_argument("--save-overlays", action="store_true", help="Save ED/ES overlays")
     parser.add_argument(
         "--output-dir",
@@ -372,6 +372,7 @@ def main():
         if curve_frame_ids.size == 0:
             print(f"Warning: empty Stage4 area curve for {fname_ext}")
             continue
+        total_video_frames = int(curve_frame_ids.size)
 
         detected = stage45.detect_ed_es_from_size_curve(
             frame_ids=curve_frame_ids,
@@ -396,6 +397,10 @@ def main():
         pred_es_area = float(canonical_pair["es_area"])
         pred_pair_swapped = bool(canonical_pair["swapped"])
         ef_pred = Stage45Pipeline.compute_ef_from_areas(pred_ed_area, pred_es_area)
+        pred_gap_frames = max(0, int(pred_es_frame) - int(pred_ed_frame))
+        pred_gap_norm = float(pred_gap_frames / max(1, total_video_frames - 1))
+        pred_area_ratio = float(pred_es_area / max(1e-6, pred_ed_area))
+        pred_area_delta = float(pred_ed_area - pred_es_area)
 
         abs_err = abs(float(ef_pred) - float(ef_gt))
         errors.append(abs_err)
@@ -410,14 +415,19 @@ def main():
                 "ef_gt_proxy": float(ef_gt_proxy),
                 "ef_pred": float(ef_pred),
                 "ef_abs_error": float(abs_err),
+                "total_video_frames": int(total_video_frames),
                 "gt_ed_frame": int(gt_ed_frame),
                 "gt_es_frame": int(gt_es_frame),
                 "pred_ed_frame": int(pred_ed_frame),
                 "pred_es_frame": int(pred_es_frame),
+                "pred_gap_frames": int(pred_gap_frames),
+                "pred_gap_norm": float(pred_gap_norm),
                 "gt_ed_area": float(gt_ed_area),
                 "gt_es_area": float(gt_es_area),
                 "pred_ed_area": float(pred_ed_area),
                 "pred_es_area": float(pred_es_area),
+                "pred_area_ratio": float(pred_area_ratio),
+                "pred_area_delta": float(pred_area_delta),
                 "pred_ed_frame_error": float(abs(pred_ed_frame - gt_ed_frame)),
                 "pred_es_frame_error": float(abs(pred_es_frame - gt_es_frame)),
                 "pred_curve_method": "full_video_stage4_curve",

@@ -17,7 +17,6 @@ import config
 from data.dataset import EchoDataset
 from models.ef_model import load_ef_model_from_checkpoint
 from pipeline.stage3_phase_detector import Stage3PhaseDetector
-from pipeline.stage45_pipeline import Stage45Pipeline
 from pipeline.stage67_similarity import (
     LABEL_TO_TEXT,
     Stage6SimilarityEngine,
@@ -39,8 +38,12 @@ FEATURE_COLUMNS = [
     "phase_ed_conf",
     "phase_es_conf",
     "pred_gap_norm",
-    "ed_trace_offset",
-    "es_trace_offset",
+    "stage5_pred_gap_norm",
+    "stage5_pred_ed_area",
+    "stage5_pred_es_area",
+    "stage5_area_ratio",
+    "stage5_area_delta",
+    "stage5_pair_swapped",
 ]
 
 
@@ -73,6 +76,8 @@ def parse_args():
     parser.add_argument("--normal-threshold", type=float, default=50.0, help="EF >= threshold -> normal class")
     parser.add_argument("--severe-threshold", type=float, default=30.0, help="EF < threshold -> severe class")
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage67"))
+    parser.add_argument("--stage5-metrics-dir", type=str, default=os.path.join("validation", "outputs", "stage45"))
+    parser.add_argument("--stage5-video-metrics-name", type=str, default="stage5_video_metrics.csv")
     parser.add_argument("--save-per-split-csv", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--stage6-backend", type=str, choices=["similarity", "mlp"], default="similarity")
@@ -100,76 +105,37 @@ def _safe_entropy(weights):
     return float(-(w * np.log(w)).sum() / np.log(w.shape[0]))
 
 
-def _get_video_dims_map(data_dir):
-    filelist_path = os.path.join(data_dir, "FileList.csv")
-    df = pd.read_csv(filelist_path)
-    dims_map = {}
-    for _, row in df.iterrows():
-        fname = str(row["FileName"]).strip() + ".avi"
-        dims_map[fname] = (int(row["FrameHeight"]), int(row["FrameWidth"]))
-    return dims_map
+def _bool_feature(value):
+    if isinstance(value, str):
+        return 1.0 if value.strip().lower() in {"1", "true", "yes", "y"} else 0.0
+    return float(bool(value))
 
 
-def _build_frame_area_lookup(data_dir):
-    tracings_path = os.path.join(data_dir, "VolumeTracings.csv")
-    tracings = pd.read_csv(tracings_path)
+def _load_stage5_metrics(split, args):
+    split_l = str(split).lower()
+    metrics_path = os.path.join(args.stage5_metrics_dir, split_l, args.stage5_video_metrics_name)
+    if not os.path.exists(metrics_path):
+        raise FileNotFoundError(
+            f"Stage5 metrics not found for {split}: {metrics_path}. "
+            "Run pipeline/run_stage45_from_tracings.py for TRAIN, VAL, and TEST first."
+        )
 
-    dims_map = _get_video_dims_map(data_dir)
-    stage45 = Stage45Pipeline()
+    df = pd.read_csv(metrics_path)
+    required = {
+        "file_name_ext",
+        "ef_pred",
+        "pred_gap_norm",
+        "pred_ed_area",
+        "pred_es_area",
+        "pred_area_ratio",
+        "pred_area_delta",
+        "pred_pair_swapped",
+    }
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise ValueError(f"Stage5 metrics file {metrics_path} missing columns: {missing}")
 
-    area_lookup = {}
-
-    grouped = tracings.groupby(["FileName", "Frame"])
-    for (file_name_ext, frame_id), grp in grouped:
-        file_name_ext = str(file_name_ext)
-        frame_id = int(frame_id)
-
-        if file_name_ext in dims_map:
-            h, w = dims_map[file_name_ext]
-        else:
-            max_x = float(max(grp["X1"].max(), grp["X2"].max()))
-            max_y = float(max(grp["Y1"].max(), grp["Y2"].max()))
-            w = int(max(2, np.ceil(max_x + 2)))
-            h = int(max(2, np.ceil(max_y + 2)))
-
-        mask = stage45.tracing_to_mask(grp.sort_index(), height=h, width=w)
-        area = stage45.mask_area(mask)
-
-        if file_name_ext not in area_lookup:
-            area_lookup[file_name_ext] = {}
-        area_lookup[file_name_ext][frame_id] = float(area)
-
-    return area_lookup
-
-
-def _nearest_frame(frame_ids, target):
-    if not frame_ids:
-        return None
-    t = int(target)
-    arr = np.asarray(frame_ids, dtype=np.int32)
-    idx = int(np.argmin(np.abs(arr - t)))
-    return int(arr[idx])
-
-
-def _compute_stage5_proxy(area_lookup, file_name_ext, pred_ed_orig, pred_es_orig):
-    frame_areas = area_lookup.get(file_name_ext, {})
-    if not frame_areas:
-        return float("nan"), float("nan"), float("nan")
-
-    frame_ids = sorted(frame_areas.keys())
-    use_ed = _nearest_frame(frame_ids, pred_ed_orig)
-    use_es = _nearest_frame(frame_ids, pred_es_orig)
-    if use_ed is None or use_es is None:
-        return float("nan"), float("nan"), float("nan")
-
-    ed_area = float(frame_areas[use_ed])
-    es_area = float(frame_areas[use_es])
-
-    if ed_area <= 0:
-        return float("nan"), float(abs(pred_ed_orig - use_ed)), float(abs(pred_es_orig - use_es))
-
-    ef = 100.0 * Stage45Pipeline.compute_ef_from_areas(ed_area, es_area)
-    return float(ef), float(abs(pred_ed_orig - use_ed)), float(abs(pred_es_orig - use_es))
+    return df.set_index("file_name_ext", drop=False)
 
 
 def _load_stage123_model(checkpoint_path, num_frames, device):
@@ -185,7 +151,7 @@ def _load_stage123_model(checkpoint_path, num_frames, device):
     return model, incompatible
 
 
-def _collect_split_rows(split, args, model, device, area_lookup):
+def _collect_split_rows(split, args, model, device, stage5_metrics):
     dataset = EchoDataset(
         data_dir=args.data_dir,
         split=str(split).upper(),
@@ -207,7 +173,7 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         ed_orig = int(dataset.phase_dict[file_name_ext]["ed"])
         es_orig = int(dataset.phase_dict[file_name_ext]["es"])
 
-        clip, sampled_indices = dataset.load_video(
+        clip, _sampled_indices = dataset.load_video(
             video_path,
             ed_original=ed_orig,
             es_original=es_orig,
@@ -236,21 +202,20 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         pred_ed_idx = int(pred_ed_idx_t[0].item())
         pred_es_idx = int(pred_es_idx_t[0].item())
 
-        pred_ed_orig = int(sampled_indices[pred_ed_idx])
-        pred_es_orig = int(sampled_indices[pred_es_idx])
-
         phase_logits_0 = phase_logits[0]
         ed_time_prob = torch.softmax(phase_logits_0[:, 1], dim=0).detach().cpu().numpy()
         es_time_prob = torch.softmax(phase_logits_0[:, 2], dim=0).detach().cpu().numpy()
         ed_conf = float(ed_time_prob[pred_ed_idx])
         es_conf = float(es_time_prob[pred_es_idx])
 
-        ef_stage5_pct, ed_offset, es_offset = _compute_stage5_proxy(
-            area_lookup=area_lookup,
-            file_name_ext=file_name_ext,
-            pred_ed_orig=pred_ed_orig,
-            pred_es_orig=pred_es_orig,
-        )
+        if file_name_ext not in stage5_metrics.index:
+            raise KeyError(f"Missing Stage5 predicted-mask metrics for {file_name_ext} in split {split}")
+
+        stage5_row = stage5_metrics.loc[file_name_ext]
+        if isinstance(stage5_row, pd.DataFrame):
+            stage5_row = stage5_row.iloc[0]
+
+        ef_stage5_pct = float(stage5_row["ef_pred"]) * 100.0
 
         if np.isfinite(ef_stage5_pct):
             ef_disagreement = float(abs(ef_stage123_pct - ef_stage5_pct))
@@ -280,8 +245,12 @@ def _collect_split_rows(split, args, model, device, area_lookup):
                 "phase_ed_conf": ed_conf,
                 "phase_es_conf": es_conf,
                 "pred_gap_norm": pred_gap_norm,
-                "ed_trace_offset": ed_offset,
-                "es_trace_offset": es_offset,
+                "stage5_pred_gap_norm": float(stage5_row["pred_gap_norm"]),
+                "stage5_pred_ed_area": float(stage5_row["pred_ed_area"]),
+                "stage5_pred_es_area": float(stage5_row["pred_es_area"]),
+                "stage5_area_ratio": float(stage5_row["pred_area_ratio"]),
+                "stage5_area_delta": float(stage5_row["pred_area_delta"]),
+                "stage5_pair_swapped": _bool_feature(stage5_row["pred_pair_swapped"]),
                 "severity_label": int(label),
                 "severity_text_gt": LABEL_TO_TEXT[int(label)],
             }
@@ -474,6 +443,7 @@ def main():
     print(f"Device: {device}")
     print(f"Data dir: {args.data_dir}")
     print(f"Stage1-3 checkpoint: {args.stage123_checkpoint}")
+    print(f"Stage5 metrics dir: {args.stage5_metrics_dir}")
     print(f"Num frames: {args.num_frames}")
     print(f"Dataset period: {args.dataset_period}")
     print(f"Dataset max length: {args.dataset_max_length}")
@@ -490,11 +460,13 @@ def main():
             f"missing={len(incompatible.missing_keys)} unexpected={len(incompatible.unexpected_keys)}"
         )
 
-    area_lookup = _build_frame_area_lookup(args.data_dir)
+    stage5_train = _load_stage5_metrics("TRAIN", args)
+    stage5_val = _load_stage5_metrics("VAL", args)
+    stage5_test = _load_stage5_metrics("TEST", args)
 
-    train_df = _collect_split_rows("TRAIN", args, model, device, area_lookup)
-    val_df = _collect_split_rows("VAL", args, model, device, area_lookup)
-    test_df = _collect_split_rows("TEST", args, model, device, area_lookup)
+    train_df = _collect_split_rows("TRAIN", args, model, device, stage5_train)
+    val_df = _collect_split_rows("VAL", args, model, device, stage5_val)
+    test_df = _collect_split_rows("TEST", args, model, device, stage5_test)
 
     print(f"Feature rows -> train={len(train_df)} val={len(val_df)} test={len(test_df)}")
 
