@@ -237,7 +237,7 @@ def _write_overlay(path, frame_bgr, pred_mask=None, gt_mask=None, text=""):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run Stage 4/5 evaluation from tracings or Stage4 predicted masks.")
+    parser = argparse.ArgumentParser(description="Run Stage 4/5 evaluation from Stage4 predicted masks.")
     parser.add_argument("--split", type=str, default="VAL", help="Dataset split: TRAIN/VAL/TEST")
     parser.add_argument("--data-dir", type=str, default=config.DATA_DIR)
     parser.add_argument("--max-videos", type=int, default=25, help="Number of videos to process")
@@ -249,13 +249,6 @@ def parse_args():
         help="Directory for outputs",
     )
 
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["tracing", "predicted_masks"],
-        default="tracing",
-        help="tracing: ED/ES/areas from GT tracings; predicted_masks: ED/ES/areas from Stage4 predicted masks",
-    )
     parser.add_argument("--stage4-checkpoint", type=str, default=getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
     parser.add_argument("--stage4-model-name", type=str, default="deeplabv3_resnet50")
     parser.add_argument("--stage4-base-channels", type=int, default=32)
@@ -284,16 +277,12 @@ def main():
         split_df = split_df.head(int(args.max_videos))
 
     device = _resolve_device(args.device)
-    model4 = None
-    model4_meta = None
-
-    if args.mode == "predicted_masks":
-        model4, model4_meta = _load_stage4_model(
-            checkpoint_path=args.stage4_checkpoint,
-            fallback_model_name=args.stage4_model_name,
-            fallback_base_channels=args.stage4_base_channels,
-            device=device,
-        )
+    model4, model4_meta = _load_stage4_model(
+        checkpoint_path=args.stage4_checkpoint,
+        fallback_model_name=args.stage4_model_name,
+        fallback_base_channels=args.stage4_base_channels,
+        device=device,
+    )
 
     per_video_rows = []
     per_frame_rows = []
@@ -328,92 +317,85 @@ def main():
             frame_masks_gt[int(frame_id)] = gt_mask
             gt_frame_areas.append((int(frame_id), float(gt_area)))
 
-            if args.mode == "predicted_masks":
-                frame_bgr = read_video_frame(video_path, frame_id)
-                pred_mask, pred_area = _predict_mask_area_stage4(
-                    model=model4,
-                    frame_bgr=frame_bgr,
-                    image_size=int(model4_meta["image_size"]),
-                    normalize_mode=model4_meta["normalize"],
-                    pretrained_flag=bool(model4_meta.get("pretrained", False)),
-                    device=device,
-                    eval_threshold=float(model4_meta.get("eval_threshold", args.eval_threshold)),
-                    postprocess_masks=bool(model4_meta.get("postprocess_masks", True)),
-                    closing_kernel=int(model4_meta.get("postprocess_closing_kernel", 5)),
-                    opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
-                    fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
-                    keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
-                )
-                frame_masks_pred[int(frame_id)] = pred_mask
-                pred_frame_areas.append((int(frame_id), float(pred_area)))
-
-                abs_err_area = abs(float(pred_area) - float(gt_area))
-                pct_err_area = abs_err_area / max(1e-6, float(gt_area))
-                per_frame_rows.append(
-                    {
-                        "file_name": fname,
-                        "file_name_ext": fname_ext,
-                        "frame_id": int(frame_id),
-                        "gt_area": float(gt_area),
-                        "pred_area": float(pred_area),
-                        "abs_error": float(abs_err_area),
-                        "pct_error": float(pct_err_area),
-                        "mode": args.mode,
-                    }
-                )
-
-        gt_ed_frame, gt_ed_area = max(gt_frame_areas, key=lambda x: x[1])
-        gt_es_frame, gt_es_area = min(gt_frame_areas, key=lambda x: x[1])
-        ef_gt_proxy = Stage45Pipeline.compute_ef_from_areas(gt_ed_area, gt_es_area)
-
-        if args.mode == "predicted_masks":
-            curve_frame_ids, curve_areas = _predict_video_area_curve_stage4(
+            frame_bgr = read_video_frame(video_path, frame_id)
+            pred_mask, pred_area = _predict_mask_area_stage4(
                 model=model4,
-                video_path=video_path,
+                frame_bgr=frame_bgr,
                 image_size=int(model4_meta["image_size"]),
                 normalize_mode=model4_meta["normalize"],
                 pretrained_flag=bool(model4_meta.get("pretrained", False)),
                 device=device,
                 eval_threshold=float(model4_meta.get("eval_threshold", args.eval_threshold)),
-                batch_size=int(args.curve_batch_size),
                 postprocess_masks=bool(model4_meta.get("postprocess_masks", True)),
                 closing_kernel=int(model4_meta.get("postprocess_closing_kernel", 5)),
                 opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
                 fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
                 keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
             )
-            if curve_frame_ids.size == 0:
-                print(f"Warning: empty Stage4 area curve for {fname_ext}")
-                continue
+            frame_masks_pred[int(frame_id)] = pred_mask
+            pred_frame_areas.append((int(frame_id), float(pred_area)))
 
-            detected = stage45.detect_ed_es_from_size_curve(
-                frame_ids=curve_frame_ids,
-                areas=curve_areas,
-                smooth_window=int(args.curve_smooth_window),
-                enforce_es_after_ed=True,
+            abs_err_area = abs(float(pred_area) - float(gt_area))
+            pct_err_area = abs_err_area / max(1e-6, float(gt_area))
+            per_frame_rows.append(
+                {
+                    "file_name": fname,
+                    "file_name_ext": fname_ext,
+                    "frame_id": int(frame_id),
+                    "gt_area": float(gt_area),
+                    "pred_area": float(pred_area),
+                    "abs_error": float(abs_err_area),
+                    "pct_error": float(pct_err_area),
+                    "mode": "predicted_masks",
+                }
             )
-            curve_area_lookup = {int(fid): float(area) for fid, area in zip(curve_frame_ids.tolist(), curve_areas.tolist())}
-            pred_ed_frame = int(detected["ed_frame"])
-            pred_es_frame = int(detected["es_frame"])
-            pred_ed_area = float(curve_area_lookup.get(pred_ed_frame, float(np.max(curve_areas))))
-            pred_es_area = float(curve_area_lookup.get(pred_es_frame, float(np.min(curve_areas))))
-            canonical_pair = _canonicalize_ed_es_pair_safe(
-                pred_ed_frame,
-                pred_ed_area,
-                pred_es_frame,
-                pred_es_area,
-            )
-            pred_ed_frame = int(canonical_pair["ed_frame"])
-            pred_es_frame = int(canonical_pair["es_frame"])
-            pred_ed_area = float(canonical_pair["ed_area"])
-            pred_es_area = float(canonical_pair["es_area"])
-            pred_pair_swapped = bool(canonical_pair["swapped"])
-            ef_pred = Stage45Pipeline.compute_ef_from_areas(pred_ed_area, pred_es_area)
-        else:
-            pred_ed_frame, pred_ed_area = gt_ed_frame, gt_ed_area
-            pred_es_frame, pred_es_area = gt_es_frame, gt_es_area
-            pred_pair_swapped = False
-            ef_pred = ef_gt_proxy
+
+        gt_ed_frame, gt_ed_area = max(gt_frame_areas, key=lambda x: x[1])
+        gt_es_frame, gt_es_area = min(gt_frame_areas, key=lambda x: x[1])
+        ef_gt_proxy = Stage45Pipeline.compute_ef_from_areas(gt_ed_area, gt_es_area)
+
+        curve_frame_ids, curve_areas = _predict_video_area_curve_stage4(
+            model=model4,
+            video_path=video_path,
+            image_size=int(model4_meta["image_size"]),
+            normalize_mode=model4_meta["normalize"],
+            pretrained_flag=bool(model4_meta.get("pretrained", False)),
+            device=device,
+            eval_threshold=float(model4_meta.get("eval_threshold", args.eval_threshold)),
+            batch_size=int(args.curve_batch_size),
+            postprocess_masks=bool(model4_meta.get("postprocess_masks", True)),
+            closing_kernel=int(model4_meta.get("postprocess_closing_kernel", 5)),
+            opening_kernel=int(model4_meta.get("postprocess_opening_kernel", 0)),
+            fill_holes=bool(model4_meta.get("postprocess_fill_holes", True)),
+            keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
+        )
+        if curve_frame_ids.size == 0:
+            print(f"Warning: empty Stage4 area curve for {fname_ext}")
+            continue
+
+        detected = stage45.detect_ed_es_from_size_curve(
+            frame_ids=curve_frame_ids,
+            areas=curve_areas,
+            smooth_window=int(args.curve_smooth_window),
+            enforce_es_after_ed=True,
+        )
+        curve_area_lookup = {int(fid): float(area) for fid, area in zip(curve_frame_ids.tolist(), curve_areas.tolist())}
+        pred_ed_frame = int(detected["ed_frame"])
+        pred_es_frame = int(detected["es_frame"])
+        pred_ed_area = float(curve_area_lookup.get(pred_ed_frame, float(np.max(curve_areas))))
+        pred_es_area = float(curve_area_lookup.get(pred_es_frame, float(np.min(curve_areas))))
+        canonical_pair = _canonicalize_ed_es_pair_safe(
+            pred_ed_frame,
+            pred_ed_area,
+            pred_es_frame,
+            pred_es_area,
+        )
+        pred_ed_frame = int(canonical_pair["ed_frame"])
+        pred_es_frame = int(canonical_pair["es_frame"])
+        pred_ed_area = float(canonical_pair["ed_area"])
+        pred_es_area = float(canonical_pair["es_area"])
+        pred_pair_swapped = bool(canonical_pair["swapped"])
+        ef_pred = Stage45Pipeline.compute_ef_from_areas(pred_ed_area, pred_es_area)
 
         abs_err = abs(float(ef_pred) - float(ef_gt))
         errors.append(abs_err)
@@ -423,7 +405,7 @@ def main():
                 "file_name": fname,
                 "file_name_ext": fname_ext,
                 "split": split_u,
-                "mode": args.mode,
+                "mode": "predicted_masks",
                 "ef_gt": float(ef_gt),
                 "ef_gt_proxy": float(ef_gt_proxy),
                 "ef_pred": float(ef_pred),
@@ -438,7 +420,7 @@ def main():
                 "pred_es_area": float(pred_es_area),
                 "pred_ed_frame_error": float(abs(pred_ed_frame - gt_ed_frame)),
                 "pred_es_frame_error": float(abs(pred_es_frame - gt_es_frame)),
-                "pred_curve_method": ("full_video_stage4_curve" if args.mode == "predicted_masks" else "tracing"),
+                "pred_curve_method": "full_video_stage4_curve",
                 "pred_pair_swapped": bool(pred_pair_swapped),
             }
         )
@@ -450,7 +432,7 @@ def main():
 
                 ed_gt_mask = frame_masks_gt.get(int(pred_ed_frame))
                 es_gt_mask = frame_masks_gt.get(int(pred_es_frame))
-                if args.mode == "predicted_masks" and int(pred_ed_frame) not in frame_masks_pred:
+                if int(pred_ed_frame) not in frame_masks_pred:
                     pred_mask_ed, _ = _predict_mask_area_stage4(
                         model=model4,
                         frame_bgr=read_video_frame(video_path, pred_ed_frame),
@@ -466,7 +448,7 @@ def main():
                         keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
                     )
                     frame_masks_pred[int(pred_ed_frame)] = pred_mask_ed
-                if args.mode == "predicted_masks" and int(pred_es_frame) not in frame_masks_pred:
+                if int(pred_es_frame) not in frame_masks_pred:
                     pred_mask_es, _ = _predict_mask_area_stage4(
                         model=model4,
                         frame_bgr=read_video_frame(video_path, pred_es_frame),
@@ -482,8 +464,8 @@ def main():
                         keep_largest=bool(model4_meta.get("postprocess_keep_largest", True)),
                     )
                     frame_masks_pred[int(pred_es_frame)] = pred_mask_es
-                ed_pred_mask = frame_masks_pred.get(int(pred_ed_frame)) if args.mode == "predicted_masks" else ed_gt_mask
-                es_pred_mask = frame_masks_pred.get(int(pred_es_frame)) if args.mode == "predicted_masks" else es_gt_mask
+                ed_pred_mask = frame_masks_pred.get(int(pred_ed_frame))
+                es_pred_mask = frame_masks_pred.get(int(pred_es_frame))
 
                 _write_overlay(
                     os.path.join(args.output_dir, f"{fname}_ed_overlay.png"),
@@ -516,10 +498,10 @@ def main():
         pd.DataFrame(per_frame_rows).to_csv(frame_csv, index=False)
 
     print("=" * 88)
-    print(f"STAGE 5 SUMMARY ({args.mode.upper()})")
+    print("STAGE 5 SUMMARY (PREDICTED_MASKS)")
     print("=" * 88)
     print(f"Split:                 {split_u}")
-    print(f"Mode:                  {args.mode}")
+    print("Mode:                  predicted_masks")
     print(f"Videos processed:      {len(per_video_rows)}")
     print(f"EF MAE (0-1):          {mae:.4f}")
     print(f"EF MAE (%):            {mae * 100:.2f}")

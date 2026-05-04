@@ -29,9 +29,6 @@ class EchoDataset(Dataset):
         clips=1,
         pad=None,
         noise=None,
-        temporal_window_mode="full",
-        temporal_window_margin_mult=1.5,
-        temporal_window_jitter_mult=0.0,
     ):
         self.data_dir = data_dir
         resolved_length = num_frames if length is None else length
@@ -53,11 +50,6 @@ class EchoDataset(Dataset):
         self.pad = None if pad is None else max(0, int(pad))
         self.noise = None if noise is None else float(min(1.0, max(0.0, noise)))
         self.split = str(split).strip().upper()
-        # Retained for caller compatibility; clip sampling no longer uses ED/ES
-        # labels to crop the video before sampling.
-        self.temporal_window_mode = str(temporal_window_mode).strip().lower()
-        self.temporal_window_margin_mult = float(max(0.0, temporal_window_margin_mult))
-        self.temporal_window_jitter_mult = float(max(0.0, temporal_window_jitter_mult))
 
         if self.length is not None and self.length <= 0:
             raise ValueError("length/num_frames must be positive")

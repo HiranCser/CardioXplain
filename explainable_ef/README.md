@@ -58,7 +58,7 @@ python model_execution.py --train-stage123 --no-phase-only
 
 This now trains Stage 1/2/3 jointly and keeps EF loss enabled.
 
-`--train-stage123` now also applies phase-friendly defaults unless explicitly overridden: tracing window sampling, higher phase loss weight, and Stage2 attention-alignment loss.
+`--train-stage123` trains from label-free video sampling while using phase labels only as supervised targets.
 
 ### B) Phase-only Stage 1+2+3
 
@@ -122,7 +122,7 @@ Outputs:
 - `validation/outputs/stage4/test_frame_areas.csv`
 - `validation/outputs/stage4/test_frame_areas_video_summary.csv`
 
-### I) Stage 4/5 tracing baseline utility
+### I) Stage 4/5 predicted-mask utility
 
 ```powershell
 python pipeline\run_stage45_from_tracings.py --split VAL --max-videos 25 --save-overlays
@@ -151,7 +151,7 @@ This orchestrates:
 
 - Stage1-3 joint training (`model_execution.py --train-stage123 --no-phase-only`)
 - Stage4 segmentation training
-- Stage5 deterministic EF evaluation from tracings (VAL/TEST)
+- Stage5 EF evaluation from predicted Stage4 masks (VAL/TEST)
 - Stage6 similarity training + Stage7 uncertainty calibration
 
 Stage4 defaults are now class-imbalance aware (`--eval-threshold 0.5`, auto BCE `pos_weight`) to prevent empty-mask collapse.
@@ -236,9 +236,6 @@ Run any script with `--help` for the latest values/defaults.
 - `--phase-unfreeze-lr-mult PHASE_UNFREEZE_LR_MULT`
 - `--weight-decay WEIGHT_DECAY`
 - `--max-grad-norm MAX_GRAD_NORM`
-- `--phase-temporal-window-mode {full,tracing}`
-- `--phase-temporal-window-margin-mult PHASE_TEMPORAL_WINDOW_MARGIN_MULT`
-- `--phase-temporal-window-jitter-mult PHASE_TEMPORAL_WINDOW_JITTER_MULT`
 - `--warm-start-checkpoint, --no-warm-start-checkpoint`
 - `--protect-best-checkpoint, --no-protect-best-checkpoint`
 - `--train-stage123, --no-train-stage123`
@@ -279,6 +276,13 @@ Run any script with `--help` for the latest values/defaults.
 - `--max-videos MAX_VIDEOS`
 - `--save-overlays`
 - `--output-dir OUTPUT_DIR`
+- `--stage4-checkpoint STAGE4_CHECKPOINT`
+- `--stage4-model-name STAGE4_MODEL_NAME`
+- `--stage4-base-channels STAGE4_BASE_CHANNELS`
+- `--eval-threshold EVAL_THRESHOLD`
+- `--curve-smooth-window CURVE_SMOOTH_WINDOW`
+- `--curve-batch-size CURVE_BATCH_SIZE`
+- `--device DEVICE`
 
 ### `pipeline/train_stage67_similarity.py` options
 
@@ -291,8 +295,6 @@ Run any script with `--help` for the latest values/defaults.
 - `--normal-threshold NORMAL_THRESHOLD`
 - `--severe-threshold SEVERE_THRESHOLD`
 - `--output-dir OUTPUT_DIR`
-- `--temporal-window-mode {full,tracing}`
-- `--temporal-window-margin-mult TEMPORAL_WINDOW_MARGIN_MULT`
 - `--save-per-split-csv, --no-save-per-split-csv`
 
 ### `pipeline/train_all_stages.py` options
@@ -375,20 +377,14 @@ Run any script with `--help` for the latest values/defaults.
 - Stage 4 area validation is exported at both frame and video level.
 - For reproducibility, keep one config profile per experiment and log CLI overrides used for that run.
 
-## 7. Update: Stage5 Predicted-Mask Mode + Stage6 MLP Backend
+## 7. Update: Stage5 Predicted Masks + Stage6 MLP Backend
 
 ### Stage5 from learned Stage4 masks
 
-Use this after Stage4 training to evaluate EF using **predicted segmentation masks** instead of tracing-only baseline:
+Use this after Stage4 training to evaluate EF using **predicted segmentation masks**:
 
 ```powershell
-python pipeline\run_stage45_from_tracings.py --split VAL --mode predicted_masks --stage4-checkpoint best_stage4_segmentation.pth --eval-threshold 0.5 --max-videos 25 --save-overlays
-```
-
-Tracing baseline remains available:
-
-```powershell
-python pipeline\run_stage45_from_tracings.py --split VAL --mode tracing --max-videos 25 --save-overlays
+python pipeline\run_stage45_from_tracings.py --split VAL --stage4-checkpoint best_stage4_segmentation.pth --eval-threshold 0.5 --max-videos 25 --save-overlays
 ```
 
 ### Stage6 backend options
@@ -413,7 +409,6 @@ Artifacts:
 ### Orchestrator flags
 
 `train_all_stages.py` now supports:
-- `--stage5-mode tracing|predicted_masks` (default `predicted_masks`)
 - `--stage5-stage4-checkpoint ...`
 - `--stage67-backend similarity|mlp`
 - `--stage67-mlp-*` training flags

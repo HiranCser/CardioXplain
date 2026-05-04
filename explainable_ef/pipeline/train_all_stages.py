@@ -59,13 +59,6 @@ def parse_args():
 
     parser.add_argument("--stage5-max-videos", type=int, default=0, help="0 means all videos")
     parser.add_argument("--stage5-save-overlays", action="store_true")
-    parser.add_argument(
-        "--stage5-mode",
-        type=str,
-        choices=["tracing", "predicted_masks"],
-        default="predicted_masks",
-        help="tracing baseline or learned Stage4 mask-based EF evaluation",
-    )
     parser.add_argument("--stage5-stage4-checkpoint", type=str, default=None, help="Defaults to --stage4-checkpoint")
     parser.add_argument("--stage5-stage4-model-name", type=str, default="deeplabv3_resnet50")
     parser.add_argument("--stage5-stage4-base-channels", type=int, default=32)
@@ -188,8 +181,6 @@ def main():
                 os.path.join(ROOT_DIR, "pipeline", "run_stage45_from_tracings.py"),
                 "--split",
                 split,
-                "--mode",
-                str(args.stage5_mode),
                 "--output-dir",
                 os.path.join("validation", "outputs", "stage45", split.lower()),
             ]
@@ -201,19 +192,18 @@ def main():
             if args.stage5_save_overlays:
                 cmd += ["--save-overlays"]
 
-            if str(args.stage5_mode) == "predicted_masks":
-                cmd += [
-                    "--stage4-checkpoint",
-                    str(stage5_ckpt),
-                    "--stage4-model-name",
-                    str(args.stage5_stage4_model_name),
-                    "--stage4-base-channels",
-                    str(args.stage5_stage4_base_channels),
-                    "--eval-threshold",
-                    str(args.stage5_eval_threshold),
-                ]
-                if args.device is not None:
-                    cmd += ["--device", str(args.device)]
+            cmd += [
+                "--stage4-checkpoint",
+                str(stage5_ckpt),
+                "--stage4-model-name",
+                str(args.stage5_stage4_model_name),
+                "--stage4-base-channels",
+                str(args.stage5_stage4_base_channels),
+                "--eval-threshold",
+                str(args.stage5_eval_threshold),
+            ]
+            if args.device is not None:
+                cmd += ["--device", str(args.device)]
 
             _run_step(f"Stage5 evaluation ({split})", cmd)
     else:

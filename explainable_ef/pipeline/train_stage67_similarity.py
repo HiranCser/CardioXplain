@@ -73,8 +73,6 @@ def parse_args():
     parser.add_argument("--normal-threshold", type=float, default=50.0, help="EF >= threshold -> normal class")
     parser.add_argument("--severe-threshold", type=float, default=30.0, help="EF < threshold -> severe class")
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage67"))
-    parser.add_argument("--temporal-window-mode", type=str, choices=["full", "tracing"], default="tracing")
-    parser.add_argument("--temporal-window-margin-mult", type=float, default=1.0)
     parser.add_argument("--save-per-split-csv", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--stage6-backend", type=str, choices=["similarity", "mlp"], default="similarity")
@@ -196,9 +194,6 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         max_length=args.dataset_max_length,
         max_videos=args.max_videos,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=str(args.temporal_window_mode),
-        temporal_window_margin_mult=float(args.temporal_window_margin_mult),
-        temporal_window_jitter_mult=0.0,
     )
 
     rows = []
@@ -482,7 +477,6 @@ def main():
     print(f"Num frames: {args.num_frames}")
     print(f"Dataset period: {args.dataset_period}")
     print(f"Dataset max length: {args.dataset_max_length}")
-    print(f"Temporal window: {args.temporal_window_mode} (margin={args.temporal_window_margin_mult})")
     print(f"Max videos per split: {args.max_videos if args.max_videos else 'All'}")
     print(f"Severity thresholds: severe<{args.severe_threshold}, normal>={args.normal_threshold}")
     print(f"Stage6 backend: {args.stage6_backend}")

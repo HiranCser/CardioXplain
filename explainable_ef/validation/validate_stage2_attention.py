@@ -39,9 +39,6 @@ def parse_args():
     parser.add_argument("--max-videos", type=int, default=None)
     parser.add_argument("--radius", type=int, default=1, help="Neighborhood radius around ED/ES for attention mass")
     parser.add_argument("--topk", type=int, default=3, help="Top-k for hit-rate metrics")
-    parser.add_argument("--phase-temporal-window-mode", type=str, default="tracing", choices=["full", "tracing"])
-    parser.add_argument("--phase-temporal-window-margin-mult", type=float, default=1.5)
-    parser.add_argument("--phase-temporal-window-jitter-mult", type=float, default=0.0)
     parser.add_argument("--output", type=str, default="validation/outputs/stage2_attention_validation.csv")
     parser.add_argument("--device", type=str, default=None, help="cuda or cpu; default uses config")
     return parser.parse_args()
@@ -59,9 +56,6 @@ def main():
         max_length=args.dataset_max_length,
         max_videos=args.max_videos,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=args.phase_temporal_window_mode,
-        temporal_window_margin_mult=args.phase_temporal_window_margin_mult,
-        temporal_window_jitter_mult=args.phase_temporal_window_jitter_mult,
     )
 
     loader = DataLoader(

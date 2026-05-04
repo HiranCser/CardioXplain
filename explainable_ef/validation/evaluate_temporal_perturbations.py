@@ -35,9 +35,6 @@ def parse_args():
     parser.add_argument("--dataset-period", type=int, default=int(getattr(config, "DATASET_PERIOD", 1)))
     parser.add_argument("--dataset-max-length", type=int, default=getattr(config, "DATASET_MAX_LENGTH", None))
     parser.add_argument("--max-videos", type=int, default=50)
-    parser.add_argument("--phase-temporal-window-mode", type=str, default=str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")))
-    parser.add_argument("--phase-temporal-window-margin-mult", type=float, default=float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)))
-    parser.add_argument("--phase-temporal-window-jitter-mult", type=float, default=0.0)
     parser.add_argument("--perturbations", type=str, default="random_mask,attention_guided_mask,contiguous_mask,temporal_shift,local_shuffle,reverse_window,frame_drop")
     parser.add_argument("--severities", type=str, default="0.1,0.2,0.3")
     parser.add_argument("--seed", type=int, default=42)
@@ -131,9 +128,6 @@ def make_dataset(args):
         max_videos=args.max_videos,
         clips=1,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=args.phase_temporal_window_mode,
-        temporal_window_margin_mult=args.phase_temporal_window_margin_mult,
-        temporal_window_jitter_mult=args.phase_temporal_window_jitter_mult,
     )
 
 
