@@ -89,10 +89,25 @@ def main():
 
     # Stage 1-3
     if not args.skip_stage123:
+        ignored_stage123_args = {
+            "--stage123-dataset-period": args.stage123_dataset_period,
+            "--stage123-dataset-max-length": args.stage123_dataset_max_length,
+            "--stage123-eval-clips": args.stage123_eval_clips,
+            "--stage123-train-pad": args.stage123_train_pad,
+            "--stage123-train-noise": args.stage123_train_noise,
+            "--stage123-stage1-preserve-temporal-stride": args.stage123_stage1_preserve_temporal_stride,
+            "--stage123-echonet-style-profile": args.stage123_echonet_style_profile if args.stage123_echonet_style_profile else None,
+        }
+        ignored_stage123_args = {k: v for k, v in ignored_stage123_args.items() if v is not None}
+        if ignored_stage123_args:
+            print(
+                "Ignoring Stage1-3 options no longer supported by model_execution.py: "
+                + ", ".join(f"{k}={v}" for k, v in ignored_stage123_args.items())
+            )
+
         cmd = [
             python_bin,
             os.path.join(ROOT_DIR, "model_execution.py"),
-            "--train-stage123",
             "--no-phase-only",
             "--checkpoint",
             str(args.stage123_checkpoint),
@@ -105,23 +120,6 @@ def main():
             cmd += ["--batch-size", str(args.stage123_batch_size)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
-        if args.stage123_dataset_period is not None:
-            cmd += ["--dataset-period", str(args.stage123_dataset_period)]
-        if args.stage123_dataset_max_length is not None:
-            cmd += ["--dataset-max-length", str(args.stage123_dataset_max_length)]
-        if args.stage123_eval_clips is not None:
-            cmd += ["--eval-clips", str(args.stage123_eval_clips)]
-        if args.stage123_train_pad is not None:
-            cmd += ["--train-pad", str(args.stage123_train_pad)]
-        if args.stage123_train_noise is not None:
-            cmd += ["--train-noise", str(args.stage123_train_noise)]
-        if args.stage123_stage1_preserve_temporal_stride is not None:
-            if bool(args.stage123_stage1_preserve_temporal_stride):
-                cmd += ["--stage1-preserve-temporal-stride"]
-            else:
-                cmd += ["--no-stage1-preserve-temporal-stride"]
-        if bool(args.stage123_echonet_style_profile):
-            cmd += ["--echonet-style-profile"]
         if args.stage123_workers is not None:
             cmd += ["--workers", str(args.stage123_workers)]
         if args.stage123_max_videos is not None:
