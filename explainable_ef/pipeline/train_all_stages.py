@@ -50,6 +50,16 @@ def parse_args():
     parser.add_argument("--phase-target-accuracy", type=float, default=0.95)
     parser.add_argument("--phase-stop-on-target", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--phase-tolerance", type=int, default=None)
+    parser.add_argument("--phase-backbone-freeze-epochs", type=int, default=None)
+    parser.add_argument("--backbone-lr-mult", type=float, default=None)
+    parser.add_argument("--phase-soft-sigma", type=float, default=None)
+    parser.add_argument("--phase-soft-radius", type=int, default=None)
+    parser.add_argument("--phase-hard-index-weight", type=float, default=None)
+    parser.add_argument("--phase-frame-ce-weight", type=float, default=None)
+    parser.add_argument("--phase-frame-radius", type=int, default=None)
+    parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None)
+    parser.add_argument("--phase-weight-decay", type=float, default=None)
+    parser.add_argument("--phase-max-grad-norm", type=float, default=None)
     parser.add_argument("--homogenization-stats", type=str, default=os.path.join("validation", "outputs", "homogenization", "frame_homogenization.json"))
     parser.add_argument("--homogenization-max-videos", type=int, default=0)
     parser.add_argument("--homogenization-sample-every", type=int, default=10)
@@ -222,6 +232,26 @@ def main():
             cmd += ["--max-videos", str(phase_max_videos)]
         if args.phase_tolerance is not None:
             cmd += ["--tolerance", str(args.phase_tolerance)]
+        if args.phase_backbone_freeze_epochs is not None:
+            cmd += ["--phase-backbone-freeze-epochs", str(args.phase_backbone_freeze_epochs)]
+        if args.backbone_lr_mult is not None:
+            cmd += ["--backbone-lr-mult", str(args.backbone_lr_mult)]
+        if args.phase_soft_sigma is not None:
+            cmd += ["--phase-soft-sigma", str(args.phase_soft_sigma)]
+        if args.phase_soft_radius is not None:
+            cmd += ["--phase-soft-radius", str(args.phase_soft_radius)]
+        if args.phase_hard_index_weight is not None:
+            cmd += ["--phase-hard-index-weight", str(args.phase_hard_index_weight)]
+        if args.phase_frame_ce_weight is not None:
+            cmd += ["--phase-frame-ce-weight", str(args.phase_frame_ce_weight)]
+        if args.phase_frame_radius is not None:
+            cmd += ["--phase-frame-radius", str(args.phase_frame_radius)]
+        if args.phase_unfreeze_lr_mult is not None:
+            cmd += ["--phase-unfreeze-lr-mult", str(args.phase_unfreeze_lr_mult)]
+        if args.phase_weight_decay is not None:
+            cmd += ["--weight-decay", str(args.phase_weight_decay)]
+        if args.phase_max_grad_norm is not None:
+            cmd += ["--max-grad-norm", str(args.phase_max_grad_norm)]
         if homogenization_stats is not None and os.path.exists(homogenization_stats):
             cmd += ["--homogenization-stats", str(homogenization_stats)]
         if args.device is not None and str(args.device).lower() == "cpu":
