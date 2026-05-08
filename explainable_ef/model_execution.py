@@ -207,6 +207,17 @@ def phase_target_accuracy():
     return float(getattr(config, "PHASE_TARGET_ACCURACY", 0.95))
 
 
+def phase_monitor_tuple(metrics):
+    phase_mae = float(metrics["ed_mae_frames"]) + float(metrics["es_mae_frames"])
+    return (float(metrics["joint_acc"]), -phase_mae)
+
+
+def format_monitor_value(monitor_value):
+    if isinstance(monitor_value, tuple):
+        return "(" + ", ".join(f"{float(v):.6f}" for v in monitor_value) + ")"
+    return f"{float(monitor_value):.6f}"
+
+
 def make_grad_scaler(amp_enabled):
     if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
         return torch.amp.GradScaler("cuda", enabled=amp_enabled)
@@ -836,8 +847,8 @@ def main(argv=None):
     freeze_epochs = max(0, int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
 
     if phase_only:
-        best_monitor = -float("inf")
-        monitor_name = "phase_score_joint_minus_mae"
+        best_monitor = (-float("inf"), -float("inf"))
+        monitor_name = "phase_joint_acc_then_low_frame_mae"
     else:
         best_monitor = float("inf")
         monitor_name = "ef_mae"
@@ -890,10 +901,7 @@ def main(argv=None):
                     val_metrics["es_mae_frames"],
                 )
 
-                phase_score = val_metrics["joint_acc"] - 0.01 * (
-                    val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
-                )
-                current_monitor = phase_score
+                current_monitor = phase_monitor_tuple(val_metrics)
                 improved = current_monitor > best_monitor
             else:
                 if should_evaluate_phase_metrics():
@@ -933,10 +941,22 @@ def main(argv=None):
                     val_mae=val_metrics["ef_mae"] if not phase_only else None,
                     metrics=val_metrics,
                 )
-                logger.info("Saving best model to %s", config.CHECKPOINT_PATH)
+                logger.info(
+                    "Saving best model to %s | monitor %s current=%s",
+                    config.CHECKPOINT_PATH,
+                    monitor_name,
+                    format_monitor_value(current_monitor),
+                )
             else:
                 epochs_without_improvement += 1
-                logger.info("No improvement (%d/%d)", epochs_without_improvement, config.PATIENCE)
+                logger.info(
+                    "No improvement (%d/%d) | monitor %s current=%s best=%s",
+                    epochs_without_improvement,
+                    config.PATIENCE,
+                    monitor_name,
+                    format_monitor_value(current_monitor),
+                    format_monitor_value(best_monitor),
+                )
 
             if phase_only and val_metrics["joint_acc"] >= phase_target_accuracy():
                 logger.info(
