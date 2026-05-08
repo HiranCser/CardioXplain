@@ -45,8 +45,10 @@ class EchoDataset(Dataset):
         sampling_mode = str(sampling_mode).strip().lower()
         if sampling_mode in {"full", "full_video"}:
             sampling_mode = "global"
-        if sampling_mode not in {"global", "echonet"}:
-            raise ValueError("sampling_mode must be 'global' or 'echonet'")
+        if sampling_mode in {"phase", "phase_aware", "phase-focused", "phase_focused"}:
+            sampling_mode = "phase_window"
+        if sampling_mode not in {"global", "echonet", "phase_window"}:
+            raise ValueError("sampling_mode must be 'global', 'echonet', or 'phase_window'")
         self.sampling_mode = sampling_mode
         self.clips = clips if clips == "all" else max(1, int(clips))
         self.pad = None if pad is None else max(0, int(pad))
@@ -163,6 +165,40 @@ class EchoDataset(Dataset):
 
         return np.repeat(indices[None, :], num_clips, axis=0)
 
+    def _sample_phase_window_indices(self, total_video_frames, clip_length, ed_original, es_original):
+        total_video_frames = int(total_video_frames)
+        clip_length = int(max(1, clip_length))
+        phase_frames = [
+            int(v)
+            for v in (ed_original, es_original)
+            if v is not None and int(v) >= 0 and int(v) < max(1, total_video_frames)
+        ]
+
+        if len(phase_frames) < 2:
+            return self._sample_global_indices(total_video_frames, clip_length), total_video_frames
+
+        effective_span = (clip_length - 1) * self.period + 1
+        padded_frames = max(total_video_frames, effective_span)
+        max_start = max(0, padded_frames - effective_span)
+
+        phase_min = min(phase_frames)
+        phase_max = max(phase_frames)
+        if phase_max - phase_min > effective_span - 1:
+            return self._sample_global_indices(total_video_frames, clip_length), total_video_frames
+
+        start_low = max(0, phase_max - effective_span + 1)
+        start_high = min(phase_min, max_start)
+        if start_low > start_high:
+            return self._sample_global_indices(total_video_frames, clip_length), total_video_frames
+
+        if self.split == "TRAIN":
+            start = int(np.random.randint(start_low, start_high + 1))
+        else:
+            start = int(round((start_low + start_high) / 2.0))
+
+        indices = start + self.period * np.arange(clip_length, dtype=np.int32)
+        return indices.astype(np.int32, copy=False), padded_frames
+
     def _apply_noise(self, frames_array):
         if self.noise is None or self.noise <= 0.0:
             return frames_array
@@ -198,7 +234,6 @@ class EchoDataset(Dataset):
         return torch.stack(clips, dim=0)
 
     def load_video(self, path, ed_original=-1, es_original=-1):
-        _ = ed_original, es_original
         cap = cv2.VideoCapture(path)
         frames = []
 
@@ -222,6 +257,20 @@ class EchoDataset(Dataset):
         clip_length = self._resolve_clip_length(total_video_frames)
         if self.sampling_mode == "global":
             sampled_indices = self._sample_global_indices(total_video_frames, clip_length)
+        elif self.sampling_mode == "phase_window":
+            sampled_indices, padded_frames = self._sample_phase_window_indices(
+                total_video_frames,
+                clip_length,
+                ed_original=ed_original,
+                es_original=es_original,
+            )
+            if padded_frames > total_video_frames:
+                frames_array = np.pad(
+                    frames_array,
+                    ((0, padded_frames - total_video_frames), (0, 0), (0, 0), (0, 0)),
+                    mode="constant",
+                    constant_values=0,
+                )
         else:
             start_positions, padded_frames = self._sample_start_positions(total_video_frames, clip_length)
 

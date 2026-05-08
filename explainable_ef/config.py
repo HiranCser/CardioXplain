@@ -14,6 +14,8 @@ MAX_VIDEOS = None  # None = use all videos
 DATASET_PERIOD = 1  # EchoNet-style temporal stride within a clip
 DATASET_MAX_LENGTH = None  # Optional cap on sampled clip length
 DATASET_SAMPLING_MODE = "global"  # "global" spans the whole video without GT crop; "echonet" uses local clip windows
+TRAIN_SAMPLING_MODE = None  # Optional train override; use "phase_window" for phase-detector training
+EVAL_SAMPLING_MODE = None  # Optional val/test override; defaults to DATASET_SAMPLING_MODE
 EVAL_CLIPS = 1  # EchoNet-style multi-clip evaluation; training remains single-clip
 TRAIN_PAD = None  # EchoNet-style random spatial pad/crop augmentation
 TRAIN_NOISE = None  # EchoNet-style random blackout noise fraction
@@ -21,9 +23,12 @@ STAGE1_PRESERVE_TEMPORAL_STRIDE = True  # False is closer to vanilla EchoNet R(2
 PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss
 PHASE_LABEL_SMOOTHING = 0.0  # Label smoothing for hard CE on ED/ES temporal indices
 PHASE_ONLY = False  # If True, disable EF loss and optimize only phase detection
+PHASE_TARGET_ACCURACY = 0.95  # Target validation joint ED/ES accuracy for dedicated phase training
+STOP_ON_PHASE_TARGET = False  # Stop early when validation joint accuracy reaches PHASE_TARGET_ACCURACY
+INIT_CHECKPOINT = None  # Optional checkpoint used to initialize model weights before training
 
 # Phase training stabilizers
-PHASE_BACKBONE_FREEZE_EPOCHS = 5  # Freeze stage1 backbone for early phase-only warmup
+PHASE_BACKBONE_FREEZE_EPOCHS = 0  # Freeze stage1 only when warm-starting from a useful checkpoint
 BACKBONE_LR_MULT = 0.2  # Backbone LR = LEARNING_RATE * BACKBONE_LR_MULT
 PHASE_SOFT_SIGMA = 1.5  # >0 enables soft temporal targets (Gaussian around GT index)
 PHASE_SOFT_RADIUS = 4  # Optional radius for soft target support; <=0 means no clipping
@@ -53,6 +58,7 @@ VALIDATE_EVERY = 1  # Run validation every N epochs
 # Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CHECKPOINT_PATH = "best_model.pth"
+PHASE_CHECKPOINT_PATH = "best_phase_detector.pth"
 STAGE4_CHECKPOINT_PATH = "best_stage4_segmentation_area.pth"
 
 # ============================================================================

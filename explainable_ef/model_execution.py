@@ -24,16 +24,41 @@ SMOKE_DEFAULTS = {
     "CHECKPOINT_PATH": "best_model_smoke.pth",
 }
 
+PHASE_DETECTOR_PRESET = {
+    "PHASE_ONLY": True,
+    "PHASE_LOSS_WEIGHT": 1.0,
+    "CHECKPOINT_PATH": getattr(config, "PHASE_CHECKPOINT_PATH", "best_phase_detector.pth"),
+    "VALIDATE_EVERY": 1,
+    "PHASE_TARGET_ACCURACY": 0.95,
+    "STOP_ON_PHASE_TARGET": True,
+    "PHASE_BACKBONE_FREEZE_EPOCHS": 0,
+    "BACKBONE_LR_MULT": getattr(config, "BACKBONE_LR_MULT", 0.2),
+    "TRAIN_SAMPLING_MODE": "global",
+    "EVAL_SAMPLING_MODE": "global",
+}
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Train and evaluate EF model (Stage 1-3).")
     parser.add_argument("--smoke", action="store_true", help="Run a tiny smoke test configuration.")
+    parser.add_argument(
+        "--phase-detector",
+        action="store_true",
+        help="Use the dedicated phase-detector preset: phase-only loss, phase checkpoint, and target monitoring.",
+    )
     parser.add_argument("--max-videos", type=int, default=None, help="Override config.MAX_VIDEOS")
     parser.add_argument("--epochs", type=int, default=None, help="Override config.EPOCHS")
     parser.add_argument("--learning-rate", "--lr", dest="learning_rate", type=float, default=None, help="Override config.LEARNING_RATE")
     parser.add_argument("--batch-size", type=int, default=None, help="Override config.BATCH_SIZE")
     parser.add_argument("--num-frames", type=int, default=None, help="Override config.NUM_FRAMES")
+    parser.add_argument("--image-size", type=int, default=None, help="Override config.IMAGE_SIZE")
+    parser.add_argument("--dataset-period", type=int, default=None, help="Temporal stride between sampled frames")
+    parser.add_argument("--dataset-max-length", type=int, default=None, help="Optional cap on sampled clip length")
+    parser.add_argument("--sampling-mode", type=str, default=None, choices=["global", "echonet", "phase_window"], help="Default sampling mode for all splits")
+    parser.add_argument("--train-sampling-mode", type=str, default=None, choices=["global", "echonet", "phase_window"], help="Sampling mode for training split")
+    parser.add_argument("--eval-sampling-mode", type=str, default=None, choices=["global", "echonet", "phase_window"], help="Sampling mode for validation/test splits")
     parser.add_argument("--checkpoint", type=str, default=None, help="Override config.CHECKPOINT_PATH")
+    parser.add_argument("--init-checkpoint", type=str, default=None, help="Initialize matching model weights from an existing checkpoint before training")
     parser.add_argument("--workers", type=int, default=None, help="Override config.NUM_WORKERS")
     parser.add_argument("--validate-every", type=int, default=None, help="Override config.VALIDATE_EVERY")
     parser.add_argument("--prefetch-factor", type=int, default=None, help="Override config.PREFETCH_FACTOR")
@@ -47,6 +72,8 @@ def parse_args(argv=None):
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
+    parser.add_argument("--phase-target-accuracy", type=float, default=None, help="Target validation joint ED/ES accuracy for phase-detector runs")
+    parser.add_argument("--stop-on-phase-target", action=argparse.BooleanOptionalAction, default=None, help="Stop once validation joint ED/ES accuracy reaches the target")
     parser.add_argument("--phase-backbone-freeze-epochs", type=int, default=None, help="Override config.PHASE_BACKBONE_FREEZE_EPOCHS")
     parser.add_argument("--backbone-lr-mult", type=float, default=None, help="Override config.BACKBONE_LR_MULT")
     parser.add_argument("--phase-soft-sigma", type=float, default=None, help="Override config.PHASE_SOFT_SIGMA")
@@ -57,6 +84,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
+    parser.add_argument("--tolerance", type=int, default=None, help="Frame tolerance used for ED/ES accuracy")
     return parser.parse_args(argv)
 
 
@@ -65,6 +93,9 @@ def apply_runtime_overrides(args, logger):
 
     if args.smoke:
         overrides.update(SMOKE_DEFAULTS)
+
+    if args.phase_detector:
+        overrides.update(PHASE_DETECTOR_PRESET)
 
     if args.max_videos is not None:
         overrides["MAX_VIDEOS"] = args.max_videos
@@ -76,8 +107,22 @@ def apply_runtime_overrides(args, logger):
         overrides["BATCH_SIZE"] = args.batch_size
     if args.num_frames is not None:
         overrides["NUM_FRAMES"] = args.num_frames
+    if args.image_size is not None:
+        overrides["IMAGE_SIZE"] = args.image_size
+    if args.dataset_period is not None:
+        overrides["DATASET_PERIOD"] = args.dataset_period
+    if args.dataset_max_length is not None:
+        overrides["DATASET_MAX_LENGTH"] = args.dataset_max_length
+    if args.sampling_mode is not None:
+        overrides["DATASET_SAMPLING_MODE"] = args.sampling_mode
+    if args.train_sampling_mode is not None:
+        overrides["TRAIN_SAMPLING_MODE"] = args.train_sampling_mode
+    if args.eval_sampling_mode is not None:
+        overrides["EVAL_SAMPLING_MODE"] = args.eval_sampling_mode
     if args.checkpoint is not None:
         overrides["CHECKPOINT_PATH"] = args.checkpoint
+    if args.init_checkpoint is not None:
+        overrides["INIT_CHECKPOINT"] = args.init_checkpoint
     if args.workers is not None:
         overrides["NUM_WORKERS"] = args.workers
     if args.validate_every is not None:
@@ -104,6 +149,10 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
     if args.phase_only is not None:
         overrides["PHASE_ONLY"] = args.phase_only
+    if args.phase_target_accuracy is not None:
+        overrides["PHASE_TARGET_ACCURACY"] = args.phase_target_accuracy
+    if args.stop_on_phase_target is not None:
+        overrides["STOP_ON_PHASE_TARGET"] = args.stop_on_phase_target
     if args.phase_backbone_freeze_epochs is not None:
         overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = args.phase_backbone_freeze_epochs
     if args.backbone_lr_mult is not None:
@@ -124,6 +173,8 @@ def apply_runtime_overrides(args, logger):
         overrides["WEIGHT_DECAY"] = args.weight_decay
     if args.max_grad_norm is not None:
         overrides["MAX_GRAD_NORM"] = args.max_grad_norm
+    if args.tolerance is not None:
+        overrides["TOLERANCE"] = args.tolerance
 
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -138,6 +189,10 @@ def is_cuda_runtime():
 
 def is_phase_only_mode():
     return bool(getattr(config, "PHASE_ONLY", False))
+
+
+def phase_target_accuracy():
+    return float(getattr(config, "PHASE_TARGET_ACCURACY", 0.95))
 
 
 def make_grad_scaler(amp_enabled):
@@ -224,28 +279,47 @@ def dataloader_kwargs(shuffle):
 
 def build_dataloaders():
     """Create train/val/test dataloaders."""
+    default_sampling = getattr(config, "DATASET_SAMPLING_MODE", "global")
+    train_sampling = getattr(config, "TRAIN_SAMPLING_MODE", None) or default_sampling
+    eval_sampling = getattr(config, "EVAL_SAMPLING_MODE", None) or default_sampling
+    frame_size = (int(getattr(config, "IMAGE_SIZE", 112)), int(getattr(config, "IMAGE_SIZE", 112)))
+    dataset_period = int(getattr(config, "DATASET_PERIOD", 1))
+    dataset_max_length = getattr(config, "DATASET_MAX_LENGTH", None)
+
     train_dataset = EchoDataset(
         config.DATA_DIR,
         split="TRAIN",
         num_frames=config.NUM_FRAMES,
+        frame_size=frame_size,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        period=dataset_period,
+        max_length=dataset_max_length,
+        sampling_mode=train_sampling,
         homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
     )
     val_dataset = EchoDataset(
         config.DATA_DIR,
         split="VAL",
         num_frames=config.NUM_FRAMES,
+        frame_size=frame_size,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        period=dataset_period,
+        max_length=dataset_max_length,
+        sampling_mode=eval_sampling,
         homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
     )
     test_dataset = EchoDataset(
         config.DATA_DIR,
         split="TEST",
         num_frames=config.NUM_FRAMES,
+        frame_size=frame_size,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
+        period=dataset_period,
+        max_length=dataset_max_length,
+        sampling_mode=eval_sampling,
         homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
     )
 
@@ -285,6 +359,38 @@ def maybe_freeze_ef_head(model, logger):
     logger.info("Phase-only mode: EF head frozen")
 
 
+def maybe_initialize_from_checkpoint(model, logger):
+    checkpoint_path = getattr(config, "INIT_CHECKPOINT", None)
+    if not checkpoint_path:
+        return
+
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Initial checkpoint not found: {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=config.DEVICE)
+    state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    if not isinstance(state_dict, dict):
+        raise ValueError(f"Initial checkpoint does not contain a state_dict: {checkpoint_path}")
+
+    model_state = model.state_dict()
+    compatible = {
+        key: value
+        for key, value in state_dict.items()
+        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape)
+    }
+    skipped = len(state_dict) - len(compatible)
+    incompatible = model.load_state_dict(compatible, strict=False)
+
+    logger.info(
+        "Initialized from %s | loaded tensors=%d | skipped tensors=%d | missing=%d | unexpected=%d",
+        checkpoint_path,
+        len(compatible),
+        skipped,
+        len(incompatible.missing_keys),
+        len(incompatible.unexpected_keys),
+    )
+
+
 def build_optimizer(model, logger):
     base_lr = float(config.LEARNING_RATE)
     backbone_mult = float(getattr(config, "BACKBONE_LR_MULT", 1.0))
@@ -318,6 +424,7 @@ def build_optimizer(model, logger):
 def build_model_stack(logger):
     """Create model, optimizer and losses."""
     model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
+    maybe_initialize_from_checkpoint(model, logger)
 
     maybe_freeze_ef_head(model, logger)
 
@@ -615,7 +722,7 @@ def train_one_epoch(
     return metrics
 
 
-def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_mae=None):
+def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_mae=None, metrics=None):
     torch.save(
         {
             "model_state_dict": model.state_dict(),
@@ -624,6 +731,9 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
             "monitor_value": monitor_value,
             "val_mae": val_mae,
             "epoch": epoch,
+            "phase_only": is_phase_only_mode(),
+            "phase_target_accuracy": phase_target_accuracy(),
+            "metrics": metrics or {},
         },
         config.CHECKPOINT_PATH,
     )
@@ -635,8 +745,13 @@ def log_header(logger, amp_enabled):
     logger.info("=" * 80)
     logger.info("Using device: %s", config.DEVICE)
     logger.info("Data directory: %s", config.DATA_DIR)
+    logger.info("Initial checkpoint: %s", getattr(config, "INIT_CHECKPOINT", None))
     logger.info("Batch size: %d", config.BATCH_SIZE)
     logger.info("Number of frames: %d", config.NUM_FRAMES)
+    logger.info("Image size: %d", int(getattr(config, "IMAGE_SIZE", 112)))
+    logger.info("Dataset period: %d", int(getattr(config, "DATASET_PERIOD", 1)))
+    logger.info("Dataset max length: %s", getattr(config, "DATASET_MAX_LENGTH", None))
+    logger.info("Sampling modes: train=%s | eval=%s", getattr(config, "TRAIN_SAMPLING_MODE", None) or getattr(config, "DATASET_SAMPLING_MODE", "global"), getattr(config, "EVAL_SAMPLING_MODE", None) or getattr(config, "DATASET_SAMPLING_MODE", "global"))
     logger.info("Max videos: %s", config.MAX_VIDEOS if config.MAX_VIDEOS else "All")
     logger.info("Learning rate: %s", config.LEARNING_RATE)
     logger.info("Epochs: %d", config.EPOCHS)
@@ -651,6 +766,9 @@ def log_header(logger, amp_enabled):
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
     logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
     logger.info("Phase-only mode: %s", is_phase_only_mode())
+    logger.info("Phase target accuracy: %.2f%%", phase_target_accuracy() * 100)
+    logger.info("Stop on phase target: %s", bool(getattr(config, "STOP_ON_PHASE_TARGET", False)))
+    logger.info("Frame tolerance: %d", int(getattr(config, "TOLERANCE", 1)))
     logger.info("Phase backbone freeze epochs: %d", int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
     logger.info("Backbone LR multiplier: %.3f", float(getattr(config, "BACKBONE_LR_MULT", 1.0)))
     logger.info("Phase soft sigma: %.3f", float(getattr(config, "PHASE_SOFT_SIGMA", 0.0)))
@@ -763,11 +881,22 @@ def main(argv=None):
                     monitor_value=current_monitor,
                     epoch=epoch,
                     val_mae=val_metrics["ef_mae"] if not phase_only else None,
+                    metrics=val_metrics,
                 )
                 logger.info("Saving best model to %s", config.CHECKPOINT_PATH)
             else:
                 epochs_without_improvement += 1
                 logger.info("No improvement (%d/%d)", epochs_without_improvement, config.PATIENCE)
+
+            if phase_only and val_metrics["joint_acc"] >= phase_target_accuracy():
+                logger.info(
+                    "Phase target reached: Val joint accuracy %.2f%% >= %.2f%%",
+                    val_metrics["joint_acc"] * 100,
+                    phase_target_accuracy() * 100,
+                )
+                if bool(getattr(config, "STOP_ON_PHASE_TARGET", False)):
+                    logger.info("Stopping because STOP_ON_PHASE_TARGET is enabled")
+                    break
 
             if epochs_without_improvement >= config.PATIENCE:
                 logger.info("Early stopping triggered")
@@ -817,6 +946,12 @@ def main(argv=None):
     logger.info("Test Joint Accuracy: %.2f%%", test_metrics["joint_acc"] * 100)
     logger.info("Test ED MAE (frames): %.3f", test_metrics["ed_mae_frames"])
     logger.info("Test ES MAE (frames): %.3f", test_metrics["es_mae_frames"])
+    if phase_only:
+        logger.info(
+            "Phase target status: joint %.2f%% vs target %.2f%%",
+            test_metrics["joint_acc"] * 100,
+            phase_target_accuracy() * 100,
+        )
     logger.info("Test duration: %.2fs", test_duration)
     logger.info("=" * 80)
 

@@ -14,6 +14,15 @@ Stage 2 owns temporal weighting. It outputs attention weights over frames.
 
 Stage 3 owns phase supervision. Its ED/ES losses teach the network where cardiac events occur. That supervision backpropagates through Stage 3 into Stage 2, so Stage 2 temporal weights improve even though there is no separate "ground-truth temporal-weight" file.
 
+## Recommended Model Split
+
+Phase detection is treated as a first-class task. For experiments where ED/ES localization is as important as EF regression, use two checkpoints:
+
+- `best_phase_detector.pth`: dedicated Stage 1/2/3 phase detector trained with EF loss disabled.
+- `best_model.pth` or `best_model_stage123_96f.pth`: EF-oriented Stage 1/2/3 model trained with EF loss enabled.
+
+This avoids forcing one shared checkpoint to optimize two objectives that can compete: EF regression needs global functional evidence, while phase detection needs sharper temporal localization. The phase detector reports ED accuracy, ES accuracy, joint ED+ES accuracy, and frame MAE. A 95% phase target is configured as a validation/test goal, not as a guaranteed result.
+
 ## 1. Prerequisites
 
 - Python 3.10+
@@ -50,43 +59,63 @@ a4c-video-dir/
 
 ## 4. Training and Validation Workflows
 
-### A) Combined Stage 1+2+3 (joint EF + phase)
+### A) Dedicated phase detector (recommended for phase accuracy)
 
 ```powershell
-python model_execution.py --train-stage123 --no-phase-only
+python pipeline\train_phase_detector.py --init-checkpoint best_model.pth --num-frames 32 --epochs 50 --workers 8 --phase-target-accuracy 0.95
 ```
 
-This now trains Stage 1/2/3 jointly and keeps EF loss enabled.
+This trains a separate Stage 1/2/3 phase checkpoint with EF loss disabled and saves to `best_phase_detector.pth` by default. It monitors validation joint ED/ES accuracy and can stop once the target is reached. Warm-starting from `best_model.pth` is recommended because scratch phase training has to learn echo features and ED/ES localization at the same time.
 
-`--train-stage123` trains from label-free video sampling while using phase labels only as supervised targets.
+The phase-detector preset uses `phase_window` sampling for TRAIN and `global` sampling for VAL/TEST. `phase_window` creates training clips that contain the labeled ED/ES frames, giving the model denser phase supervision without making validation/test label-aware by default.
 
-### B) Phase-only Stage 1+2+3
+For stricter reporting, keep the default `--tolerance 1` frame tolerance or set it explicitly:
 
 ```powershell
-python model_execution.py --phase-only
+python pipeline\train_phase_detector.py --init-checkpoint best_model.pth --num-frames 32 --epochs 50 --workers 8 --tolerance 1 --phase-target-accuracy 0.95
 ```
 
-In this mode, EF loss is intentionally set to zero.
+To compare sampling strategies:
 
-### C) Default Stage 1+2+3 training
+```powershell
+python pipeline\train_phase_detector.py --init-checkpoint best_model.pth --num-frames 32 --train-sampling-mode phase_window --eval-sampling-mode global --epochs 50 --workers 8 --batch-size 5 --tolerance 1
+```
+
+### B) Combined Stage 1+2+3 (joint EF + phase)
+
+```powershell
+python model_execution.py --no-phase-only --checkpoint best_model.pth
+```
+
+This trains Stage 1/2/3 jointly and keeps EF loss enabled. Use this as the EF-oriented model when you want a separate phase detector.
+
+### C) Phase-only Stage 1+2+3 through the base trainer
+
+```powershell
+python model_execution.py --phase-detector
+```
+
+This is equivalent to the dedicated wrapper and uses the phase-only preset.
+
+### D) Default Stage 1+2+3 training
 
 ```powershell
 python model_execution.py
 ```
 
-### D) Smoke test (tiny run)
+### E) Smoke test (tiny run)
 
 ```powershell
 python model_execution.py --smoke
 ```
 
-### E) Stage 3 validation + visualization
+### F) Stage 3 validation + visualization
 
 ```powershell
-python visualization\validate_phase_detection.py --split TEST --checkpoint best_model.pth --num-samples 12
+python visualization\validate_phase_detection.py --split TEST --checkpoint best_phase_detector.pth --num-samples 12
 ```
 
-### F) ED/ES validation against reference annotations
+### G) ED/ES validation against reference annotations
 
 Use your expert frame table (CSV/XLSX), or use `VolumeTracings.csv` directly via `--reference-mode volume_tracings`.
 
@@ -94,13 +123,13 @@ Use your expert frame table (CSV/XLSX), or use `VolumeTracings.csv` directly via
 python validation\validate_ed_es_against_reference.py --split VAL --reference "D:\datascience\MTech\Sem4\Project\CardioXplain\dynamic\a4c-video-dir\VolumeTracings.csv" --reference-mode volume_tracings --tolerance 1 --output validation\outputs\ed_es_validation.csv --mismatch-output validation\outputs\ed_es_mismatches.csv
 ```
 
-### G) Generate annotation template for manual ED/ES review
+### H) Generate annotation template for manual ED/ES review
 
 ```powershell
 python validation\generate_reference_frame_template.py --split VAL --include-meta --prefill-from-tracings --output validation\outputs\ed_es_template_val.csv
 ```
 
-### H) Stage 4 full training + area validation (per frame + per video)
+### I) Stage 4 full training + area validation (per frame + per video)
 
 Recommended:
 
@@ -122,13 +151,13 @@ Outputs:
 - `validation/outputs/stage4/test_frame_areas.csv`
 - `validation/outputs/stage4/test_frame_areas_video_summary.csv`
 
-### I) Stage 4/5 predicted-mask utility
+### J) Stage 4/5 predicted-mask utility
 
 ```powershell
 python pipeline\run_stage45_from_tracings.py --split VAL --max-videos 25 --save-overlays
 ```
 
-### J) Stage 6 + Stage 7 training (similarity + uncertainty)
+### K) Stage 6 + Stage 7 training (similarity + uncertainty)
 
 ```powershell
 python pipeline\train_stage67_similarity.py --stage123-checkpoint best_model.pth --num-frames 32
@@ -141,15 +170,16 @@ Outputs:
 - `validation/outputs/stage67/stage67_summary.json`
 - per-split prediction CSVs (train/val/test)
 
-### K) Full Stage 1-7 orchestration (single command)
+### L) Full Stage 1-7 orchestration (single command)
 
 ```powershell
-python pipeline\train_all_stages.py --stage123-num-frames 32 --stage123-epochs 50 --stage4-epochs 50 --stage4-optimizer adamw --stage4-learning-rate 1e-4
+python pipeline\train_all_stages.py --train-phase-detector --stage123-num-frames 32 --stage123-epochs 50 --phase-target-accuracy 0.95 --stage4-epochs 50 --stage4-optimizer adamw --stage4-learning-rate 1e-4
 ```
 
 This orchestrates:
 
 - Stage1-3 EF-oriented training (`model_execution.py --no-phase-only`)
+- Optional dedicated phase detector training (`pipeline/train_phase_detector.py`)
 - Stage4 segmentation training
 - Stage5 EF evaluation from predicted Stage4 masks (TRAIN/VAL/TEST)
 - Stage6 similarity training + Stage7 uncertainty calibration using Stage5 predicted-mask metrics
@@ -158,7 +188,7 @@ Stage4 defaults are now class-imbalance aware (`--eval-threshold 0.5`, auto BCE 
 
 Use `--skip-stage123`, `--skip-stage4`, `--skip-stage5`, `--skip-stage67` to resume partial runs.
 
-### L) One-page UI for Stage 1-5 outputs (recommended for review)
+### M) One-page UI for Stage 1-5 outputs (recommended for review)
 
 Install Streamlit once:
 
@@ -205,11 +235,18 @@ Run any script with `--help` for the latest values/defaults.
 
 - `-h, --help`
 - `--smoke`
+- `--phase-detector`
 - `--max-videos MAX_VIDEOS`
 - `--epochs EPOCHS`
 - `--learning-rate, --lr LEARNING_RATE`
 - `--batch-size BATCH_SIZE`
 - `--num-frames NUM_FRAMES`
+- `--image-size IMAGE_SIZE`
+- `--dataset-period DATASET_PERIOD`
+- `--dataset-max-length DATASET_MAX_LENGTH`
+- `--sampling-mode {global,echonet,phase_window}`
+- `--train-sampling-mode {global,echonet,phase_window}`
+- `--eval-sampling-mode {global,echonet,phase_window}`
 - `--checkpoint CHECKPOINT`
 - `--workers WORKERS`
 - `--validate-every VALIDATE_EVERY`
@@ -223,6 +260,8 @@ Run any script with `--help` for the latest values/defaults.
 - `--phase-loss-weight PHASE_LOSS_WEIGHT`
 - `--phase-label-smoothing PHASE_LABEL_SMOOTHING`
 - `--phase-only, --no-phase-only`
+- `--phase-target-accuracy PHASE_TARGET_ACCURACY`
+- `--stop-on-phase-target, --no-stop-on-phase-target`
 - `--phase-backbone-freeze-epochs PHASE_BACKBONE_FREEZE_EPOCHS`
 - `--backbone-lr-mult BACKBONE_LR_MULT`
 - `--phase-soft-sigma PHASE_SOFT_SIGMA`
@@ -236,9 +275,41 @@ Run any script with `--help` for the latest values/defaults.
 - `--phase-unfreeze-lr-mult PHASE_UNFREEZE_LR_MULT`
 - `--weight-decay WEIGHT_DECAY`
 - `--max-grad-norm MAX_GRAD_NORM`
-- `--warm-start-checkpoint, --no-warm-start-checkpoint`
-- `--protect-best-checkpoint, --no-protect-best-checkpoint`
-- `--train-stage123, --no-train-stage123`
+- `--tolerance TOLERANCE`
+
+### `pipeline/train_phase_detector.py` options
+
+- `-h, --help`
+- `--checkpoint CHECKPOINT`
+- `--init-checkpoint INIT_CHECKPOINT`
+- `--epochs EPOCHS`
+- `--learning-rate, --lr LEARNING_RATE`
+- `--batch-size BATCH_SIZE`
+- `--num-frames NUM_FRAMES`
+- `--image-size IMAGE_SIZE`
+- `--dataset-period DATASET_PERIOD`
+- `--dataset-max-length DATASET_MAX_LENGTH`
+- `--train-sampling-mode {global,echonet,phase_window}`
+- `--eval-sampling-mode {global,echonet,phase_window}`
+- `--max-videos MAX_VIDEOS`
+- `--workers WORKERS`
+- `--prefetch-factor PREFETCH_FACTOR`
+- `--validate-every VALIDATE_EVERY`
+- `--homogenization-stats HOMOGENIZATION_STATS`
+- `--phase-target-accuracy PHASE_TARGET_ACCURACY`
+- `--stop-on-phase-target, --no-stop-on-phase-target`
+- `--tolerance TOLERANCE`
+- `--amp, --no-amp`
+- `--phase-backbone-freeze-epochs PHASE_BACKBONE_FREEZE_EPOCHS`
+- `--backbone-lr-mult BACKBONE_LR_MULT`
+- `--phase-soft-sigma PHASE_SOFT_SIGMA`
+- `--phase-soft-radius PHASE_SOFT_RADIUS`
+- `--phase-hard-index-weight PHASE_HARD_INDEX_WEIGHT`
+- `--phase-frame-ce-weight PHASE_FRAME_CE_WEIGHT`
+- `--phase-frame-radius PHASE_FRAME_RADIUS`
+- `--phase-unfreeze-lr-mult PHASE_UNFREEZE_LR_MULT`
+- `--weight-decay WEIGHT_DECAY`
+- `--max-grad-norm MAX_GRAD_NORM`
 
 ### `pipeline/train_stage4_segmentation.py` options
 
@@ -257,6 +328,7 @@ Run any script with `--help` for the latest values/defaults.
 - `--pos-weight-max POS_WEIGHT_MAX`
 - `--amp, --no-amp`
 - `--checkpoint CHECKPOINT`
+- `--init-checkpoint INIT_CHECKPOINT`
 - `--output-dir OUTPUT_DIR`
 - `--device DEVICE`
 - `--patience PATIENCE`
@@ -308,6 +380,20 @@ Run any script with `--help` for the latest values/defaults.
 - `--skip-stage5`
 - `--skip-stage67`
 - `--stage123-checkpoint STAGE123_CHECKPOINT`
+- `--train-phase-detector`
+- `--phase-checkpoint PHASE_CHECKPOINT`
+- `--phase-init-checkpoint PHASE_INIT_CHECKPOINT`
+- `--phase-epochs PHASE_EPOCHS`
+- `--phase-learning-rate PHASE_LEARNING_RATE`
+- `--phase-batch-size PHASE_BATCH_SIZE`
+- `--phase-num-frames PHASE_NUM_FRAMES`
+- `--phase-train-sampling-mode {global,echonet,phase_window}`
+- `--phase-eval-sampling-mode {global,echonet,phase_window}`
+- `--phase-workers PHASE_WORKERS`
+- `--phase-max-videos PHASE_MAX_VIDEOS`
+- `--phase-target-accuracy PHASE_TARGET_ACCURACY`
+- `--phase-stop-on-target, --no-phase-stop-on-target`
+- `--phase-tolerance PHASE_TOLERANCE`
 - `--stage123-epochs STAGE123_EPOCHS`
 - `--stage123-learning-rate STAGE123_LEARNING_RATE`
 - `--stage123-batch-size STAGE123_BATCH_SIZE`

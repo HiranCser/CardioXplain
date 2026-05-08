@@ -5,9 +5,11 @@ import subprocess
 import sys
 import time
 
-import config
-
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+import config
 
 
 def _run_step(step_name, cmd, env=None):
@@ -33,6 +35,20 @@ def parse_args():
     parser.add_argument("--skip-stage67", action="store_true")
 
     parser.add_argument("--stage123-checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
+    parser.add_argument("--train-phase-detector", action="store_true", help="Train a separate phase-only Stage1-3 checkpoint before EF/calibration stages")
+    parser.add_argument("--phase-checkpoint", type=str, default=getattr(config, "PHASE_CHECKPOINT_PATH", "best_phase_detector.pth"))
+    parser.add_argument("--phase-init-checkpoint", type=str, default=None)
+    parser.add_argument("--phase-epochs", type=int, default=None)
+    parser.add_argument("--phase-learning-rate", type=float, default=None)
+    parser.add_argument("--phase-batch-size", type=int, default=None)
+    parser.add_argument("--phase-num-frames", type=int, default=None)
+    parser.add_argument("--phase-train-sampling-mode", type=str, default=None, choices=["global", "echonet", "phase_window"])
+    parser.add_argument("--phase-eval-sampling-mode", type=str, default=None, choices=["global", "echonet", "phase_window"])
+    parser.add_argument("--phase-workers", type=int, default=None)
+    parser.add_argument("--phase-max-videos", type=int, default=None)
+    parser.add_argument("--phase-target-accuracy", type=float, default=0.95)
+    parser.add_argument("--phase-stop-on-target", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--phase-tolerance", type=int, default=None)
     parser.add_argument("--homogenization-stats", type=str, default=os.path.join("validation", "outputs", "homogenization", "frame_homogenization.json"))
     parser.add_argument("--homogenization-max-videos", type=int, default=0)
     parser.add_argument("--homogenization-sample-every", type=int, default=10)
@@ -157,6 +173,55 @@ def main():
         _run_step("Stage1-3 training", cmd)
     else:
         print("Skipping Stage1-3 training")
+
+    # Dedicated phase detector
+    if args.train_phase_detector:
+        cmd = [
+            python_bin,
+            os.path.join(ROOT_DIR, "pipeline", "train_phase_detector.py"),
+            "--checkpoint",
+            str(args.phase_checkpoint),
+            "--phase-target-accuracy",
+            str(args.phase_target_accuracy),
+        ]
+        cmd += ["--stop-on-phase-target" if args.phase_stop_on_target else "--no-stop-on-phase-target"]
+
+        phase_epochs = args.phase_epochs if args.phase_epochs is not None else args.stage123_epochs
+        phase_lr = args.phase_learning_rate if args.phase_learning_rate is not None else args.stage123_learning_rate
+        phase_batch = args.phase_batch_size if args.phase_batch_size is not None else args.stage123_batch_size
+        phase_frames = args.phase_num_frames if args.phase_num_frames is not None else args.stage123_num_frames
+        phase_workers = args.phase_workers if args.phase_workers is not None else args.stage123_workers
+        phase_max_videos = args.phase_max_videos if args.phase_max_videos is not None else args.stage123_max_videos
+
+        if phase_epochs is not None:
+            cmd += ["--epochs", str(phase_epochs)]
+        phase_init_checkpoint = args.phase_init_checkpoint if args.phase_init_checkpoint is not None else args.stage123_checkpoint
+        if phase_init_checkpoint is not None and os.path.exists(phase_init_checkpoint):
+            cmd += ["--init-checkpoint", str(phase_init_checkpoint)]
+        if phase_lr is not None:
+            cmd += ["--learning-rate", str(phase_lr)]
+        if phase_batch is not None:
+            cmd += ["--batch-size", str(phase_batch)]
+        if phase_frames is not None:
+            cmd += ["--num-frames", str(phase_frames)]
+        if args.phase_train_sampling_mode is not None:
+            cmd += ["--train-sampling-mode", str(args.phase_train_sampling_mode)]
+        if args.phase_eval_sampling_mode is not None:
+            cmd += ["--eval-sampling-mode", str(args.phase_eval_sampling_mode)]
+        if phase_workers is not None:
+            cmd += ["--workers", str(phase_workers)]
+        if phase_max_videos is not None:
+            cmd += ["--max-videos", str(phase_max_videos)]
+        if args.phase_tolerance is not None:
+            cmd += ["--tolerance", str(args.phase_tolerance)]
+        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
+            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
+        if args.device is not None and str(args.device).lower() == "cpu":
+            cmd += ["--no-amp"]
+
+        _run_step("Dedicated phase detector training", cmd)
+    else:
+        print("Skipping dedicated phase detector training")
 
     # Stage 4
     if not args.skip_stage4:
