@@ -150,6 +150,8 @@ def main():
             python_bin,
             os.path.join(ROOT_DIR, "model_execution.py"),
             "--no-phase-only",
+            "--phase-loss-weight",
+            "0.0",
             "--checkpoint",
             str(args.stage123_checkpoint),
         ]

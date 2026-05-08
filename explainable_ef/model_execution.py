@@ -191,6 +191,10 @@ def is_phase_only_mode():
     return bool(getattr(config, "PHASE_ONLY", False))
 
 
+def is_phase_loss_enabled():
+    return is_phase_only_mode() or float(getattr(config, "PHASE_LOSS_WEIGHT", 0.0)) > 0.0
+
+
 def phase_target_accuracy():
     return float(getattr(config, "PHASE_TARGET_ACCURACY", 0.95))
 
@@ -660,12 +664,18 @@ def train_one_epoch(
             else:
                 ef_loss = mse_loss(ef_pred, efs)
 
-            phase_loss, ed_phase_loss, es_phase_loss, frame_phase_loss = compute_phase_index_loss(
-                phase_logits=phase_logits,
-                ed_idx=ed_idx,
-                es_idx=es_idx,
-                phase_index_loss_fn=phase_index_loss_fn,
-            )
+            if phase_loss_enabled:
+                phase_loss, ed_phase_loss, es_phase_loss, frame_phase_loss = compute_phase_index_loss(
+                    phase_logits=phase_logits,
+                    ed_idx=ed_idx,
+                    es_idx=es_idx,
+                    phase_index_loss_fn=phase_index_loss_fn,
+                )
+            else:
+                phase_loss = torch.zeros((), device=videos.device)
+                ed_phase_loss = torch.zeros((), device=videos.device)
+                es_phase_loss = torch.zeros((), device=videos.device)
+                frame_phase_loss = torch.zeros((), device=videos.device)
 
             loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
             loss_for_backward = loss / accumulation_steps
@@ -693,7 +703,7 @@ def train_one_epoch(
         compute_time += time.perf_counter() - compute_start
         total_train_loss += loss.item()
 
-        if batch_idx == 0:
+        if batch_idx == 0 and phase_loss_enabled:
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
             logger.info(
                 "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
@@ -708,6 +718,14 @@ def train_one_epoch(
                 es_idx[0].item(),
                 pred_ed_idx[0].item(),
                 pred_es_idx[0].item(),
+                tuple(attention.shape),
+            )
+        elif batch_idx == 0:
+            logger.info(
+                "Epoch %d batch %d | EF loss %.4f | Phase loss disabled | Attention shape %s",
+                epoch_idx + 1,
+                batch_idx,
+                ef_loss.item(),
                 tuple(attention.shape),
             )
 
