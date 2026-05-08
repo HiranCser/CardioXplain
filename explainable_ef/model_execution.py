@@ -646,6 +646,7 @@ def train_one_epoch(
 
     num_batches = len(loader)
     phase_only = is_phase_only_mode()
+    phase_loss_enabled = is_phase_loss_enabled()
 
     for batch_idx, (videos, efs, ed_idx, es_idx) in enumerate(loader):
         data_time += time.perf_counter() - loop_end

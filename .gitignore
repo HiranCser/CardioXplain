@@ -71,3 +71,7 @@ trained_models/19-March/5/stage67/stage67_train_predictions.csv
 trained_models/19-March/5/stage67/stage67_val_predictions.csv
 trainnigs/19-March/5/Stage123.txt
 trainnigs/19-March/5/Stage4-5.txt
+explainable_ef/README.md
+best_model_stage123_96f_homog.pth
+best_stage4_segmentation_homog.pth
+explainable_ef/best_phase_detector.pth
