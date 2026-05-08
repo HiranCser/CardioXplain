@@ -27,6 +27,7 @@ SMOKE_DEFAULTS = {
 PHASE_DETECTOR_PRESET = {
     "PHASE_ONLY": True,
     "PHASE_LOSS_WEIGHT": 1.0,
+    "EVALUATE_PHASE_METRICS": True,
     "CHECKPOINT_PATH": getattr(config, "PHASE_CHECKPOINT_PATH", "best_phase_detector.pth"),
     "VALIDATE_EVERY": 1,
     "PHASE_TARGET_ACCURACY": 0.95,
@@ -39,12 +40,12 @@ PHASE_DETECTOR_PRESET = {
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Train and evaluate EF model (Stage 1-3).")
+    parser = argparse.ArgumentParser(description="Train and evaluate Stage1 EF model or Stage2 ED/ES frame detector.")
     parser.add_argument("--smoke", action="store_true", help="Run a tiny smoke test configuration.")
     parser.add_argument(
         "--phase-detector",
         action="store_true",
-        help="Use the dedicated phase-detector preset: phase-only loss, phase checkpoint, and target monitoring.",
+        help="Use the Stage2 ED/ES detector preset: phase-only loss, phase checkpoint, and target monitoring.",
     )
     parser.add_argument("--max-videos", type=int, default=None, help="Override config.MAX_VIDEOS")
     parser.add_argument("--epochs", type=int, default=None, help="Override config.EPOCHS")
@@ -72,6 +73,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
+    parser.add_argument("--phase-validation-metrics", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable ED/ES validation metrics during non-phase training")
     parser.add_argument("--phase-target-accuracy", type=float, default=None, help="Target validation joint ED/ES accuracy for phase-detector runs")
     parser.add_argument("--stop-on-phase-target", action=argparse.BooleanOptionalAction, default=None, help="Stop once validation joint ED/ES accuracy reaches the target")
     parser.add_argument("--phase-backbone-freeze-epochs", type=int, default=None, help="Override config.PHASE_BACKBONE_FREEZE_EPOCHS")
@@ -149,6 +151,8 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
     if args.phase_only is not None:
         overrides["PHASE_ONLY"] = args.phase_only
+    if args.phase_validation_metrics is not None:
+        overrides["EVALUATE_PHASE_METRICS"] = args.phase_validation_metrics
     if args.phase_target_accuracy is not None:
         overrides["PHASE_TARGET_ACCURACY"] = args.phase_target_accuracy
     if args.stop_on_phase_target is not None:
@@ -193,6 +197,10 @@ def is_phase_only_mode():
 
 def is_phase_loss_enabled():
     return is_phase_only_mode() or float(getattr(config, "PHASE_LOSS_WEIGHT", 0.0)) > 0.0
+
+
+def should_evaluate_phase_metrics():
+    return is_phase_only_mode() or bool(getattr(config, "EVALUATE_PHASE_METRICS", False))
 
 
 def phase_target_accuracy():
@@ -355,12 +363,12 @@ def maybe_freeze_ef_head(model, logger):
     ef_head = pipeline.ef_regressor if hasattr(pipeline, "ef_regressor") else None
 
     if ef_head is None:
-        logger.info("Phase-only mode enabled, but EF head was not found for freezing")
+        logger.info("Stage2 ED/ES detector mode enabled, but EF head was not found for freezing")
         return
 
     for p in ef_head.parameters():
         p.requires_grad = False
-    logger.info("Phase-only mode: EF head frozen")
+    logger.info("Stage2 ED/ES detector mode: EF head frozen")
 
 
 def maybe_initialize_from_checkpoint(model, logger):
@@ -434,7 +442,7 @@ def build_model_stack(logger):
 
     if is_phase_only_mode() and int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)) > 0:
         if set_backbone_trainable(model, False):
-            logger.info("Phase-only mode: Stage1 backbone frozen for warmup epochs")
+            logger.info("Stage2 ED/ES detector mode: shared video backbone frozen for warmup epochs")
 
     optimizer = build_optimizer(model, logger)
 
@@ -561,7 +569,7 @@ def move_batch_to_device(videos, efs, ed_idx, es_idx):
 
 
 def evaluate(model, loader, amp_enabled):
-    """Evaluate EF regression and phase localization metrics."""
+    """Evaluate EF regression and optionally phase localization metrics."""
     model.eval()
 
     total_samples = 0
@@ -574,6 +582,7 @@ def evaluate(model, loader, amp_enabled):
     total_es_abs_err = 0.0
 
     phase_only = is_phase_only_mode()
+    evaluate_phase = should_evaluate_phase_metrics()
 
     with torch.no_grad():
         for videos, efs, ed_idx, es_idx in loader:
@@ -590,20 +599,21 @@ def evaluate(model, loader, amp_enabled):
                 total_mae += mae.item() * batch_size
                 total_mse += mse.item() * batch_size
 
-            pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
+            if evaluate_phase:
+                pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
 
-            ed_abs = torch.abs(pred_ed_idx - ed_idx)
-            es_abs = torch.abs(pred_es_idx - es_idx)
+                ed_abs = torch.abs(pred_ed_idx - ed_idx)
+                es_abs = torch.abs(pred_es_idx - es_idx)
 
-            total_ed_abs_err += ed_abs.sum().item()
-            total_es_abs_err += es_abs.sum().item()
+                total_ed_abs_err += ed_abs.sum().item()
+                total_es_abs_err += es_abs.sum().item()
 
-            ed_ok = ed_abs <= config.TOLERANCE
-            es_ok = es_abs <= config.TOLERANCE
+                ed_ok = ed_abs <= config.TOLERANCE
+                es_ok = es_abs <= config.TOLERANCE
 
-            total_ed_correct += ed_ok.sum().item()
-            total_es_correct += es_ok.sum().item()
-            total_joint_correct += (ed_ok & es_ok).sum().item()
+                total_ed_correct += ed_ok.sum().item()
+                total_es_correct += es_ok.sum().item()
+                total_joint_correct += (ed_ok & es_ok).sum().item()
             total_samples += batch_size
 
     if total_samples == 0:
@@ -612,11 +622,11 @@ def evaluate(model, loader, amp_enabled):
     metrics = {
         "ef_mae": (total_mae / total_samples) if not phase_only else float("nan"),
         "ef_rmse": ((total_mse / total_samples) ** 0.5) if not phase_only else float("nan"),
-        "ed_acc": total_ed_correct / total_samples,
-        "es_acc": total_es_correct / total_samples,
-        "joint_acc": total_joint_correct / total_samples,
-        "ed_mae_frames": total_ed_abs_err / total_samples,
-        "es_mae_frames": total_es_abs_err / total_samples,
+        "ed_acc": (total_ed_correct / total_samples) if evaluate_phase else float("nan"),
+        "es_acc": (total_es_correct / total_samples) if evaluate_phase else float("nan"),
+        "joint_acc": (total_joint_correct / total_samples) if evaluate_phase else float("nan"),
+        "ed_mae_frames": (total_ed_abs_err / total_samples) if evaluate_phase else float("nan"),
+        "es_mae_frames": (total_es_abs_err / total_samples) if evaluate_phase else float("nan"),
     }
     return metrics
 
@@ -759,8 +769,15 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
 
 
 def log_header(logger, amp_enabled):
+    phase_only = is_phase_only_mode()
+    phase_loss_enabled = is_phase_loss_enabled()
+    evaluate_phase = should_evaluate_phase_metrics()
+
     logger.info("=" * 80)
-    logger.info("TRAINING SCRIPT STARTED")
+    if phase_only:
+        logger.info("STAGE2 ED/ES FRAME DETECTOR TRAINING STARTED")
+    else:
+        logger.info("STAGE1 EF TRAINING STARTED")
     logger.info("=" * 80)
     logger.info("Using device: %s", config.DEVICE)
     logger.info("Data directory: %s", config.DATA_DIR)
@@ -782,20 +799,24 @@ def log_header(logger, amp_enabled):
     logger.info("Normalize input: %s", bool(getattr(config, "NORMALIZE_INPUT", True)))
     logger.info("Homogenization stats: %s", getattr(config, "HOMOGENIZATION_STATS", None))
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
+    logger.info("Training objective: %s", "ED/ES frame detection" if phase_only else "EF regression")
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
-    logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
-    logger.info("Phase-only mode: %s", is_phase_only_mode())
-    logger.info("Phase target accuracy: %.2f%%", phase_target_accuracy() * 100)
-    logger.info("Stop on phase target: %s", bool(getattr(config, "STOP_ON_PHASE_TARGET", False)))
-    logger.info("Frame tolerance: %d", int(getattr(config, "TOLERANCE", 1)))
-    logger.info("Phase backbone freeze epochs: %d", int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
-    logger.info("Backbone LR multiplier: %.3f", float(getattr(config, "BACKBONE_LR_MULT", 1.0)))
-    logger.info("Phase soft sigma: %.3f", float(getattr(config, "PHASE_SOFT_SIGMA", 0.0)))
-    logger.info("Phase soft radius: %d", int(getattr(config, "PHASE_SOFT_RADIUS", 0)))
-    logger.info("Phase frame CE weight: %.3f", float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0)))
-    logger.info("Phase frame radius: %d", int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
-    logger.info("Phase hard index weight: %.3f", float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0)))
-    logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
+    logger.info("Phase validation metrics: %s", evaluate_phase)
+    if phase_loss_enabled:
+        logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
+        logger.info("Phase target accuracy: %.2f%%", phase_target_accuracy() * 100)
+        logger.info("Stop on phase target: %s", bool(getattr(config, "STOP_ON_PHASE_TARGET", False)))
+        logger.info("Frame tolerance: %d", int(getattr(config, "TOLERANCE", 1)))
+        logger.info("Phase backbone freeze epochs: %d", int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
+        logger.info("Backbone LR multiplier: %.3f", float(getattr(config, "BACKBONE_LR_MULT", 1.0)))
+        logger.info("Phase soft sigma: %.3f", float(getattr(config, "PHASE_SOFT_SIGMA", 0.0)))
+        logger.info("Phase soft radius: %d", int(getattr(config, "PHASE_SOFT_RADIUS", 0)))
+        logger.info("Phase frame CE weight: %.3f", float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0)))
+        logger.info("Phase frame radius: %d", int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
+        logger.info("Phase hard index weight: %.3f", float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0)))
+        logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
+    else:
+        logger.info("Phase/ED-ES loss: disabled for Stage1 EF training")
     logger.info("Weight decay: %s", getattr(config, "WEIGHT_DECAY", 0.0))
     logger.info("Max grad norm: %s", getattr(config, "MAX_GRAD_NORM", 0.0))
 
@@ -827,7 +848,7 @@ def main(argv=None):
     for epoch in range(config.EPOCHS):
         if phase_only and freeze_epochs > 0 and epoch == freeze_epochs:
             if set_backbone_trainable(model, True):
-                logger.info("Unfreezing Stage1 backbone at epoch %d", epoch + 1)
+                logger.info("Unfreezing shared video backbone at epoch %d", epoch + 1)
                 unfreeze_lr_mult = float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0))
                 if unfreeze_lr_mult > 0 and unfreeze_lr_mult != 1.0:
                     config.LEARNING_RATE = float(config.LEARNING_RATE) * unfreeze_lr_mult
@@ -875,17 +896,27 @@ def main(argv=None):
                 current_monitor = phase_score
                 improved = current_monitor > best_monitor
             else:
-                logger.info(
-                    "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%% | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%%",
-                    epoch + 1,
-                    config.EPOCHS,
-                    train_metrics["train_loss"],
-                    val_metrics["ef_mae"] * 100,
-                    val_metrics["ef_rmse"] * 100,
-                    val_metrics["ed_acc"] * 100,
-                    val_metrics["es_acc"] * 100,
-                    val_metrics["joint_acc"] * 100,
-                )
+                if should_evaluate_phase_metrics():
+                    logger.info(
+                        "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%% | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%%",
+                        epoch + 1,
+                        config.EPOCHS,
+                        train_metrics["train_loss"],
+                        val_metrics["ef_mae"] * 100,
+                        val_metrics["ef_rmse"] * 100,
+                        val_metrics["ed_acc"] * 100,
+                        val_metrics["es_acc"] * 100,
+                        val_metrics["joint_acc"] * 100,
+                    )
+                else:
+                    logger.info(
+                        "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%%",
+                        epoch + 1,
+                        config.EPOCHS,
+                        train_metrics["train_loss"],
+                        val_metrics["ef_mae"] * 100,
+                        val_metrics["ef_rmse"] * 100,
+                    )
 
                 current_monitor = val_metrics["ef_mae"]
                 improved = current_monitor < best_monitor
@@ -958,14 +989,20 @@ def main(argv=None):
     if not phase_only:
         logger.info("Test EF MAE: %.2f%%", test_metrics["ef_mae"] * 100)
         logger.info("Test EF RMSE: %.2f%%", test_metrics["ef_rmse"] * 100)
+        if should_evaluate_phase_metrics():
+            logger.info("Test ED Accuracy: %.2f%%", test_metrics["ed_acc"] * 100)
+            logger.info("Test ES Accuracy: %.2f%%", test_metrics["es_acc"] * 100)
+            logger.info("Test Joint Accuracy: %.2f%%", test_metrics["joint_acc"] * 100)
+            logger.info("Test ED MAE (frames): %.3f", test_metrics["ed_mae_frames"])
+            logger.info("Test ES MAE (frames): %.3f", test_metrics["es_mae_frames"])
     else:
-        logger.info("Test EF metrics: N/A (phase-only mode)")
-    logger.info("Test ED Accuracy: %.2f%%", test_metrics["ed_acc"] * 100)
-    logger.info("Test ES Accuracy: %.2f%%", test_metrics["es_acc"] * 100)
-    logger.info("Test Joint Accuracy: %.2f%%", test_metrics["joint_acc"] * 100)
-    logger.info("Test ED MAE (frames): %.3f", test_metrics["ed_mae_frames"])
-    logger.info("Test ES MAE (frames): %.3f", test_metrics["es_mae_frames"])
+        logger.info("Test EF metrics: N/A (Stage2 ED/ES detector mode)")
     if phase_only:
+        logger.info("Test ED Accuracy: %.2f%%", test_metrics["ed_acc"] * 100)
+        logger.info("Test ES Accuracy: %.2f%%", test_metrics["es_acc"] * 100)
+        logger.info("Test Joint Accuracy: %.2f%%", test_metrics["joint_acc"] * 100)
+        logger.info("Test ED MAE (frames): %.3f", test_metrics["ed_mae_frames"])
+        logger.info("Test ES MAE (frames): %.3f", test_metrics["es_mae_frames"])
         logger.info(
             "Phase target status: joint %.2f%% vs target %.2f%%",
             test_metrics["joint_acc"] * 100,

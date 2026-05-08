@@ -12,10 +12,10 @@ import model_execution
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Train a dedicated Stage 1-3 phase detector for ED/ES localization."
+        description="Train Stage2 ED/ES frame detector."
     )
     parser.add_argument("--checkpoint", type=str, default=getattr(config, "PHASE_CHECKPOINT_PATH", "best_phase_detector.pth"))
-    parser.add_argument("--init-checkpoint", type=str, default=None, help="Warm-start from an existing Stage1-3 checkpoint, for example best_model.pth")
+    parser.add_argument("--init-checkpoint", type=str, default=None, help="Warm-start from an existing Stage1 EF checkpoint, for example best_model.pth")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--learning-rate", "--lr", dest="learning_rate", type=float, default=None)
     parser.add_argument("--batch-size", type=int, default=None)

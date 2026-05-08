@@ -24,19 +24,20 @@ def _run_step(step_name, cmd, env=None):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train Stage1-7 pipeline in one orchestrated run.")
+    parser = argparse.ArgumentParser(description="Train the EF/ED-ES/segmentation/similarity pipeline in one orchestrated run.")
 
     parser.add_argument("--data-dir", type=str, default=None, help="Override data dir passed to stage scripts")
 
     parser.add_argument("--skip-homogenization", action="store_true")
-    parser.add_argument("--skip-stage123", action="store_true")
+    parser.add_argument("--use-homogenization", action=argparse.BooleanOptionalAction, default=True, help="Apply Stage0 homogenization stats to downstream stages")
+    parser.add_argument("--skip-stage1", "--skip-stage123", dest="skip_stage123", action="store_true", help="Skip Stage1 EF model training")
     parser.add_argument("--skip-stage4", action="store_true")
     parser.add_argument("--skip-stage5", action="store_true")
     parser.add_argument("--skip-stage67", action="store_true")
 
-    parser.add_argument("--stage123-checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
-    parser.add_argument("--train-phase-detector", action="store_true", help="Train a separate phase-only Stage1-3 checkpoint before EF/calibration stages")
-    parser.add_argument("--phase-checkpoint", type=str, default=getattr(config, "PHASE_CHECKPOINT_PATH", "best_phase_detector.pth"))
+    parser.add_argument("--stage1-checkpoint", "--stage123-checkpoint", dest="stage123_checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model_stage1_ef_96f.pth"))
+    parser.add_argument("--train-stage2-detector", "--train-phase-detector", dest="train_phase_detector", action="store_true", help="Train Stage2 ED/ES frame detector after Stage1 EF training")
+    parser.add_argument("--stage2-checkpoint", "--phase-checkpoint", dest="phase_checkpoint", type=str, default=getattr(config, "PHASE_CHECKPOINT_PATH", "best_stage2_ed_es_detector.pth"))
     parser.add_argument("--phase-init-checkpoint", type=str, default=None)
     parser.add_argument("--phase-epochs", type=int, default=None)
     parser.add_argument("--phase-learning-rate", type=float, default=None)
@@ -53,19 +54,20 @@ def parse_args():
     parser.add_argument("--homogenization-max-videos", type=int, default=0)
     parser.add_argument("--homogenization-sample-every", type=int, default=10)
     parser.add_argument("--homogenization-clahe-clip-limit", type=float, default=2.0)
-    parser.add_argument("--stage123-epochs", type=int, default=None)
-    parser.add_argument("--stage123-learning-rate", type=float, default=None)
-    parser.add_argument("--stage123-batch-size", type=int, default=None)
-    parser.add_argument("--stage123-num-frames", type=int, default=None)
-    parser.add_argument("--stage123-dataset-period", type=int, default=None)
-    parser.add_argument("--stage123-dataset-max-length", type=int, default=None)
-    parser.add_argument("--stage123-eval-clips", type=int, default=None)
-    parser.add_argument("--stage123-train-pad", type=int, default=None)
-    parser.add_argument("--stage123-train-noise", type=float, default=None)
-    parser.add_argument("--stage123-stage1-preserve-temporal-stride", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--stage123-echonet-style-profile", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--stage123-workers", type=int, default=None)
-    parser.add_argument("--stage123-max-videos", type=int, default=None)
+    parser.add_argument("--stage1-epochs", "--stage123-epochs", dest="stage123_epochs", type=int, default=None)
+    parser.add_argument("--stage1-learning-rate", "--stage123-learning-rate", dest="stage123_learning_rate", type=float, default=None)
+    parser.add_argument("--stage1-batch-size", "--stage123-batch-size", dest="stage123_batch_size", type=int, default=None)
+    parser.add_argument("--stage1-num-frames", "--stage123-num-frames", dest="stage123_num_frames", type=int, default=None)
+    parser.add_argument("--stage1-dataset-period", "--stage123-dataset-period", dest="stage123_dataset_period", type=int, default=None)
+    parser.add_argument("--stage1-dataset-max-length", "--stage123-dataset-max-length", dest="stage123_dataset_max_length", type=int, default=None)
+    parser.add_argument("--stage1-eval-clips", "--stage123-eval-clips", dest="stage123_eval_clips", type=int, default=None)
+    parser.add_argument("--stage1-train-pad", "--stage123-train-pad", dest="stage123_train_pad", type=int, default=None)
+    parser.add_argument("--stage1-train-noise", "--stage123-train-noise", dest="stage123_train_noise", type=float, default=None)
+    parser.add_argument("--stage1-preserve-temporal-stride", "--stage123-stage1-preserve-temporal-stride", dest="stage123_stage1_preserve_temporal_stride", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--stage1-echonet-style-profile", "--stage123-echonet-style-profile", dest="stage123_echonet_style_profile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--stage1-workers", "--stage123-workers", dest="stage123_workers", type=int, default=None)
+    parser.add_argument("--stage1-max-videos", "--stage123-max-videos", dest="stage123_max_videos", type=int, default=None)
+    parser.add_argument("--stage1-phase-validation-metrics", action=argparse.BooleanOptionalAction, default=False, help="Report ED/ES validation metrics during Stage1 EF training")
 
     parser.add_argument("--stage4-checkpoint", type=str, default=getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
     parser.add_argument("--stage4-epochs", type=int, default=50)
@@ -106,10 +108,11 @@ def parse_args():
 def main():
     args = parse_args()
     python_bin = sys.executable
+    homogenization_stats = args.homogenization_stats if args.use_homogenization else None
 
     t0 = time.perf_counter()
 
-    if not args.skip_homogenization:
+    if args.use_homogenization and not args.skip_homogenization:
         cmd = [
             python_bin,
             os.path.join(ROOT_DIR, "pipeline", "train_frame_homogenization.py"),
@@ -125,24 +128,26 @@ def main():
         if args.homogenization_max_videos and int(args.homogenization_max_videos) > 0:
             cmd += ["--max-videos", str(args.homogenization_max_videos)]
         _run_step("Stage0 frame homogenization fitting", cmd)
+    elif not args.use_homogenization:
+        print("Homogenization disabled: downstream stages will run without Stage0 stats")
     else:
         print("Skipping Stage0 frame homogenization fitting")
 
-    # Stage 1-3
+    # Stage 1: EF regression
     if not args.skip_stage123:
         ignored_stage123_args = {
-            "--stage123-dataset-period": args.stage123_dataset_period,
-            "--stage123-dataset-max-length": args.stage123_dataset_max_length,
-            "--stage123-eval-clips": args.stage123_eval_clips,
-            "--stage123-train-pad": args.stage123_train_pad,
-            "--stage123-train-noise": args.stage123_train_noise,
-            "--stage123-stage1-preserve-temporal-stride": args.stage123_stage1_preserve_temporal_stride,
-            "--stage123-echonet-style-profile": args.stage123_echonet_style_profile if args.stage123_echonet_style_profile else None,
+            "--stage1-dataset-period": args.stage123_dataset_period,
+            "--stage1-dataset-max-length": args.stage123_dataset_max_length,
+            "--stage1-eval-clips": args.stage123_eval_clips,
+            "--stage1-train-pad": args.stage123_train_pad,
+            "--stage1-train-noise": args.stage123_train_noise,
+            "--stage1-preserve-temporal-stride": args.stage123_stage1_preserve_temporal_stride,
+            "--stage1-echonet-style-profile": args.stage123_echonet_style_profile if args.stage123_echonet_style_profile else None,
         }
         ignored_stage123_args = {k: v for k, v in ignored_stage123_args.items() if v is not None}
         if ignored_stage123_args:
             print(
-                "Ignoring Stage1-3 options no longer supported by model_execution.py: "
+                "Ignoring Stage1 EF options no longer supported by model_execution.py: "
                 + ", ".join(f"{k}={v}" for k, v in ignored_stage123_args.items())
             )
 
@@ -155,6 +160,7 @@ def main():
             "--checkpoint",
             str(args.stage123_checkpoint),
         ]
+        cmd += ["--phase-validation-metrics" if args.stage1_phase_validation_metrics else "--no-phase-validation-metrics"]
         if args.stage123_epochs is not None:
             cmd += ["--epochs", str(args.stage123_epochs)]
         if args.stage123_learning_rate is not None:
@@ -163,8 +169,8 @@ def main():
             cmd += ["--batch-size", str(args.stage123_batch_size)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
-        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
-            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
+        if homogenization_stats is not None and os.path.exists(homogenization_stats):
+            cmd += ["--homogenization-stats", str(homogenization_stats)]
         if args.stage123_workers is not None:
             cmd += ["--workers", str(args.stage123_workers)]
         if args.stage123_max_videos is not None:
@@ -172,11 +178,11 @@ def main():
         if args.device is not None and str(args.device).lower() == "cpu":
             cmd += ["--no-amp"]
 
-        _run_step("Stage1-3 training", cmd)
+        _run_step("Stage1 EF training", cmd)
     else:
-        print("Skipping Stage1-3 training")
+        print("Skipping Stage1 EF training")
 
-    # Dedicated phase detector
+    # Stage 2: ED/ES frame detection
     if args.train_phase_detector:
         cmd = [
             python_bin,
@@ -216,14 +222,14 @@ def main():
             cmd += ["--max-videos", str(phase_max_videos)]
         if args.phase_tolerance is not None:
             cmd += ["--tolerance", str(args.phase_tolerance)]
-        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
-            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
+        if homogenization_stats is not None and os.path.exists(homogenization_stats):
+            cmd += ["--homogenization-stats", str(homogenization_stats)]
         if args.device is not None and str(args.device).lower() == "cpu":
             cmd += ["--no-amp"]
 
-        _run_step("Dedicated phase detector training", cmd)
+        _run_step("Stage2 ED/ES frame detector training", cmd)
     else:
-        print("Skipping dedicated phase detector training")
+        print("Skipping Stage2 ED/ES frame detector training")
 
     # Stage 4
     if not args.skip_stage4:
@@ -250,8 +256,8 @@ def main():
 
         if args.data_dir is not None:
             cmd += ["--data-dir", str(args.data_dir)]
-        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
-            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
+        if homogenization_stats is not None and os.path.exists(homogenization_stats):
+            cmd += ["--homogenization-stats", str(homogenization_stats)]
         if args.stage4_max_videos is not None:
             cmd += ["--max-videos", str(args.stage4_max_videos)]
         if args.device is not None:
@@ -296,8 +302,8 @@ def main():
                 "--eval-threshold",
                 str(args.stage5_eval_threshold),
             ]
-            if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
-                cmd += ["--homogenization-stats", str(args.homogenization_stats)]
+            if homogenization_stats is not None and os.path.exists(homogenization_stats):
+                cmd += ["--homogenization-stats", str(homogenization_stats)]
             if args.device is not None:
                 cmd += ["--device", str(args.device)]
 
@@ -328,8 +334,8 @@ def main():
             cmd += ["--data-dir", str(args.data_dir)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
-        if args.homogenization_stats is not None and os.path.exists(args.homogenization_stats):
-            cmd += ["--homogenization-stats", str(args.homogenization_stats)]
+        if homogenization_stats is not None and os.path.exists(homogenization_stats):
+            cmd += ["--homogenization-stats", str(homogenization_stats)]
         if args.stage123_dataset_period is not None:
             cmd += ["--dataset-period", str(args.stage123_dataset_period)]
         if args.stage123_dataset_max_length is not None:

@@ -23,6 +23,7 @@ STAGE1_PRESERVE_TEMPORAL_STRIDE = True  # False is closer to vanilla EchoNet R(2
 PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss
 PHASE_LABEL_SMOOTHING = 0.0  # Label smoothing for hard CE on ED/ES temporal indices
 PHASE_ONLY = False  # If True, disable EF loss and optimize only phase detection
+EVALUATE_PHASE_METRICS = False  # If True, report ED/ES validation metrics outside phase-detector training
 PHASE_TARGET_ACCURACY = 0.95  # Target validation joint ED/ES accuracy for dedicated phase training
 STOP_ON_PHASE_TARGET = False  # Stop early when validation joint accuracy reaches PHASE_TARGET_ACCURACY
 INIT_CHECKPOINT = None  # Optional checkpoint used to initialize model weights before training
