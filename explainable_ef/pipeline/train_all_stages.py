@@ -69,6 +69,9 @@ def parse_args():
     parser.add_argument("--stage1-batch-size", "--stage123-batch-size", dest="stage123_batch_size", type=int, default=None)
     parser.add_argument("--stage1-num-frames", "--stage123-num-frames", dest="stage123_num_frames", type=int, default=None)
     parser.add_argument("--stage1-dataset-period", "--stage123-dataset-period", dest="stage123_dataset_period", type=int, default=None)
+    parser.add_argument("--adaptive-dataset-period", action=argparse.BooleanOptionalAction, default=False, help="Use period 2 for long videos and period 1 for shorter videos in sequence stages")
+    parser.add_argument("--adaptive-period-frame-threshold", type=int, default=192)
+    parser.add_argument("--adaptive-period-long", type=int, default=2)
     parser.add_argument("--stage1-dataset-max-length", "--stage123-dataset-max-length", dest="stage123_dataset_max_length", type=int, default=None)
     parser.add_argument("--stage1-eval-clips", "--stage123-eval-clips", dest="stage123_eval_clips", type=int, default=None)
     parser.add_argument("--stage1-train-pad", "--stage123-train-pad", dest="stage123_train_pad", type=int, default=None)
@@ -146,8 +149,6 @@ def main():
     # Stage 1: EF regression
     if not args.skip_stage123:
         ignored_stage123_args = {
-            "--stage1-dataset-period": args.stage123_dataset_period,
-            "--stage1-dataset-max-length": args.stage123_dataset_max_length,
             "--stage1-eval-clips": args.stage123_eval_clips,
             "--stage1-train-pad": args.stage123_train_pad,
             "--stage1-train-noise": args.stage123_train_noise,
@@ -179,6 +180,18 @@ def main():
             cmd += ["--batch-size", str(args.stage123_batch_size)]
         if args.stage123_num_frames is not None:
             cmd += ["--num-frames", str(args.stage123_num_frames)]
+        if args.stage123_dataset_period is not None:
+            cmd += ["--dataset-period", str(args.stage123_dataset_period)]
+        if args.stage123_dataset_max_length is not None:
+            cmd += ["--dataset-max-length", str(args.stage123_dataset_max_length)]
+        if args.adaptive_dataset_period:
+            cmd += [
+                "--adaptive-dataset-period",
+                "--adaptive-period-frame-threshold",
+                str(args.adaptive_period_frame_threshold),
+                "--adaptive-period-long",
+                str(args.adaptive_period_long),
+            ]
         if homogenization_stats is not None and os.path.exists(homogenization_stats):
             cmd += ["--homogenization-stats", str(homogenization_stats)]
         if args.stage123_workers is not None:
@@ -222,6 +235,18 @@ def main():
             cmd += ["--batch-size", str(phase_batch)]
         if phase_frames is not None:
             cmd += ["--num-frames", str(phase_frames)]
+        if args.stage123_dataset_period is not None:
+            cmd += ["--dataset-period", str(args.stage123_dataset_period)]
+        if args.stage123_dataset_max_length is not None:
+            cmd += ["--dataset-max-length", str(args.stage123_dataset_max_length)]
+        if args.adaptive_dataset_period:
+            cmd += [
+                "--adaptive-dataset-period",
+                "--adaptive-period-frame-threshold",
+                str(args.adaptive_period_frame_threshold),
+                "--adaptive-period-long",
+                str(args.adaptive_period_long),
+            ]
         if args.phase_train_sampling_mode is not None:
             cmd += ["--train-sampling-mode", str(args.phase_train_sampling_mode)]
         if args.phase_eval_sampling_mode is not None:
@@ -368,6 +393,14 @@ def main():
             cmd += ["--homogenization-stats", str(homogenization_stats)]
         if args.stage123_dataset_period is not None:
             cmd += ["--dataset-period", str(args.stage123_dataset_period)]
+        if args.adaptive_dataset_period:
+            cmd += [
+                "--adaptive-dataset-period",
+                "--adaptive-period-frame-threshold",
+                str(args.adaptive_period_frame_threshold),
+                "--adaptive-period-long",
+                str(args.adaptive_period_long),
+            ]
         if args.stage123_dataset_max_length is not None:
             cmd += ["--dataset-max-length", str(args.stage123_dataset_max_length)]
         if args.stage67_max_videos is not None:

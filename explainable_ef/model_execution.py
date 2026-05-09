@@ -54,6 +54,9 @@ def parse_args(argv=None):
     parser.add_argument("--num-frames", type=int, default=None, help="Override config.NUM_FRAMES")
     parser.add_argument("--image-size", type=int, default=None, help="Override config.IMAGE_SIZE")
     parser.add_argument("--dataset-period", type=int, default=None, help="Temporal stride between sampled frames")
+    parser.add_argument("--adaptive-dataset-period", action=argparse.BooleanOptionalAction, default=None, help="Use adaptive temporal stride for longer videos")
+    parser.add_argument("--adaptive-period-frame-threshold", type=int, default=None, help="Frame-count threshold for adaptive temporal stride")
+    parser.add_argument("--adaptive-period-long", type=int, default=None, help="Temporal stride used for videos at/above adaptive threshold")
     parser.add_argument("--dataset-max-length", type=int, default=None, help="Optional cap on sampled clip length")
     parser.add_argument("--sampling-mode", type=str, default=None, choices=["global", "echonet", "phase_window"], help="Default sampling mode for all splits")
     parser.add_argument("--train-sampling-mode", type=str, default=None, choices=["global", "echonet", "phase_window"], help="Sampling mode for training split")
@@ -113,6 +116,12 @@ def apply_runtime_overrides(args, logger):
         overrides["IMAGE_SIZE"] = args.image_size
     if args.dataset_period is not None:
         overrides["DATASET_PERIOD"] = args.dataset_period
+    if args.adaptive_dataset_period is not None:
+        overrides["ADAPTIVE_DATASET_PERIOD"] = args.adaptive_dataset_period
+    if args.adaptive_period_frame_threshold is not None:
+        overrides["ADAPTIVE_PERIOD_FRAME_THRESHOLD"] = args.adaptive_period_frame_threshold
+    if args.adaptive_period_long is not None:
+        overrides["ADAPTIVE_PERIOD_LONG"] = args.adaptive_period_long
     if args.dataset_max_length is not None:
         overrides["DATASET_MAX_LENGTH"] = args.dataset_max_length
     if args.sampling_mode is not None:
@@ -307,6 +316,9 @@ def build_dataloaders():
     eval_sampling = getattr(config, "EVAL_SAMPLING_MODE", None) or default_sampling
     frame_size = (int(getattr(config, "IMAGE_SIZE", 112)), int(getattr(config, "IMAGE_SIZE", 112)))
     dataset_period = int(getattr(config, "DATASET_PERIOD", 1))
+    adaptive_period = bool(getattr(config, "ADAPTIVE_DATASET_PERIOD", False))
+    adaptive_threshold = int(getattr(config, "ADAPTIVE_PERIOD_FRAME_THRESHOLD", 192))
+    adaptive_long = int(getattr(config, "ADAPTIVE_PERIOD_LONG", 2))
     dataset_max_length = getattr(config, "DATASET_MAX_LENGTH", None)
 
     train_dataset = EchoDataset(
@@ -317,6 +329,9 @@ def build_dataloaders():
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         period=dataset_period,
+        adaptive_period=adaptive_period,
+        adaptive_period_threshold=adaptive_threshold,
+        adaptive_period_long=adaptive_long,
         max_length=dataset_max_length,
         sampling_mode=train_sampling,
         homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
@@ -329,6 +344,9 @@ def build_dataloaders():
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         period=dataset_period,
+        adaptive_period=adaptive_period,
+        adaptive_period_threshold=adaptive_threshold,
+        adaptive_period_long=adaptive_long,
         max_length=dataset_max_length,
         sampling_mode=eval_sampling,
         homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
@@ -341,6 +359,9 @@ def build_dataloaders():
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         period=dataset_period,
+        adaptive_period=adaptive_period,
+        adaptive_period_threshold=adaptive_threshold,
+        adaptive_period_long=adaptive_long,
         max_length=dataset_max_length,
         sampling_mode=eval_sampling,
         homogenization_stats=getattr(config, "HOMOGENIZATION_STATS", None),
@@ -797,6 +818,12 @@ def log_header(logger, amp_enabled):
     logger.info("Number of frames: %d", config.NUM_FRAMES)
     logger.info("Image size: %d", int(getattr(config, "IMAGE_SIZE", 112)))
     logger.info("Dataset period: %d", int(getattr(config, "DATASET_PERIOD", 1)))
+    logger.info(
+        "Adaptive dataset period: %s | threshold=%d | long_period=%d",
+        bool(getattr(config, "ADAPTIVE_DATASET_PERIOD", False)),
+        int(getattr(config, "ADAPTIVE_PERIOD_FRAME_THRESHOLD", 192)),
+        int(getattr(config, "ADAPTIVE_PERIOD_LONG", 2)),
+    )
     logger.info("Dataset max length: %s", getattr(config, "DATASET_MAX_LENGTH", None))
     logger.info("Sampling modes: train=%s | eval=%s", getattr(config, "TRAIN_SAMPLING_MODE", None) or getattr(config, "DATASET_SAMPLING_MODE", "global"), getattr(config, "EVAL_SAMPLING_MODE", None) or getattr(config, "DATASET_SAMPLING_MODE", "global"))
     logger.info("Max videos: %s", config.MAX_VIDEOS if config.MAX_VIDEOS else "All")

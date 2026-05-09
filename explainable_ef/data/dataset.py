@@ -25,6 +25,9 @@ class EchoDataset(Dataset):
         transform=None,
         normalize_input=True,
         period=1,
+        adaptive_period=False,
+        adaptive_period_threshold=192,
+        adaptive_period_long=2,
         max_length=None,
         sampling_mode="global",
         clips=1,
@@ -41,6 +44,9 @@ class EchoDataset(Dataset):
         self.transform = transform
         self.normalize_input = bool(normalize_input)
         self.period = max(1, int(period))
+        self.adaptive_period = bool(adaptive_period)
+        self.adaptive_period_threshold = max(1, int(adaptive_period_threshold))
+        self.adaptive_period_long = max(1, int(adaptive_period_long))
         self.max_length = None if max_length is None else max(1, int(max_length))
         sampling_mode = str(sampling_mode).strip().lower()
         if sampling_mode in {"full", "full_video"}:
@@ -99,9 +105,15 @@ class EchoDataset(Dataset):
     def __len__(self):
         return len(self.filelist)
 
-    def _resolve_clip_length(self, total_video_frames):
+    def _resolve_effective_period(self, total_video_frames):
+        if self.adaptive_period and int(total_video_frames) >= self.adaptive_period_threshold:
+            return self.adaptive_period_long
+        return self.period
+
+    def _resolve_clip_length(self, total_video_frames, period=None):
+        period = self.period if period is None else max(1, int(period))
         if self.length is None:
-            clip_length = max(1, int(total_video_frames) // int(self.period))
+            clip_length = max(1, int(total_video_frames) // int(period))
             if self.max_length is not None:
                 clip_length = min(clip_length, int(self.max_length))
         else:
@@ -109,7 +121,7 @@ class EchoDataset(Dataset):
 
         return max(1, int(clip_length))
 
-    def _sample_start_positions(self, total_video_frames, clip_length):
+    def _sample_start_positions(self, total_video_frames, clip_length, period=None):
         """
         EchoNet-style clip starts over the padded video timeline.
 
@@ -118,8 +130,9 @@ class EchoDataset(Dataset):
         """
         total_video_frames = int(total_video_frames)
         clip_length = int(max(1, clip_length))
-        padded_frames = max(total_video_frames, clip_length * self.period)
-        num_start_positions = max(1, padded_frames - (clip_length - 1) * self.period)
+        period = self.period if period is None else max(1, int(period))
+        padded_frames = max(total_video_frames, clip_length * period)
+        num_start_positions = max(1, padded_frames - (clip_length - 1) * period)
 
         if self.clips == "all":
             return np.arange(num_start_positions, dtype=np.int32), padded_frames
@@ -165,9 +178,10 @@ class EchoDataset(Dataset):
 
         return np.repeat(indices[None, :], num_clips, axis=0)
 
-    def _sample_phase_window_indices(self, total_video_frames, clip_length, ed_original, es_original):
+    def _sample_phase_window_indices(self, total_video_frames, clip_length, ed_original, es_original, period=None):
         total_video_frames = int(total_video_frames)
         clip_length = int(max(1, clip_length))
+        period = self.period if period is None else max(1, int(period))
         phase_frames = [
             int(v)
             for v in (ed_original, es_original)
@@ -177,7 +191,7 @@ class EchoDataset(Dataset):
         if len(phase_frames) < 2:
             return self._sample_global_indices(total_video_frames, clip_length), total_video_frames
 
-        effective_span = (clip_length - 1) * self.period + 1
+        effective_span = (clip_length - 1) * period + 1
         padded_frames = max(total_video_frames, effective_span)
         max_start = max(0, padded_frames - effective_span)
 
@@ -196,7 +210,7 @@ class EchoDataset(Dataset):
         else:
             start = int(round((start_low + start_high) / 2.0))
 
-        indices = start + self.period * np.arange(clip_length, dtype=np.int32)
+        indices = start + period * np.arange(clip_length, dtype=np.int32)
         return indices.astype(np.int32, copy=False), padded_frames
 
     def _apply_noise(self, frames_array):
@@ -254,7 +268,8 @@ class EchoDataset(Dataset):
         frames_array = apply_video_homogenization(frames_array, self.homogenization)
         frames_array = self._apply_noise(frames_array)
         total_video_frames = len(frames_array)
-        clip_length = self._resolve_clip_length(total_video_frames)
+        effective_period = self._resolve_effective_period(total_video_frames)
+        clip_length = self._resolve_clip_length(total_video_frames, period=effective_period)
         if self.sampling_mode == "global":
             sampled_indices = self._sample_global_indices(total_video_frames, clip_length)
         elif self.sampling_mode == "phase_window":
@@ -263,6 +278,7 @@ class EchoDataset(Dataset):
                 clip_length,
                 ed_original=ed_original,
                 es_original=es_original,
+                period=effective_period,
             )
             if padded_frames > total_video_frames:
                 frames_array = np.pad(
@@ -272,7 +288,11 @@ class EchoDataset(Dataset):
                     constant_values=0,
                 )
         else:
-            start_positions, padded_frames = self._sample_start_positions(total_video_frames, clip_length)
+            start_positions, padded_frames = self._sample_start_positions(
+                total_video_frames,
+                clip_length,
+                period=effective_period,
+            )
 
             if padded_frames > total_video_frames:
                 frames_array = np.pad(
@@ -282,7 +302,7 @@ class EchoDataset(Dataset):
                     constant_values=0,
                 )
 
-            offsets = self.period * np.arange(clip_length, dtype=np.int32)
+            offsets = effective_period * np.arange(clip_length, dtype=np.int32)
             sampled_indices = start_positions[:, None] + offsets[None, :]
         sampled_frames = frames_array[sampled_indices]
 

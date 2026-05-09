@@ -12,6 +12,9 @@ NUM_FRAMES = 32  # Increase to 48/64 for finer phase localization
 IMAGE_SIZE = 112
 MAX_VIDEOS = None  # None = use all videos
 DATASET_PERIOD = 1  # EchoNet-style temporal stride within a clip
+ADAPTIVE_DATASET_PERIOD = False  # If True, use a larger temporal stride for long videos
+ADAPTIVE_PERIOD_FRAME_THRESHOLD = 192  # Long-video threshold; 96 frames at period 2 spans 191 source frames
+ADAPTIVE_PERIOD_LONG = 2  # Temporal stride used when NumberOfFrames >= threshold
 DATASET_MAX_LENGTH = None  # Optional cap on sampled clip length
 DATASET_SAMPLING_MODE = "global"  # "global" spans the whole video without GT crop; "echonet" uses local clip windows
 TRAIN_SAMPLING_MODE = None  # Optional train override; use "phase_window" for phase-detector training

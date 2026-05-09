@@ -70,6 +70,9 @@ def parse_args():
     parser.add_argument("--stage123-checkpoint", type=str, default=getattr(config, "CHECKPOINT_PATH", "best_model.pth"))
     parser.add_argument("--num-frames", type=int, default=int(getattr(config, "NUM_FRAMES", 32)))
     parser.add_argument("--dataset-period", type=int, default=int(getattr(config, "DATASET_PERIOD", 1)))
+    parser.add_argument("--adaptive-dataset-period", action=argparse.BooleanOptionalAction, default=bool(getattr(config, "ADAPTIVE_DATASET_PERIOD", False)))
+    parser.add_argument("--adaptive-period-frame-threshold", type=int, default=int(getattr(config, "ADAPTIVE_PERIOD_FRAME_THRESHOLD", 192)))
+    parser.add_argument("--adaptive-period-long", type=int, default=int(getattr(config, "ADAPTIVE_PERIOD_LONG", 2)))
     parser.add_argument("--dataset-max-length", type=int, default=getattr(config, "DATASET_MAX_LENGTH", None))
     parser.add_argument("--max-videos", type=int, default=None, help="Optional cap per split for faster runs")
     parser.add_argument("--device", type=str, default=("cuda" if torch.cuda.is_available() else "cpu"))
@@ -158,6 +161,9 @@ def _collect_split_rows(split, args, model, device, stage5_metrics):
         split=str(split).upper(),
         num_frames=int(args.num_frames),
         period=int(args.dataset_period),
+        adaptive_period=bool(args.adaptive_dataset_period),
+        adaptive_period_threshold=int(args.adaptive_period_frame_threshold),
+        adaptive_period_long=int(args.adaptive_period_long),
         max_length=args.dataset_max_length,
         max_videos=args.max_videos,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
@@ -449,6 +455,12 @@ def main():
     print(f"Homogenization stats: {args.homogenization_stats}")
     print(f"Num frames: {args.num_frames}")
     print(f"Dataset period: {args.dataset_period}")
+    print(
+        "Adaptive dataset period: "
+        f"{bool(args.adaptive_dataset_period)} | "
+        f"threshold={int(args.adaptive_period_frame_threshold)} | "
+        f"long_period={int(args.adaptive_period_long)}"
+    )
     print(f"Dataset max length: {args.dataset_max_length}")
     print(f"Max videos per split: {args.max_videos if args.max_videos else 'All'}")
     print(f"Severity thresholds: severe<{args.severe_threshold}, normal>={args.normal_threshold}")
