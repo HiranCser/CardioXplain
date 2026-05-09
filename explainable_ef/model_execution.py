@@ -87,8 +87,10 @@ def parse_args(argv=None):
     parser.add_argument("--phase-frame-ce-weight", type=float, default=None, help="Override config.PHASE_FRAME_CE_WEIGHT")
     parser.add_argument("--phase-frame-radius", type=int, default=None, help="Override config.PHASE_FRAME_RADIUS")
     parser.add_argument("--phase-cyclic-order", action=argparse.BooleanOptionalAction, default=None, help="Allow cyclic ED->ES ordering for global clips")
-    parser.add_argument("--phase-max-gap-ratio", type=float, default=None, help="Maximum ED->ES gap ratio for constrained pair decoding")
-    parser.add_argument("--phase-pair-loss-weight", type=float, default=None, help="Weight for constrained ED/ES pair loss")
+    parser.add_argument("--phase-max-gap-ratio", type=float, default=None, help="Maximum ED->ES gap ratio for pair decoding")
+    parser.add_argument("--phase-pair-loss-weight", type=float, default=None, help="Weight for soft ED/ES pair-distribution loss")
+    parser.add_argument("--phase-pair-soft-sigma", type=float, default=None, help="Gaussian sigma for soft ED/ES pair targets")
+    parser.add_argument("--phase-pair-soft-radius", type=int, default=None, help="Support radius for soft ED/ES pair targets")
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
@@ -189,6 +191,10 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_MAX_GAP_RATIO"] = args.phase_max_gap_ratio
     if args.phase_pair_loss_weight is not None:
         overrides["PHASE_PAIR_LOSS_WEIGHT"] = args.phase_pair_loss_weight
+    if args.phase_pair_soft_sigma is not None:
+        overrides["PHASE_PAIR_SOFT_SIGMA"] = args.phase_pair_soft_sigma
+    if args.phase_pair_soft_radius is not None:
+        overrides["PHASE_PAIR_SOFT_RADIUS"] = args.phase_pair_soft_radius
     if args.phase_unfreeze_lr_mult is not None:
         overrides["PHASE_UNFREEZE_LR_MULT"] = args.phase_unfreeze_lr_mult
     if args.weight_decay is not None:
@@ -543,38 +549,59 @@ def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
     return targets
 
 
-def constrained_pair_scores(phase_logits):
-    """Return ED/ES pair scores using the same score curves as inference."""
+def pair_score_curves(phase_logits):
+    """Return smoothed ED/ES score curves using the same logits as inference."""
     ed_scores = phase_logits[:, :, 1] - phase_logits[:, :, 0]
     es_scores = phase_logits[:, :, 2] - phase_logits[:, :, 0]
     ed_scores = Stage3PhaseDetector._smooth_scores(ed_scores, kernel_size=5)
     es_scores = Stage3PhaseDetector._smooth_scores(es_scores, kernel_size=5)
+    return ed_scores, es_scores
 
-    batch_size, num_frames = ed_scores.shape
-    pair_scores = ed_scores.unsqueeze(2) + es_scores.unsqueeze(1)
 
+def phase_pair_gap(ed_idx, es_idx, num_frames):
+    if bool(getattr(config, "PHASE_CYCLIC_ORDER", True)):
+        return (es_idx - ed_idx) % int(num_frames)
+    return es_idx - ed_idx
+
+
+def phase_pair_valid_mask(ed_idx, es_idx, num_frames):
     min_gap = int(max(1, getattr(config, "PHASE_PAIR_MIN_GAP", getattr(config, "PHASE_ATTN_MIN_GAP", 2))))
     max_gap_ratio = getattr(config, "PHASE_MAX_GAP_RATIO", 0.65)
     max_gap = int(round(float(max_gap_ratio) * num_frames)) if max_gap_ratio is not None else (num_frames - 1)
     max_gap = int(max(min_gap, min(num_frames - 1, max_gap)))
+    gap = phase_pair_gap(ed_idx, es_idx, num_frames)
+    return (gap >= min_gap) & (gap <= max_gap)
 
-    idx = torch.arange(num_frames, device=phase_logits.device)
-    if bool(getattr(config, "PHASE_CYCLIC_ORDER", True)):
-        gap = (idx.unsqueeze(0) - idx.unsqueeze(1)) % num_frames
-    else:
-        gap = idx.unsqueeze(0) - idx.unsqueeze(1)
-    valid = (gap >= min_gap) & (gap <= max_gap)
 
-    neg_inf = torch.finfo(pair_scores.dtype).min
-    pair_scores = pair_scores.masked_fill(~valid.unsqueeze(0), neg_inf)
-    return pair_scores.reshape(batch_size, num_frames * num_frames)
+def all_pair_scores(phase_logits):
+    """Return unmasked ED/ES pair logits for stable pair-distribution training."""
+    ed_scores, es_scores = pair_score_curves(phase_logits)
+    return ed_scores.unsqueeze(2) + es_scores.unsqueeze(1)
+
+
+def build_soft_pair_targets(ed_idx, es_idx, num_frames, device, sigma, radius):
+    ed_target = build_soft_temporal_targets(ed_idx, num_frames, device, sigma, radius)
+    es_target = build_soft_temporal_targets(es_idx, num_frames, device, sigma, radius)
+    pair_target = ed_target.unsqueeze(2) * es_target.unsqueeze(1)
+    pair_target = pair_target.reshape(ed_idx.shape[0], num_frames * num_frames)
+    return pair_target / pair_target.sum(dim=1, keepdim=True).clamp_min(1e-8)
 
 
 def compute_phase_pair_loss(phase_logits, ed_idx, es_idx):
+    """
+    Softly supervise the full ED/ES pair distribution.
+
+    Do not hard-mask "invalid" pairs here: some global clips wrap around the cycle
+    boundary and some label pairs violate simple gap heuristics. Hard masks made
+    valid dataset labels impossible and caused huge losses. Constraints remain in
+    inference decoding, while training learns where ED and ES jointly lie.
+    """
     num_frames = phase_logits.shape[1]
-    pair_logits = constrained_pair_scores(phase_logits)
-    pair_targets = ed_idx * num_frames + es_idx
-    return F.cross_entropy(pair_logits, pair_targets)
+    sigma = max(1e-6, float(getattr(config, "PHASE_PAIR_SOFT_SIGMA", getattr(config, "PHASE_SOFT_SIGMA", 2.0))))
+    radius = int(getattr(config, "PHASE_PAIR_SOFT_RADIUS", getattr(config, "PHASE_SOFT_RADIUS", 6)))
+    pair_logits = all_pair_scores(phase_logits).reshape(ed_idx.shape[0], num_frames * num_frames)
+    pair_target = build_soft_pair_targets(ed_idx, es_idx, num_frames, phase_logits.device, sigma, radius)
+    return F.kl_div(F.log_softmax(pair_logits, dim=1), pair_target, reduction="batchmean")
 
 
 def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
@@ -663,6 +690,13 @@ def evaluate(model, loader, amp_enabled):
     total_joint_correct = 0
     total_ed_abs_err = 0.0
     total_es_abs_err = 0.0
+    tolerance_counts = {
+        1: {"ed": 0, "es": 0, "joint": 0},
+        3: {"ed": 0, "es": 0, "joint": 0},
+        5: {"ed": 0, "es": 0, "joint": 0},
+    }
+    total_pair_valid = 0
+    total_pair_wrap = 0
 
     phase_only = is_phase_only_mode()
     evaluate_phase = should_evaluate_phase_metrics()
@@ -685,7 +719,7 @@ def evaluate(model, loader, amp_enabled):
             if evaluate_phase:
                 pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(
                     phase_logits,
-                    max_gap_ratio=getattr(config, "PHASE_MAX_GAP_RATIO", 0.65),
+                    max_gap_ratio=getattr(config, "PHASE_MAX_GAP_RATIO", 1.0),
                     cyclic_order=bool(getattr(config, "PHASE_CYCLIC_ORDER", True)),
                 )
 
@@ -695,12 +729,23 @@ def evaluate(model, loader, amp_enabled):
                 total_ed_abs_err += ed_abs.sum().item()
                 total_es_abs_err += es_abs.sum().item()
 
+                pair_valid = phase_pair_valid_mask(ed_idx, es_idx, phase_logits.shape[1])
+                total_pair_valid += pair_valid.sum().item()
+                total_pair_wrap += (es_idx < ed_idx).sum().item()
+
                 ed_ok = ed_abs <= config.TOLERANCE
                 es_ok = es_abs <= config.TOLERANCE
 
                 total_ed_correct += ed_ok.sum().item()
                 total_es_correct += es_ok.sum().item()
                 total_joint_correct += (ed_ok & es_ok).sum().item()
+
+                for tol, counts in tolerance_counts.items():
+                    ed_ok_tol = ed_abs <= tol
+                    es_ok_tol = es_abs <= tol
+                    counts["ed"] += ed_ok_tol.sum().item()
+                    counts["es"] += es_ok_tol.sum().item()
+                    counts["joint"] += (ed_ok_tol & es_ok_tol).sum().item()
             total_samples += batch_size
 
     if total_samples == 0:
@@ -714,7 +759,14 @@ def evaluate(model, loader, amp_enabled):
         "joint_acc": (total_joint_correct / total_samples) if evaluate_phase else float("nan"),
         "ed_mae_frames": (total_ed_abs_err / total_samples) if evaluate_phase else float("nan"),
         "es_mae_frames": (total_es_abs_err / total_samples) if evaluate_phase else float("nan"),
+        "pair_valid_fraction": (total_pair_valid / total_samples) if evaluate_phase else float("nan"),
+        "pair_wrap_fraction": (total_pair_wrap / total_samples) if evaluate_phase else float("nan"),
     }
+    if evaluate_phase:
+        for tol, counts in tolerance_counts.items():
+            metrics[f"ed_acc_t{tol}"] = counts["ed"] / total_samples
+            metrics[f"es_acc_t{tol}"] = counts["es"] / total_samples
+            metrics[f"joint_acc_t{tol}"] = counts["joint"] / total_samples
     return metrics
 
 
@@ -805,11 +857,13 @@ def train_one_epoch(
         if batch_idx == 0 and phase_loss_enabled:
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(
                 phase_logits,
-                max_gap_ratio=getattr(config, "PHASE_MAX_GAP_RATIO", 0.65),
+                max_gap_ratio=getattr(config, "PHASE_MAX_GAP_RATIO", 1.0),
                 cyclic_order=bool(getattr(config, "PHASE_CYCLIC_ORDER", True)),
             )
+            target_gap0 = phase_pair_gap(ed_idx[:1], es_idx[:1], phase_logits.shape[1])[0].item()
+            target_pair_valid0 = bool(phase_pair_valid_mask(ed_idx[:1], es_idx[:1], phase_logits.shape[1])[0].item())
             logger.info(
-                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f / Pair %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f / Pair %.4f) | GT ED/ES (%d/%d gap=%d valid=%s) | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 ef_loss.item(),
@@ -820,6 +874,8 @@ def train_one_epoch(
                 pair_phase_loss.item(),
                 ed_idx[0].item(),
                 es_idx[0].item(),
+                target_gap0,
+                target_pair_valid0,
                 pred_ed_idx[0].item(),
                 pred_es_idx[0].item(),
                 tuple(attention.shape),
@@ -913,8 +969,9 @@ def log_header(logger, amp_enabled):
         logger.info("Phase frame CE weight: %.3f", float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0)))
         logger.info("Phase frame radius: %d", int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
         logger.info("Phase cyclic order: %s", bool(getattr(config, "PHASE_CYCLIC_ORDER", True)))
-        logger.info("Phase max gap ratio: %.3f", float(getattr(config, "PHASE_MAX_GAP_RATIO", 0.65)))
+        logger.info("Phase max gap ratio: %.3f", float(getattr(config, "PHASE_MAX_GAP_RATIO", 1.0)))
         logger.info("Phase pair loss weight: %.3f", float(getattr(config, "PHASE_PAIR_LOSS_WEIGHT", 0.0)))
+        logger.info("Phase pair soft sigma/radius: %.3f/%d", float(getattr(config, "PHASE_PAIR_SOFT_SIGMA", 2.0)), int(getattr(config, "PHASE_PAIR_SOFT_RADIUS", 6)))
         logger.info("Phase hard index weight: %.3f", float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0)))
         logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
     else:
@@ -981,15 +1038,20 @@ def main(argv=None):
 
             if phase_only:
                 logger.info(
-                    "Epoch [%d/%d] | Train Loss: %.4f | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%% | Val ED MAE(fr): %.3f | Val ES MAE(fr): %.3f",
+                    "Epoch [%d/%d] | Train Loss: %.4f | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%% | Joint@1/3/5: %.2f/%.2f/%.2f%% | Val ED MAE(fr): %.3f | Val ES MAE(fr): %.3f | Label pair valid/wrap: %.1f/%.1f%%",
                     epoch + 1,
                     config.EPOCHS,
                     train_metrics["train_loss"],
                     val_metrics["ed_acc"] * 100,
                     val_metrics["es_acc"] * 100,
                     val_metrics["joint_acc"] * 100,
+                    val_metrics.get("joint_acc_t1", float("nan")) * 100,
+                    val_metrics.get("joint_acc_t3", float("nan")) * 100,
+                    val_metrics.get("joint_acc_t5", float("nan")) * 100,
                     val_metrics["ed_mae_frames"],
                     val_metrics["es_mae_frames"],
+                    val_metrics.get("pair_valid_fraction", float("nan")) * 100,
+                    val_metrics.get("pair_wrap_fraction", float("nan")) * 100,
                 )
 
                 current_monitor = phase_monitor_tuple(val_metrics)

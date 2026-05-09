@@ -67,7 +67,7 @@ class Stage3PhaseDetector(nn.Module):
     def predict_indices(
         phase_logits,
         min_gap=2,
-        max_gap_ratio=0.65,
+        max_gap_ratio=1.0,
         smooth_kernel=5,
         cyclic_order=True,
     ):
