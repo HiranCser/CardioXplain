@@ -86,6 +86,9 @@ def parse_args(argv=None):
     parser.add_argument("--phase-hard-index-weight", type=float, default=None, help="Override config.PHASE_HARD_INDEX_WEIGHT")
     parser.add_argument("--phase-frame-ce-weight", type=float, default=None, help="Override config.PHASE_FRAME_CE_WEIGHT")
     parser.add_argument("--phase-frame-radius", type=int, default=None, help="Override config.PHASE_FRAME_RADIUS")
+    parser.add_argument("--phase-cyclic-order", action=argparse.BooleanOptionalAction, default=None, help="Allow cyclic ED->ES ordering for global clips")
+    parser.add_argument("--phase-max-gap-ratio", type=float, default=None, help="Maximum ED->ES gap ratio for constrained pair decoding")
+    parser.add_argument("--phase-pair-loss-weight", type=float, default=None, help="Weight for constrained ED/ES pair loss")
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
@@ -180,6 +183,12 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_FRAME_CE_WEIGHT"] = args.phase_frame_ce_weight
     if args.phase_frame_radius is not None:
         overrides["PHASE_FRAME_RADIUS"] = args.phase_frame_radius
+    if args.phase_cyclic_order is not None:
+        overrides["PHASE_CYCLIC_ORDER"] = args.phase_cyclic_order
+    if args.phase_max_gap_ratio is not None:
+        overrides["PHASE_MAX_GAP_RATIO"] = args.phase_max_gap_ratio
+    if args.phase_pair_loss_weight is not None:
+        overrides["PHASE_PAIR_LOSS_WEIGHT"] = args.phase_pair_loss_weight
     if args.phase_unfreeze_lr_mult is not None:
         overrides["PHASE_UNFREEZE_LR_MULT"] = args.phase_unfreeze_lr_mult
     if args.weight_decay is not None:
@@ -534,6 +543,40 @@ def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
     return targets
 
 
+def constrained_pair_scores(phase_logits):
+    """Return ED/ES pair scores using the same score curves as inference."""
+    ed_scores = phase_logits[:, :, 1] - phase_logits[:, :, 0]
+    es_scores = phase_logits[:, :, 2] - phase_logits[:, :, 0]
+    ed_scores = Stage3PhaseDetector._smooth_scores(ed_scores, kernel_size=5)
+    es_scores = Stage3PhaseDetector._smooth_scores(es_scores, kernel_size=5)
+
+    batch_size, num_frames = ed_scores.shape
+    pair_scores = ed_scores.unsqueeze(2) + es_scores.unsqueeze(1)
+
+    min_gap = int(max(1, getattr(config, "PHASE_PAIR_MIN_GAP", getattr(config, "PHASE_ATTN_MIN_GAP", 2))))
+    max_gap_ratio = getattr(config, "PHASE_MAX_GAP_RATIO", 0.65)
+    max_gap = int(round(float(max_gap_ratio) * num_frames)) if max_gap_ratio is not None else (num_frames - 1)
+    max_gap = int(max(min_gap, min(num_frames - 1, max_gap)))
+
+    idx = torch.arange(num_frames, device=phase_logits.device)
+    if bool(getattr(config, "PHASE_CYCLIC_ORDER", True)):
+        gap = (idx.unsqueeze(0) - idx.unsqueeze(1)) % num_frames
+    else:
+        gap = idx.unsqueeze(0) - idx.unsqueeze(1)
+    valid = (gap >= min_gap) & (gap <= max_gap)
+
+    neg_inf = torch.finfo(pair_scores.dtype).min
+    pair_scores = pair_scores.masked_fill(~valid.unsqueeze(0), neg_inf)
+    return pair_scores.reshape(batch_size, num_frames * num_frames)
+
+
+def compute_phase_pair_loss(phase_logits, ed_idx, es_idx):
+    num_frames = phase_logits.shape[1]
+    pair_logits = constrained_pair_scores(phase_logits)
+    pair_targets = ed_idx * num_frames + es_idx
+    return F.cross_entropy(pair_logits, pair_targets)
+
+
 def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
     """
     Train phase detection as two temporal index tasks:
@@ -588,7 +631,15 @@ def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
         frame_loss = torch.zeros_like(index_loss)
         phase_loss = index_loss
 
-    return phase_loss, ed_loss, es_loss, frame_loss
+    pair_weight = float(getattr(config, "PHASE_PAIR_LOSS_WEIGHT", 0.0))
+    pair_weight = min(1.0, max(0.0, pair_weight))
+    if pair_weight > 0.0:
+        pair_loss = compute_phase_pair_loss(phase_logits, ed_idx, es_idx)
+        phase_loss = (1.0 - pair_weight) * phase_loss + pair_weight * pair_loss
+    else:
+        pair_loss = torch.zeros_like(phase_loss)
+
+    return phase_loss, ed_loss, es_loss, frame_loss, pair_loss
 
 
 def move_batch_to_device(videos, efs, ed_idx, es_idx):
@@ -632,7 +683,11 @@ def evaluate(model, loader, amp_enabled):
                 total_mse += mse.item() * batch_size
 
             if evaluate_phase:
-                pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
+                pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(
+                    phase_logits,
+                    max_gap_ratio=getattr(config, "PHASE_MAX_GAP_RATIO", 0.65),
+                    cyclic_order=bool(getattr(config, "PHASE_CYCLIC_ORDER", True)),
+                )
 
                 ed_abs = torch.abs(pred_ed_idx - ed_idx)
                 es_abs = torch.abs(pred_es_idx - es_idx)
@@ -708,7 +763,7 @@ def train_one_epoch(
                 ef_loss = mse_loss(ef_pred, efs)
 
             if phase_loss_enabled:
-                phase_loss, ed_phase_loss, es_phase_loss, frame_phase_loss = compute_phase_index_loss(
+                phase_loss, ed_phase_loss, es_phase_loss, frame_phase_loss, pair_phase_loss = compute_phase_index_loss(
                     phase_logits=phase_logits,
                     ed_idx=ed_idx,
                     es_idx=es_idx,
@@ -719,6 +774,7 @@ def train_one_epoch(
                 ed_phase_loss = torch.zeros((), device=videos.device)
                 es_phase_loss = torch.zeros((), device=videos.device)
                 frame_phase_loss = torch.zeros((), device=videos.device)
+                pair_phase_loss = torch.zeros((), device=videos.device)
 
             loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
             loss_for_backward = loss / accumulation_steps
@@ -747,9 +803,13 @@ def train_one_epoch(
         total_train_loss += loss.item()
 
         if batch_idx == 0 and phase_loss_enabled:
-            pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
+            pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(
+                phase_logits,
+                max_gap_ratio=getattr(config, "PHASE_MAX_GAP_RATIO", 0.65),
+                cyclic_order=bool(getattr(config, "PHASE_CYCLIC_ORDER", True)),
+            )
             logger.info(
-                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f / Pair %.4f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 ef_loss.item(),
@@ -757,6 +817,7 @@ def train_one_epoch(
                 ed_phase_loss.item(),
                 es_phase_loss.item(),
                 frame_phase_loss.item(),
+                pair_phase_loss.item(),
                 ed_idx[0].item(),
                 es_idx[0].item(),
                 pred_ed_idx[0].item(),
@@ -851,6 +912,9 @@ def log_header(logger, amp_enabled):
         logger.info("Phase soft radius: %d", int(getattr(config, "PHASE_SOFT_RADIUS", 0)))
         logger.info("Phase frame CE weight: %.3f", float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0)))
         logger.info("Phase frame radius: %d", int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
+        logger.info("Phase cyclic order: %s", bool(getattr(config, "PHASE_CYCLIC_ORDER", True)))
+        logger.info("Phase max gap ratio: %.3f", float(getattr(config, "PHASE_MAX_GAP_RATIO", 0.65)))
+        logger.info("Phase pair loss weight: %.3f", float(getattr(config, "PHASE_PAIR_LOSS_WEIGHT", 0.0)))
         logger.info("Phase hard index weight: %.3f", float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0)))
         logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
     else:

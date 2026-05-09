@@ -57,6 +57,9 @@ def parse_args():
     parser.add_argument("--phase-hard-index-weight", type=float, default=None)
     parser.add_argument("--phase-frame-ce-weight", type=float, default=None)
     parser.add_argument("--phase-frame-radius", type=int, default=None)
+    parser.add_argument("--phase-cyclic-order", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--phase-max-gap-ratio", type=float, default=None)
+    parser.add_argument("--phase-pair-loss-weight", type=float, default=None)
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None)
     parser.add_argument("--phase-weight-decay", type=float, default=None)
     parser.add_argument("--phase-max-grad-norm", type=float, default=None)
@@ -323,6 +326,12 @@ def main():
             cmd += ["--phase-frame-ce-weight", str(args.phase_frame_ce_weight)]
         if args.phase_frame_radius is not None:
             cmd += ["--phase-frame-radius", str(args.phase_frame_radius)]
+        if args.phase_cyclic_order is not None:
+            cmd.append("--phase-cyclic-order" if args.phase_cyclic_order else "--no-phase-cyclic-order")
+        if args.phase_max_gap_ratio is not None:
+            cmd += ["--phase-max-gap-ratio", str(args.phase_max_gap_ratio)]
+        if args.phase_pair_loss_weight is not None:
+            cmd += ["--phase-pair-loss-weight", str(args.phase_pair_loss_weight)]
         if args.phase_unfreeze_lr_mult is not None:
             cmd += ["--phase-unfreeze-lr-mult", str(args.phase_unfreeze_lr_mult)]
         if args.phase_weight_decay is not None:

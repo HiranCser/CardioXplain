@@ -40,6 +40,9 @@ PHASE_SOFT_RADIUS = 4  # Optional radius for soft target support; <=0 means no c
 PHASE_HARD_INDEX_WEIGHT = 0.5  # Mix hard CE with soft index loss when soft targets are enabled
 PHASE_FRAME_CE_WEIGHT = 0.35  # Mix ratio for frame-wise CE in phase loss
 PHASE_FRAME_RADIUS = 2  # Radius around ED/ES used for frame-wise supervision
+PHASE_CYCLIC_ORDER = True  # Allow ED near clip end and ES near clip start in global clips
+PHASE_MAX_GAP_RATIO = 0.65  # Maximum ED->ES gap as a fraction of sampled frames
+PHASE_PAIR_LOSS_WEIGHT = 0.35  # Train the constrained ED/ES pair decoder used at inference
 PHASE_ATTN_ALIGN_WEIGHT = 0.35  # KL alignment weight for Stage2 temporal attention around ED/ES
 PHASE_ATTN_ALIGN_SIGMA = 2.0  # Gaussian sigma for attention alignment targets
 PHASE_ATTN_ALIGN_RADIUS = 5  # Optional support radius for attention alignment targets

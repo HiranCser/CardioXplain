@@ -69,12 +69,15 @@ class Stage3PhaseDetector(nn.Module):
         min_gap=2,
         max_gap_ratio=0.65,
         smooth_kernel=5,
+        cyclic_order=True,
     ):
         """
         Predict ED/ES indices using constrained pair decoding.
 
         Unlike independent argmax, this decodes ED and ES jointly with physiology-inspired
-        constraints: ES should occur after ED with a plausible frame gap.
+        constraints: ES should occur after ED with a plausible frame gap. For global
+        clips, the cycle can wrap around clip boundaries, so cyclic_order allows
+        ED near the end of the clip and ES near the beginning.
         """
         if phase_logits.ndim != 3 or phase_logits.shape[-1] < 3:
             raise ValueError("phase_logits must have shape (B, T, >=3)")
@@ -99,7 +102,10 @@ class Stage3PhaseDetector(nn.Module):
         pair_scores = ed_scores.unsqueeze(2) + es_scores.unsqueeze(1)  # (B, T_ed, T_es)
 
         idx = torch.arange(num_frames, device=phase_logits.device)
-        gap = idx.unsqueeze(0) - idx.unsqueeze(1)  # (T_ed, T_es): es-ed
+        if cyclic_order:
+            gap = (idx.unsqueeze(0) - idx.unsqueeze(1)) % num_frames  # (T_ed, T_es): cyclic es-ed
+        else:
+            gap = idx.unsqueeze(0) - idx.unsqueeze(1)  # (T_ed, T_es): es-ed
         valid = (gap >= min_gap) & (gap <= max_gap)
 
         neg_inf = torch.finfo(pair_scores.dtype).min
@@ -118,8 +124,9 @@ class Stage3PhaseDetector(nn.Module):
         pred_ed = torch.where(valid_any, pred_ed, fallback_ed)
         pred_es = torch.where(valid_any, pred_es, fallback_es)
 
-        # Final guard: enforce ES > ED by selecting the best ES after ED when needed.
-        need_fix = pred_es <= pred_ed
+        # Final guard for non-cyclic decoding: enforce ES > ED by selecting the
+        # best ES after ED when needed.
+        need_fix = (pred_es <= pred_ed) if not cyclic_order else torch.zeros_like(pred_es, dtype=torch.bool)
         if need_fix.any():
             for b in torch.where(need_fix)[0].tolist():
                 ed_i = int(pred_ed[b].item())
