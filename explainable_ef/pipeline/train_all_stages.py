@@ -274,7 +274,12 @@ def main():
         if phase_epochs is not None:
             cmd += ["--epochs", str(phase_epochs)]
         phase_init_checkpoint = args.phase_init_checkpoint if args.phase_init_checkpoint is not None else args.stage123_checkpoint
-        if phase_init_checkpoint is not None and os.path.exists(phase_init_checkpoint):
+        if phase_init_checkpoint is not None:
+            if not os.path.exists(phase_init_checkpoint):
+                raise FileNotFoundError(
+                    f"Stage2 init checkpoint not found: {phase_init_checkpoint}. "
+                    "Pass an existing --phase-init-checkpoint path, or remove it to train from scratch."
+                )
             cmd += ["--init-checkpoint", str(phase_init_checkpoint)]
         if phase_lr is not None:
             cmd += ["--learning-rate", str(phase_lr)]
