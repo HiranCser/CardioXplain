@@ -22,20 +22,20 @@ class EchoDataset(Dataset):
         max_videos=None,
         transform=None,
         normalize_input=True,
-        temporal_window_mode="full",
-        temporal_window_margin_mult=1.5,
-        temporal_window_jitter_mult=0.0,
+        clip_period=1,
+        clip_eval_mode="center",
     ):
         self.data_dir = data_dir
-        self.num_frames = num_frames
+        self.num_frames = int(num_frames)
         self.frame_size = frame_size
         self.max_videos = max_videos
         self.transform = transform
         self.normalize_input = bool(normalize_input)
         self.split = str(split).strip().upper()
-        self.temporal_window_mode = str(temporal_window_mode).strip().lower()
-        self.temporal_window_margin_mult = float(max(0.0, temporal_window_margin_mult))
-        self.temporal_window_jitter_mult = float(max(0.0, temporal_window_jitter_mult))
+        self.clip_period = max(1, int(clip_period))
+        self.clip_eval_mode = str(clip_eval_mode).strip().lower()
+        if self.clip_eval_mode not in {"center", "all"}:
+            raise ValueError(f"Unsupported clip_eval_mode: {clip_eval_mode}")
 
         self._mean = torch.tensor(KINETICS_MEAN, dtype=torch.float32).view(3, 1, 1, 1)
         self._std = torch.tensor(KINETICS_STD, dtype=torch.float32).view(3, 1, 1, 1)
@@ -77,40 +77,39 @@ class EchoDataset(Dataset):
     def __len__(self):
         return len(self.filelist)
 
-    def _focused_sample_indices(self, total_video_frames, ed_original, es_original):
-        if self.temporal_window_mode != "tracing":
-            return None
-        if total_video_frames <= self.num_frames:
-            return None
-        if ed_original < 0 or es_original < 0:
-            return None
+    def _clip_start_indices(self, total_video_frames, mode=None):
+        required_frames = (self.num_frames - 1) * self.clip_period + 1
+        padded_frames = max(int(total_video_frames), int(required_frames))
+        max_start = max(0, padded_frames - required_frames)
 
-        ed_frame = int(ed_original)
-        es_frame = int(es_original)
-        left = min(ed_frame, es_frame)
-        right = max(ed_frame, es_frame)
-        span = max(1, right - left)
+        if self.split == "TRAIN":
+            return np.array([np.random.randint(0, max_start + 1)], dtype=np.int32)
 
-        margin = int(round(self.temporal_window_margin_mult * span))
-        start = max(0, left - margin)
-        end = min(total_video_frames - 1, right + margin)
+        eval_mode = self.clip_eval_mode if mode is None else str(mode).strip().lower()
+        if eval_mode == "all":
+            return np.arange(max_start + 1, dtype=np.int32)
+        if eval_mode != "center":
+            raise ValueError(f"Unsupported clip eval mode: {eval_mode}")
+        return np.array([max_start // 2], dtype=np.int32)
 
-        if self.split == "TRAIN" and self.temporal_window_jitter_mult > 0.0:
-            jitter = int(round(self.temporal_window_jitter_mult * span))
-            if jitter > 0:
-                shift_low = max(-jitter, -margin, -start)
-                shift_high = min(jitter, margin, (total_video_frames - 1) - end)
-                if shift_high >= shift_low:
-                    shift = int(np.random.randint(shift_low, shift_high + 1))
-                    start += shift
-                    end += shift
+    def _clip_indices_from_start(self, start, total_video_frames):
+        raw_indices = int(start) + self.clip_period * np.arange(self.num_frames, dtype=np.int32)
+        if total_video_frames <= 0:
+            return raw_indices
+        return np.minimum(raw_indices, int(total_video_frames) - 1).astype(np.int32)
 
-        if end <= start:
-            return None
+    def _frames_to_tensor(self, sampled_frames):
+        frames_tensor = torch.from_numpy(sampled_frames).permute(3, 0, 1, 2).float() / 255.0
 
-        return np.linspace(start, end, self.num_frames).round().astype(np.int32)
+        if self.normalize_input:
+            frames_tensor = (frames_tensor - self._mean) / self._std
 
-    def load_video(self, path, ed_original=-1, es_original=-1):
+        if self.transform is not None:
+            frames_tensor = self.transform(frames_tensor)
+
+        return frames_tensor
+
+    def _read_video_frames(self, path):
         cap = cv2.VideoCapture(path)
         frames = []
 
@@ -127,39 +126,40 @@ class EchoDataset(Dataset):
         if len(frames) == 0:
             raise ValueError(f"No frames loaded from video: {path}")
 
-        frames_array = np.array(frames, dtype=np.uint8)
+        return np.array(frames, dtype=np.uint8)
+
+    def _sample_clip_from_frames(self, frames_array, start):
         total_video_frames = len(frames_array)
+        raw_indices = int(start) + self.clip_period * np.arange(self.num_frames, dtype=np.int32)
+        valid_mask = raw_indices < total_video_frames
 
-        focused_indices = self._focused_sample_indices(total_video_frames, ed_original, es_original)
+        sampled_frames = np.zeros(
+            (self.num_frames, frames_array.shape[1], frames_array.shape[2], frames_array.shape[3]),
+            dtype=frames_array.dtype,
+        )
+        if np.any(valid_mask):
+            sampled_frames[valid_mask] = frames_array[raw_indices[valid_mask]]
 
-        if total_video_frames >= self.num_frames:
-            if focused_indices is not None:
-                sampled_indices = focused_indices
-            else:
-                sampled_indices = np.linspace(0, total_video_frames - 1, self.num_frames).round().astype(np.int32)
-            sampled_frames = frames_array[sampled_indices]
-        else:
-            sampled_indices = np.arange(total_video_frames, dtype=np.int32)
-            padding = self.num_frames - total_video_frames
-            sampled_frames = np.pad(
-                frames_array,
-                ((0, padding), (0, 0), (0, 0), (0, 0)),
-                mode="constant",
-                constant_values=0,
-            )
-            if padding > 0:
-                pad_indices = np.full((padding,), total_video_frames - 1, dtype=np.int32)
-                sampled_indices = np.concatenate([sampled_indices, pad_indices], axis=0)
+        sampled_indices = self._clip_indices_from_start(start, total_video_frames)
+        return self._frames_to_tensor(sampled_frames), sampled_indices
 
-        frames_tensor = torch.from_numpy(sampled_frames).permute(3, 0, 1, 2).float() / 255.0
+    def load_video(self, path, ed_original=-1, es_original=-1):
+        del ed_original, es_original
+        frames_array = self._read_video_frames(path)
+        start = self._clip_start_indices(len(frames_array), mode="center" if self.split != "TRAIN" else None)[0]
+        return self._sample_clip_from_frames(frames_array, start)
 
-        if self.normalize_input:
-            frames_tensor = (frames_tensor - self._mean) / self._std
+    def load_video_clips(self, path, mode=None):
+        frames_array = self._read_video_frames(path)
+        starts = self._clip_start_indices(len(frames_array), mode=mode)
+        clips = []
+        sampled_indices = []
+        for start in starts:
+            clip, indices = self._sample_clip_from_frames(frames_array, start)
+            clips.append(clip)
+            sampled_indices.append(indices)
 
-        if self.transform is not None:
-            frames_tensor = self.transform(frames_tensor)
-
-        return frames_tensor, sampled_indices
+        return torch.stack(clips, dim=0), np.stack(sampled_indices, axis=0)
 
     def __getitem__(self, idx):
         row = self.filelist.iloc[idx]

@@ -66,9 +66,8 @@ def parse_args(argv=None):
     parser.add_argument("--phase-unfreeze-lr-mult", type=float, default=None, help="Override config.PHASE_UNFREEZE_LR_MULT")
     parser.add_argument("--weight-decay", type=float, default=None, help="Override config.WEIGHT_DECAY")
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
-    parser.add_argument("--phase-temporal-window-mode", type=str, choices=["full", "tracing"], default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MODE")
-    parser.add_argument("--phase-temporal-window-margin-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_MARGIN_MULT")
-    parser.add_argument("--phase-temporal-window-jitter-mult", type=float, default=None, help="Override config.PHASE_TEMPORAL_WINDOW_JITTER_MULT")
+    parser.add_argument("--clip-period", type=int, default=None, help="Override config.CLIP_PERIOD")
+    parser.add_argument("--clip-eval-mode", type=str, choices=["center", "all"], default=None, help="Override config.CLIP_EVAL_MODE")
     parser.add_argument("--warm-start-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Warm-start model weights from existing checkpoint path if available")
     parser.add_argument("--protect-best-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Do not overwrite checkpoint unless monitor improves over existing checkpoint")
     parser.add_argument("--train-stage123", action=argparse.BooleanOptionalAction, default=False, help="Train Stage1+Stage2+Stage3 end-to-end with joint EF+phase supervision")
@@ -155,12 +154,10 @@ def apply_runtime_overrides(args, logger):
         overrides["WEIGHT_DECAY"] = args.weight_decay
     if args.max_grad_norm is not None:
         overrides["MAX_GRAD_NORM"] = args.max_grad_norm
-    if args.phase_temporal_window_mode is not None:
-        overrides["PHASE_TEMPORAL_WINDOW_MODE"] = args.phase_temporal_window_mode
-    if args.phase_temporal_window_margin_mult is not None:
-        overrides["PHASE_TEMPORAL_WINDOW_MARGIN_MULT"] = args.phase_temporal_window_margin_mult
-    if args.phase_temporal_window_jitter_mult is not None:
-        overrides["PHASE_TEMPORAL_WINDOW_JITTER_MULT"] = args.phase_temporal_window_jitter_mult
+    if args.clip_period is not None:
+        overrides["CLIP_PERIOD"] = args.clip_period
+    if args.clip_eval_mode is not None:
+        overrides["CLIP_EVAL_MODE"] = args.clip_eval_mode
 
     if bool(getattr(args, "train_stage123", False)):
         logger.info("Enabled Stage1-3 end-to-end training profile (joint EF + phase)")
@@ -170,12 +167,6 @@ def apply_runtime_overrides(args, logger):
             overrides["PHASE_ONLY"] = False
         if args.phase_loss_weight is None:
             overrides["PHASE_LOSS_WEIGHT"] = 1.0
-        if args.phase_temporal_window_mode is None:
-            overrides["PHASE_TEMPORAL_WINDOW_MODE"] = "tracing"
-        if args.phase_temporal_window_margin_mult is None:
-            overrides["PHASE_TEMPORAL_WINDOW_MARGIN_MULT"] = 1.0
-        if args.phase_temporal_window_jitter_mult is None:
-            overrides["PHASE_TEMPORAL_WINDOW_JITTER_MULT"] = 0.03
         if args.phase_attn_align_weight is None:
             overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.45
         if args.phase_attn_index_weight is None:
@@ -196,15 +187,11 @@ def apply_runtime_overrides(args, logger):
         setattr(config, key, value)
         logger.info("Runtime override: %s=%s", key, value)
 
-    jitter_key = "PHASE_TEMPORAL_WINDOW_JITTER_MULT"
-    if hasattr(config, jitter_key):
-        jitter_value = float(getattr(config, jitter_key, 0.0))
-        if jitter_value < 0.0:
-            setattr(config, jitter_key, 0.0)
-            logger.warning("Clamped %s from %.3f to 0.000", jitter_key, jitter_value)
-        elif jitter_value > 0.10:
-            setattr(config, jitter_key, 0.10)
-            logger.warning("Clamped %s from %.3f to 0.100 to avoid over-augmentation", jitter_key, jitter_value)
+    if hasattr(config, "CLIP_PERIOD"):
+        clip_period = int(getattr(config, "CLIP_PERIOD", 1))
+        if clip_period < 1:
+            setattr(config, "CLIP_PERIOD", 1)
+            logger.warning("Clamped CLIP_PERIOD from %d to 1", clip_period)
 
     attn_align_key = "PHASE_ATTN_ALIGN_WEIGHT"
     if hasattr(config, attn_align_key):
@@ -328,9 +315,8 @@ def dataloader_kwargs(shuffle):
 
 def build_dataloaders():
     """Create train/val/test dataloaders."""
-    temporal_window_mode = str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full"))
-    temporal_window_margin_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5))
-    temporal_window_jitter_mult = float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0))
+    clip_period = int(getattr(config, "CLIP_PERIOD", 1))
+    clip_eval_mode = str(getattr(config, "CLIP_EVAL_MODE", "center"))
 
     train_dataset = EchoDataset(
         config.DATA_DIR,
@@ -338,9 +324,8 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=temporal_window_mode,
-        temporal_window_margin_mult=temporal_window_margin_mult,
-        temporal_window_jitter_mult=temporal_window_jitter_mult,
+        clip_period=clip_period,
+        clip_eval_mode=clip_eval_mode,
     )
     val_dataset = EchoDataset(
         config.DATA_DIR,
@@ -348,9 +333,8 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=temporal_window_mode,
-        temporal_window_margin_mult=temporal_window_margin_mult,
-        temporal_window_jitter_mult=temporal_window_jitter_mult,
+        clip_period=clip_period,
+        clip_eval_mode=clip_eval_mode,
     )
     test_dataset = EchoDataset(
         config.DATA_DIR,
@@ -358,9 +342,8 @@ def build_dataloaders():
         num_frames=config.NUM_FRAMES,
         max_videos=config.MAX_VIDEOS,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=temporal_window_mode,
-        temporal_window_margin_mult=temporal_window_margin_mult,
-        temporal_window_jitter_mult=temporal_window_jitter_mult,
+        clip_period=clip_period,
+        clip_eval_mode=clip_eval_mode,
     )
 
     train_loader = DataLoader(train_dataset, **dataloader_kwargs(shuffle=True))
@@ -991,15 +974,13 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
             "epoch": epoch,
             "runtime_config": {
                 "NUM_FRAMES": int(getattr(config, "NUM_FRAMES", 32)),
-                "PHASE_TEMPORAL_WINDOW_MODE": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
-                "PHASE_TEMPORAL_WINDOW_MARGIN_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
-                "PHASE_TEMPORAL_WINDOW_JITTER_MULT": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
+                "CLIP_PERIOD": int(getattr(config, "CLIP_PERIOD", 1)),
+                "CLIP_EVAL_MODE": str(getattr(config, "CLIP_EVAL_MODE", "center")),
             },
             "args": {
                 "num_frames": int(getattr(config, "NUM_FRAMES", 32)),
-                "phase_temporal_window_mode": str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")),
-                "phase_temporal_window_margin_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)),
-                "phase_temporal_window_jitter_mult": float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)),
+                "clip_period": int(getattr(config, "CLIP_PERIOD", 1)),
+                "clip_eval_mode": str(getattr(config, "CLIP_EVAL_MODE", "center")),
                 "train_stage123": True,
                 "phase_only": bool(getattr(config, "PHASE_ONLY", False)),
             },
@@ -1126,9 +1107,8 @@ def log_header(logger, amp_enabled):
     logger.info("Phase unfreeze LR mult: %.3f", float(getattr(config, "PHASE_UNFREEZE_LR_MULT", 1.0)))
     logger.info("Weight decay: %s", getattr(config, "WEIGHT_DECAY", 0.0))
     logger.info("Max grad norm: %s", getattr(config, "MAX_GRAD_NORM", 0.0))
-    logger.info("Phase temporal window mode: %s", str(getattr(config, "PHASE_TEMPORAL_WINDOW_MODE", "full")))
-    logger.info("Phase temporal window margin mult: %.3f", float(getattr(config, "PHASE_TEMPORAL_WINDOW_MARGIN_MULT", 1.5)))
-    logger.info("Phase temporal window jitter mult: %.3f", float(getattr(config, "PHASE_TEMPORAL_WINDOW_JITTER_MULT", 0.0)))
+    logger.info("Clip period: %d", int(getattr(config, "CLIP_PERIOD", 1)))
+    logger.info("Clip eval mode: %s", str(getattr(config, "CLIP_EVAL_MODE", "center")))
 
 
 def main(argv=None):

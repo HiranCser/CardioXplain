@@ -3,7 +3,9 @@ import os
 
 # Data configuration
 # Points to ../dynamic/a4c-video-dir (from cx/explainable_ef to cx/dynamic)
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+# DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+DATA_DIR = '/datasets/efnet1/a4c-video-dir'  # Override for absolute path if needed
+
 
 # Model configuration
 BATCH_SIZE = 20
@@ -32,9 +34,8 @@ PHASE_PAIR_INDEX_WEIGHT = 0.18  # Direct Stage3 ED/ES expectation supervision us
 PHASE_PAIR_ORDER_WEIGHT = 0.08  # Encourage Stage3 ES expectation to remain after ED expectation
 PHASE_PAIR_MIN_GAP = 2  # Minimum frame gap enforced between Stage3 ED and ES expectations
 PHASE_UNFREEZE_LR_MULT = 0.5  # Multiply LR when unfreezing stage1 in phase-only mode
-PHASE_TEMPORAL_WINDOW_MODE = "full"  # "full" (entire clip) or "tracing" (crop around traced ED/ES)
-PHASE_TEMPORAL_WINDOW_MARGIN_MULT = 1.5  # Extra margin (in ED-ES span units) on both sides in tracing mode
-PHASE_TEMPORAL_WINDOW_JITTER_MULT = 0.0  # Train-only random shift (in ED-ES span units) within tracing window
+CLIP_PERIOD = 1  # EchoNet-style fixed clip sampling stride
+CLIP_EVAL_MODE = "center"  # "center" for single-clip validation/test, "all" for callers that aggregate clips
 
 # Training configuration
 LEARNING_RATE = 1e-4

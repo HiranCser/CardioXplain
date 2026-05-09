@@ -25,6 +25,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train Stage1-7 pipeline in one orchestrated run.")
 
     parser.add_argument("--data-dir", type=str, default=None, help="Override data dir passed to stage scripts")
+    parser.add_argument("--clip-period", type=int, default=getattr(config, "CLIP_PERIOD", 1), help="EchoNet-style clip sampling stride")
+    parser.add_argument("--clip-eval-mode", type=str, choices=["center", "all"], default=getattr(config, "CLIP_EVAL_MODE", "center"))
 
     parser.add_argument("--skip-stage123", action="store_true")
     parser.add_argument("--skip-stage4", action="store_true")
@@ -68,6 +70,8 @@ def parse_args():
     parser.add_argument("--stage67-max-videos", type=int, default=None)
     parser.add_argument("--stage67-normal-threshold", type=float, default=50.0)
     parser.add_argument("--stage67-severe-threshold", type=float, default=30.0)
+    parser.add_argument("--stage67-clip-eval-mode", type=str, choices=["center", "all"], default="all")
+    parser.add_argument("--stage67-clip-batch-size", type=int, default=8)
     parser.add_argument("--stage67-backend", type=str, choices=["similarity", "mlp"], default="similarity")
     parser.add_argument("--stage67-mlp-hidden-dim", type=int, default=64)
     parser.add_argument("--stage67-mlp-dropout", type=float, default=0.1)
@@ -96,6 +100,10 @@ def main():
             "--no-phase-only",
             "--checkpoint",
             str(args.stage123_checkpoint),
+            "--clip-period",
+            str(args.clip_period),
+            "--clip-eval-mode",
+            str(args.clip_eval_mode),
         ]
         if args.stage123_epochs is not None:
             cmd += ["--epochs", str(args.stage123_epochs)]
@@ -210,6 +218,12 @@ def main():
             str(args.stage67_severe_threshold),
             "--stage6-backend",
             str(args.stage67_backend),
+            "--clip-period",
+            str(args.clip_period),
+            "--clip-eval-mode",
+            str(args.stage67_clip_eval_mode),
+            "--clip-batch-size",
+            str(args.stage67_clip_batch_size),
         ]
 
         if args.data_dir is not None:

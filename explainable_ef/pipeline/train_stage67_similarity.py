@@ -71,8 +71,9 @@ def parse_args():
     parser.add_argument("--normal-threshold", type=float, default=50.0, help="EF >= threshold -> normal class")
     parser.add_argument("--severe-threshold", type=float, default=30.0, help="EF < threshold -> severe class")
     parser.add_argument("--output-dir", type=str, default=os.path.join("validation", "outputs", "stage67"))
-    parser.add_argument("--temporal-window-mode", type=str, choices=["full", "tracing"], default="tracing")
-    parser.add_argument("--temporal-window-margin-mult", type=float, default=1.0)
+    parser.add_argument("--clip-period", type=int, default=int(getattr(config, "CLIP_PERIOD", 1)))
+    parser.add_argument("--clip-eval-mode", type=str, choices=["center", "all"], default="all")
+    parser.add_argument("--clip-batch-size", type=int, default=8)
     parser.add_argument("--save-per-split-csv", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--stage6-backend", type=str, choices=["similarity", "mlp"], default="similarity")
@@ -197,9 +198,8 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         num_frames=int(args.num_frames),
         max_videos=args.max_videos,
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=str(args.temporal_window_mode),
-        temporal_window_margin_mult=float(args.temporal_window_margin_mult),
-        temporal_window_jitter_mult=0.0,
+        clip_period=int(args.clip_period),
+        clip_eval_mode=str(args.clip_eval_mode),
     )
 
     rows = []
@@ -213,43 +213,83 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         ed_orig = int(dataset.phase_dict[file_name_ext]["ed"])
         es_orig = int(dataset.phase_dict[file_name_ext]["es"])
 
-        clip, sampled_indices = dataset.load_video(
-            video_path,
-            ed_original=ed_orig,
-            es_original=es_orig,
-        )
-
-        with torch.no_grad():
-            model_out = model(clip.unsqueeze(0).to(device), return_stage_outputs=True)
-
-        if isinstance(model_out, tuple) and len(model_out) == 4:
-            ef_pred, attention, phase_logits, _ = model_out
+        if str(args.clip_eval_mode) == "all":
+            clips, sampled_indices_batch = dataset.load_video_clips(video_path, mode="all")
         else:
-            ef_pred, attention, phase_logits = model_out
+            clip, sampled_indices = dataset.load_video(
+                video_path,
+                ed_original=ed_orig,
+                es_original=es_orig,
+            )
+            clips = clip.unsqueeze(0)
+            sampled_indices_batch = np.expand_dims(sampled_indices, axis=0)
 
-        ef_stage123_pct = float(ef_pred[0].item() * 100.0)
+        ef_values = []
+        attn_entropy_values = []
+        attn_peak_values = []
+        phase_candidates = []
+
+        clip_batch_size = max(1, int(args.clip_batch_size))
+        with torch.no_grad():
+            for batch_start in range(0, clips.shape[0], clip_batch_size):
+                clip_batch = clips[batch_start : batch_start + clip_batch_size].to(device)
+                model_out = model(clip_batch, return_stage_outputs=True)
+
+                if isinstance(model_out, tuple) and len(model_out) == 4:
+                    ef_pred, attention, phase_logits, _ = model_out
+                else:
+                    ef_pred, attention, phase_logits = model_out
+
+                ef_values.extend((ef_pred.detach().cpu().reshape(-1).numpy() * 100.0).tolist())
+                pred_ed_idx_t, pred_es_idx_t = Stage3PhaseDetector.predict_indices(phase_logits)
+
+                for local_idx in range(int(phase_logits.shape[0])):
+                    global_idx = batch_start + local_idx
+                    sampled_indices = sampled_indices_batch[global_idx]
+
+                    attn_np = attention[local_idx].detach().cpu().numpy().astype(np.float64)
+                    if attn_np.ndim == 2 and attn_np.shape[1] > 0:
+                        attn_for_metrics = attn_np.mean(axis=1)
+                    else:
+                        attn_for_metrics = attn_np.reshape(-1)
+                    attn_peak_values.append(float(np.max(attn_for_metrics)))
+                    attn_entropy_values.append(_safe_entropy(attn_for_metrics))
+
+                    pred_ed_idx = int(pred_ed_idx_t[local_idx].item())
+                    pred_es_idx = int(pred_es_idx_t[local_idx].item())
+                    pred_ed_orig = int(sampled_indices[pred_ed_idx])
+                    pred_es_orig = int(sampled_indices[pred_es_idx])
+
+                    phase_logits_0 = phase_logits[local_idx]
+                    ed_time_prob = torch.softmax(phase_logits_0[:, 1], dim=0).detach().cpu().numpy()
+                    es_time_prob = torch.softmax(phase_logits_0[:, 2], dim=0).detach().cpu().numpy()
+                    ed_conf = float(ed_time_prob[pred_ed_idx])
+                    es_conf = float(es_time_prob[pred_es_idx])
+                    phase_candidates.append(
+                        {
+                            "score": ed_conf + es_conf,
+                            "pred_ed_idx": pred_ed_idx,
+                            "pred_es_idx": pred_es_idx,
+                            "pred_ed_orig": pred_ed_orig,
+                            "pred_es_orig": pred_es_orig,
+                            "ed_conf": ed_conf,
+                            "es_conf": es_conf,
+                        }
+                    )
+
+        ef_stage123_pct = float(np.mean(ef_values))
         ef_gt_pct = float(row["EF"])
 
-        attn_np = attention[0].detach().cpu().numpy().astype(np.float64)
-        if attn_np.ndim == 2 and attn_np.shape[1] > 0:
-            attn_for_metrics = attn_np.mean(axis=1)
-        else:
-            attn_for_metrics = attn_np.reshape(-1)
-        attn_peak = float(np.max(attn_for_metrics))
-        attn_entropy = _safe_entropy(attn_for_metrics)
+        attn_peak = float(np.mean(attn_peak_values))
+        attn_entropy = float(np.mean(attn_entropy_values))
 
-        pred_ed_idx_t, pred_es_idx_t = Stage3PhaseDetector.predict_indices(phase_logits)
-        pred_ed_idx = int(pred_ed_idx_t[0].item())
-        pred_es_idx = int(pred_es_idx_t[0].item())
-
-        pred_ed_orig = int(sampled_indices[pred_ed_idx])
-        pred_es_orig = int(sampled_indices[pred_es_idx])
-
-        phase_logits_0 = phase_logits[0]
-        ed_time_prob = torch.softmax(phase_logits_0[:, 1], dim=0).detach().cpu().numpy()
-        es_time_prob = torch.softmax(phase_logits_0[:, 2], dim=0).detach().cpu().numpy()
-        ed_conf = float(ed_time_prob[pred_ed_idx])
-        es_conf = float(es_time_prob[pred_es_idx])
+        best_phase = max(phase_candidates, key=lambda item: item["score"])
+        pred_ed_idx = int(best_phase["pred_ed_idx"])
+        pred_es_idx = int(best_phase["pred_es_idx"])
+        pred_ed_orig = int(best_phase["pred_ed_orig"])
+        pred_es_orig = int(best_phase["pred_es_orig"])
+        ed_conf = float(best_phase["ed_conf"])
+        es_conf = float(best_phase["es_conf"])
 
         ef_stage5_pct, ed_offset, es_offset = _compute_stage5_proxy(
             area_lookup=area_lookup,
@@ -286,6 +326,8 @@ def _collect_split_rows(split, args, model, device, area_lookup):
                 "phase_ed_conf": ed_conf,
                 "phase_es_conf": es_conf,
                 "pred_gap_norm": pred_gap_norm,
+                "clip_count": int(clips.shape[0]),
+                "clip_eval_mode": str(args.clip_eval_mode),
                 "ed_trace_offset": ed_offset,
                 "es_trace_offset": es_offset,
                 "severity_label": int(label),
@@ -481,7 +523,7 @@ def main():
     print(f"Data dir: {args.data_dir}")
     print(f"Stage1-3 checkpoint: {args.stage123_checkpoint}")
     print(f"Num frames: {args.num_frames}")
-    print(f"Temporal window: {args.temporal_window_mode} (margin={args.temporal_window_margin_mult})")
+    print(f"Clip sampling: period={args.clip_period}, eval_mode={args.clip_eval_mode}, batch_size={args.clip_batch_size}")
     print(f"Max videos per split: {args.max_videos if args.max_videos else 'All'}")
     print(f"Severity thresholds: severe<{args.severe_threshold}, normal>={args.normal_threshold}")
     print(f"Stage6 backend: {args.stage6_backend}")
