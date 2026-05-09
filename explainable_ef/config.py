@@ -4,7 +4,8 @@ import os
 # Data configuration
 # Points to ../dynamic/a4c-video-dir (from cx/explainable_ef to cx/dynamic)
 #DATA_DIR = '/kaggle/input/datasets/hirancser/echoefnet/a4c-video-dir'
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+#DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+DATA_DIR = '/datasets/efnet1/a4c-video-dir'
 
 # Model configuration
 BATCH_SIZE = 20
