@@ -63,7 +63,29 @@ def parse_args():
     parser.add_argument("--homogenization-stats", type=str, default=os.path.join("validation", "outputs", "homogenization", "frame_homogenization.json"))
     parser.add_argument("--homogenization-max-videos", type=int, default=0)
     parser.add_argument("--homogenization-sample-every", type=int, default=10)
-    parser.add_argument("--homogenization-clahe-clip-limit", type=float, default=2.0)
+    parser.add_argument("--preprocess-preset", type=str, default="balanced", choices=["off", "conservative", "balanced", "aggressive"])
+    parser.add_argument(
+        "--homogenization-method",
+        type=str,
+        default=None,
+        choices=["luma_unsharp", "luma_percentile_unsharp", "luma_mean_std_clahe"],
+        help="Deprecated legacy method selector; prefer --preprocess-preset",
+    )
+    parser.add_argument("--enable-harmonization", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--enable-enhancement", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--homogenization-contrast-lower-percentile", type=float, default=None)
+    parser.add_argument("--homogenization-contrast-upper-percentile", type=float, default=None)
+    parser.add_argument("--homogenization-contrast-blend", "--harmonization-blend", dest="homogenization_contrast_blend", type=float, default=None)
+    parser.add_argument("--denoise-method", type=str, default=None, choices=["none", "bilateral", "nlm"])
+    parser.add_argument("--bilateral-d", type=int, default=None)
+    parser.add_argument("--bilateral-sigma-color", type=float, default=None)
+    parser.add_argument("--bilateral-sigma-space", type=float, default=None)
+    parser.add_argument("--nlm-h", type=float, default=None)
+    parser.add_argument("--homogenization-clahe-clip-limit", "--clahe-clip-limit", dest="homogenization_clahe_clip_limit", type=float, default=None)
+    parser.add_argument("--homogenization-clahe-tile-grid-size", "--clahe-tile-grid-size", dest="homogenization_clahe_tile_grid_size", type=int, default=None)
+    parser.add_argument("--homogenization-unsharp-amount", "--unsharp-amount", dest="homogenization_unsharp_amount", type=float, default=None)
+    parser.add_argument("--homogenization-unsharp-radius", "--unsharp-radius", dest="homogenization_unsharp_radius", type=float, default=None)
+    parser.add_argument("--homogenization-unsharp-threshold", "--unsharp-threshold", dest="homogenization_unsharp_threshold", type=float, default=None)
     parser.add_argument("--stage1-epochs", "--stage123-epochs", dest="stage123_epochs", type=int, default=None)
     parser.add_argument("--stage1-learning-rate", "--stage123-learning-rate", dest="stage123_learning_rate", type=float, default=None)
     parser.add_argument("--stage1-batch-size", "--stage123-batch-size", dest="stage123_batch_size", type=int, default=None)
@@ -133,9 +155,34 @@ def main():
             str(args.homogenization_stats),
             "--sample-every",
             str(args.homogenization_sample_every),
-            "--clahe-clip-limit",
-            str(args.homogenization_clahe_clip_limit),
+            "--preprocess-preset",
+            str(args.preprocess_preset),
         ]
+        optional_stage0_args = [
+            ("--method", args.homogenization_method),
+            ("--enable-harmonization" if args.enable_harmonization else "--no-enable-harmonization", args.enable_harmonization),
+            ("--enable-enhancement" if args.enable_enhancement else "--no-enable-enhancement", args.enable_enhancement),
+            ("--contrast-lower-percentile", args.homogenization_contrast_lower_percentile),
+            ("--contrast-upper-percentile", args.homogenization_contrast_upper_percentile),
+            ("--harmonization-blend", args.homogenization_contrast_blend),
+            ("--denoise-method", args.denoise_method),
+            ("--bilateral-d", args.bilateral_d),
+            ("--bilateral-sigma-color", args.bilateral_sigma_color),
+            ("--bilateral-sigma-space", args.bilateral_sigma_space),
+            ("--nlm-h", args.nlm_h),
+            ("--clahe-clip-limit", args.homogenization_clahe_clip_limit),
+            ("--clahe-tile-grid-size", args.homogenization_clahe_tile_grid_size),
+            ("--unsharp-amount", args.homogenization_unsharp_amount),
+            ("--unsharp-radius", args.homogenization_unsharp_radius),
+            ("--unsharp-threshold", args.homogenization_unsharp_threshold),
+        ]
+        for flag, value in optional_stage0_args:
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                cmd.append(flag)
+            else:
+                cmd += [flag, str(value)]
         if args.data_dir is not None:
             cmd += ["--data-dir", str(args.data_dir)]
         if args.homogenization_max_videos and int(args.homogenization_max_videos) > 0:
