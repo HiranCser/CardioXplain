@@ -669,12 +669,13 @@ def compute_continuous_phase_loss(phase_pred, phase_labels, phase_regression_los
 
 
 
-def move_batch_to_device(videos, efs, phase_labels):
+def move_batch_to_device(videos, efs, ed_idx, es_idx):
     non_blocking = bool(getattr(config, "NON_BLOCKING_TRANSFER", True)) and is_cuda_runtime()
     videos = videos.to(config.DEVICE, non_blocking=non_blocking)
     efs = efs.to(config.DEVICE, non_blocking=non_blocking)
-    phase_labels = phase_labels.to(config.DEVICE, non_blocking=non_blocking)
-    return videos, efs, phase_labels
+    ed_idx = ed_idx.to(config.DEVICE, non_blocking=non_blocking)
+    es_idx = es_idx.to(config.DEVICE, non_blocking=non_blocking)
+    return videos, efs, ed_idx, es_idx
 
 
 
