@@ -760,6 +760,17 @@ def evaluate(model, loader, amp_enabled):
         "joint_acc": total_joint_acc / total_samples,
         "ed_mae_frames": total_ed_mae_frames / total_samples,
         "es_mae_frames": total_es_mae_frames / total_samples,
+        # Stage-specific diagnostic metrics (set to defaults if not available)
+        "stage1_temporal_tokens": 0.0,
+        "stage1_feature_norm": 0.0,
+        "stage1_temporal_std": 0.0,
+        "stage2_temporal_tokens": 0.0,
+        "stage2_attention_entropy": 0.0,
+        "stage2_attention_peak": 0.0,
+        "stage2_peak_to_event_mae_frames": 0.0,
+        "stage2_ed_es_feature_distance": 0.0,
+        "stage3_ed_index_ce": 0.0,
+        "stage3_es_index_ce": 0.0,
     }
     return metrics
 
