@@ -196,13 +196,8 @@ class EchoDataset(Dataset):
             es_original=es_original,
         )
 
-        # Compute continuous phase labels [0, 1] for each frame
-        phase_labels = compute_continuous_phase_labels(ed_original, es_original, sampled_indices)
-        
-        if phase_labels is not None:
-            phase_labels = torch.tensor(phase_labels, dtype=torch.float32)
-        else:
-            # Fallback if ED/ES not available: return zero labels
-            phase_labels = torch.zeros(len(sampled_indices), dtype=torch.float32)
+        # Convert ED/ES indices to tensors
+        ed_idx = torch.tensor(ed_original, dtype=torch.long)
+        es_idx = torch.tensor(es_original, dtype=torch.long)
 
-        return video, ef, phase_labels
+        return video, ef, ed_idx, es_idx
