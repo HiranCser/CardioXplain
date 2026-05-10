@@ -459,13 +459,11 @@ def build_model_stack(logger):
     optimizer = build_optimizer(model, logger)
 
     mse_loss = nn.MSELoss()
-    phase_index_loss = nn.CrossEntropyLoss(
-        label_smoothing=float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0))
-    )
+    phase_regression_loss = nn.MSELoss()  # MSE for continuous phase prediction
 
     amp_enabled = bool(getattr(config, "USE_MIXED_PRECISION", False)) and is_cuda_runtime()
     scaler = make_grad_scaler(amp_enabled)
-    return model, optimizer, mse_loss, phase_index_loss, amp_enabled, scaler
+    return model, optimizer, mse_loss, phase_regression_loss, amp_enabled, scaler
 
 
 def log_stage_trainability(model, logger):
@@ -655,72 +653,29 @@ def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx):
     return index_loss, order_loss
 
 
-def compute_phase_index_loss(phase_logits, ed_idx, es_idx, phase_index_loss_fn):
+def compute_continuous_phase_loss(phase_pred, phase_labels, phase_regression_loss_fn):
     """
-    Train phase detection as two temporal index tasks:
-    - ED index from ED-vs-background score curve
-    - ES index from ES-vs-background score curve
-
-    Optional stabilizer: frame-wise CE over {background, ED, ES} neighborhoods.
+    Compute MSE loss for continuous phase prediction.
+    
+    Args:
+        phase_pred: (B, T) predicted phase values in [0, 1]
+        phase_labels: (B, T) ground truth phase labels in [0, 1]
+        phase_regression_loss_fn: MSELoss function
+    
+    Returns:
+        phase_loss: scalar loss value
     """
-    # Match training targets to the exact score definition used at inference time
-    # in Stage3PhaseDetector.predict_indices(...).
-    ed_logits = phase_logits[:, :, 1] - phase_logits[:, :, 0]  # (B, T)
-    es_logits = phase_logits[:, :, 2] - phase_logits[:, :, 0]  # (B, T)
-
-    sigma = float(getattr(config, "PHASE_SOFT_SIGMA", 0.0))
-    radius = int(getattr(config, "PHASE_SOFT_RADIUS", 0))
-    hard_weight = float(getattr(config, "PHASE_HARD_INDEX_WEIGHT", 0.0))
-    hard_weight = min(1.0, max(0.0, hard_weight))
-
-    if sigma > 0.0:
-        num_frames = ed_logits.shape[1]
-        ed_target = build_soft_temporal_targets(ed_idx, num_frames, ed_logits.device, sigma, radius)
-        es_target = build_soft_temporal_targets(es_idx, num_frames, es_logits.device, sigma, radius)
-
-        ed_soft_loss = F.kl_div(F.log_softmax(ed_logits, dim=1), ed_target, reduction="batchmean")
-        es_soft_loss = F.kl_div(F.log_softmax(es_logits, dim=1), es_target, reduction="batchmean")
-        ed_hard_loss = phase_index_loss_fn(ed_logits, ed_idx)
-        es_hard_loss = phase_index_loss_fn(es_logits, es_idx)
-
-        ed_loss = (1.0 - hard_weight) * ed_soft_loss + hard_weight * ed_hard_loss
-        es_loss = (1.0 - hard_weight) * es_soft_loss + hard_weight * es_hard_loss
-    else:
-        ed_loss = phase_index_loss_fn(ed_logits, ed_idx)
-        es_loss = phase_index_loss_fn(es_logits, es_idx)
-
-    index_loss = 0.5 * (ed_loss + es_loss)
-
-    frame_weight = float(getattr(config, "PHASE_FRAME_CE_WEIGHT", 0.0))
-    frame_weight = min(1.0, max(0.0, frame_weight))
-
-    if frame_weight > 0.0:
-        frame_radius = max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1)))
-        frame_targets = build_frame_phase_targets(
-            ed_idx=ed_idx,
-            es_idx=es_idx,
-            num_frames=phase_logits.shape[1],
-            radius=frame_radius,
-        )
-        frame_loss = F.cross_entropy(
-            phase_logits.reshape(-1, phase_logits.shape[-1]),
-            frame_targets.reshape(-1),
-        )
-        phase_loss = (1.0 - frame_weight) * index_loss + frame_weight * frame_loss
-    else:
-        frame_loss = torch.zeros_like(index_loss)
-        phase_loss = index_loss
-
-    return phase_loss, ed_loss, es_loss, frame_loss
+    return phase_regression_loss_fn(phase_pred, phase_labels)
 
 
-def move_batch_to_device(videos, efs, ed_idx, es_idx):
+
+def move_batch_to_device(videos, efs, phase_labels):
     non_blocking = bool(getattr(config, "NON_BLOCKING_TRANSFER", True)) and is_cuda_runtime()
     videos = videos.to(config.DEVICE, non_blocking=non_blocking)
     efs = efs.to(config.DEVICE, non_blocking=non_blocking)
-    ed_idx = ed_idx.to(config.DEVICE, non_blocking=non_blocking)
-    es_idx = es_idx.to(config.DEVICE, non_blocking=non_blocking)
-    return videos, efs, ed_idx, es_idx
+    phase_labels = phase_labels.to(config.DEVICE, non_blocking=non_blocking)
+    return videos, efs, phase_labels
+
 
 
 def evaluate(model, loader, amp_enabled):
@@ -883,7 +838,7 @@ def train_one_epoch(
     loader,
     optimizer,
     mse_loss,
-    phase_index_loss_fn,
+    phase_regression_loss_fn,
     logger,
     epoch_idx,
     amp_enabled,
@@ -910,44 +865,32 @@ def train_one_epoch(
     phase_pair_index_weight = max(0.0, float(getattr(config, "PHASE_PAIR_INDEX_WEIGHT", 0.0)))
     phase_pair_order_weight = max(0.0, float(getattr(config, "PHASE_PAIR_ORDER_WEIGHT", 0.0)))
 
-    for batch_idx, (videos, efs, ed_idx, es_idx) in enumerate(loader):
+    for batch_idx, (videos, efs, phase_labels) in enumerate(loader):
         data_time += time.perf_counter() - loop_end
 
-        videos, efs, ed_idx, es_idx = move_batch_to_device(videos, efs, ed_idx, es_idx)
+        videos, efs, phase_labels = move_batch_to_device(videos, efs, phase_labels)
         batch_size = videos.size(0)
         total_samples += batch_size
 
         compute_start = time.perf_counter()
 
         with autocast_context(amp_enabled):
-            ef_pred, attention, phase_logits = model(videos)
+            ef_pred, attention, phase_pred = model(videos)
 
             if phase_only:
                 ef_loss = torch.zeros((), device=videos.device)
             else:
                 ef_loss = mse_loss(ef_pred, efs)
 
-            phase_loss, ed_phase_loss, es_phase_loss, frame_phase_loss = compute_phase_index_loss(
-                phase_logits=phase_logits,
-                ed_idx=ed_idx,
-                es_idx=es_idx,
-                phase_index_loss_fn=phase_index_loss_fn,
+            # Continuous phase regression loss
+            phase_loss = compute_continuous_phase_loss(
+                phase_pred=phase_pred,
+                phase_labels=phase_labels,
+                phase_regression_loss_fn=phase_regression_loss_fn,
             )
-            phase_pair_index_loss, phase_pair_order_loss = compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx)
-            attn_align_loss = compute_attention_alignment_loss(attention, ed_idx, es_idx)
-            attn_index_loss, attn_order_loss = compute_attention_index_loss(attention, ed_idx, es_idx)
-            attn_entropy_loss = compute_attention_entropy_loss(attention)
-
-            loss = (
-                ef_loss
-                + config.PHASE_LOSS_WEIGHT * phase_loss
-                + phase_pair_index_weight * phase_pair_index_loss
-                + phase_pair_order_weight * phase_pair_order_loss
-                + attn_align_weight * attn_align_loss
-                + attn_index_weight * attn_index_loss
-                + attn_order_weight * attn_order_loss
-                + attn_entropy_weight * attn_entropy_loss
-            )
+            
+            # Simplified loss: only EF and phase losses (no attention-based losses)
+            loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
             loss_for_backward = loss / accumulation_steps
 
         if amp_enabled:
@@ -974,34 +917,18 @@ def train_one_epoch(
         total_train_loss += loss.item()
 
         if batch_idx == 0:
-            pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
+            # Extract ED/ES from continuous phase predictions
+            pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_pred)
             logger.info(
-                "Epoch %d batch %d | Phase-only-step %s | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | PhasePair %.4f (w=%.3f) | PhaseOrder %.4f (w=%.3f) | AttnAlign %.4f (w=%.3f) | AttnIndex %.4f (w=%.3f) | AttnOrder %.4f (w=%.3f) | AttnEntropy %.4f (w=%.3f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | Phase-only %s | EF loss %.4f | Phase MSE loss %.6f | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 phase_only,
                 ef_loss.item(),
                 phase_loss.item(),
-                ed_phase_loss.item(),
-                es_phase_loss.item(),
-                frame_phase_loss.item(),
-                phase_pair_index_loss.item(),
-                phase_pair_index_weight,
-                phase_pair_order_loss.item(),
-                phase_pair_order_weight,
-                attn_align_loss.item(),
-                attn_align_weight,
-                attn_index_loss.item(),
-                attn_index_weight,
-                attn_order_loss.item(),
-                attn_order_weight,
-                attn_entropy_loss.item(),
-                attn_entropy_weight,
-                ed_idx[0].item(),
-                es_idx[0].item(),
                 pred_ed_idx[0].item(),
                 pred_es_idx[0].item(),
-                tuple(attention.shape),
+                tuple(attention.shape) if attention is not None else "None",
             )
 
         loop_end = time.perf_counter()
@@ -1177,7 +1104,7 @@ def main(argv=None):
     setup_performance_backends(logger)
 
     train_loader, val_loader, test_loader = build_dataloaders()
-    model, optimizer, mse_loss, phase_index_loss_fn, amp_enabled, scaler = build_model_stack(logger)
+    model, optimizer, mse_loss, phase_regression_loss_fn, amp_enabled, scaler = build_model_stack(logger)
 
     phase_only = is_phase_only_mode()
     train_stage123_mode = bool(getattr(args, "train_stage123", False))
@@ -1237,7 +1164,7 @@ def main(argv=None):
             loader=train_loader,
             optimizer=optimizer,
             mse_loss=mse_loss,
-            phase_index_loss_fn=phase_index_loss_fn,
+            phase_regression_loss_fn=phase_regression_loss_fn,
             logger=logger,
             epoch_idx=epoch,
             amp_enabled=amp_enabled,

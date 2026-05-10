@@ -208,3 +208,82 @@ def compute_ed_es_from_video_rows(
         "es_area": float(es_area),
         "num_traced_frames": int(frame_ids.size),
     }
+
+
+def compute_continuous_phase_labels(ed_frame, es_frame, sampled_frame_indices):
+    """
+    Compute continuous cardiac phase labels for sampled frames.
+    
+    Maps frames to a normalized cardiac phase in [0, 1]:
+    - ED (End-Diastole) → phase ≈ 0.0  (maximum LV cavity)
+    - ES (End-Systole) → phase ≈ 0.5  (minimum LV cavity)
+    - Cycle: ED → ES → ED (0 → 0.5 → 1.0)
+    
+    Args:
+        ed_frame: Frame index of ED (highest area)
+        es_frame: Frame index of ES (lowest area)
+        sampled_frame_indices: Array of frame indices in the sampled clip
+    
+    Returns:
+        np.ndarray of phase values [0, 1] for each sampled frame, or None if ED/ES invalid
+    """
+    sampled_frame_indices = np.asarray(sampled_frame_indices, dtype=np.int32)
+    
+    # Invalid case: no ED/ES detected
+    if ed_frame < 0 or es_frame < 0:
+        return None
+    
+    num_frames = len(sampled_frame_indices)
+    phases = np.zeros(num_frames, dtype=np.float32)
+    
+    # Map each sampled frame to a phase value
+    # Assumption: cardiac cycle progresses ED → ES → back to ED
+    # The simple approach: linearly interpolate based on frame distance
+    
+    for i, frame_idx in enumerate(sampled_frame_indices):
+        frame_idx = int(frame_idx)
+        
+        # Compute distance from ED in both directions
+        # Forward distance: frame_idx - ed_frame (positive = after ED)
+        # Backward distance: ed_frame - frame_idx (positive = before ED)
+        
+        # Normalize by cycle: estimate full cycle length as |ES - ED| * 2
+        ed = int(ed_frame)
+        es = int(es_frame)
+        
+        if ed == es:
+            # Degenerate case: ED and ES at same frame
+            phases[i] = 0.0
+        elif ed < es:
+            # Standard case: ED before ES in temporal sequence
+            # Phase linearly increases from ED (0) to ES (0.5), then back to ED (1)
+            cycle_length = 2.0 * (es - ed)
+            
+            if frame_idx < ed:
+                # Before ED: phase wraps around from previous cycle
+                phases[i] = 1.0 - (ed - frame_idx) / cycle_length
+            elif frame_idx <= es:
+                # Between ED and ES: phase goes 0 → 0.5
+                phases[i] = (frame_idx - ed) / cycle_length
+            else:
+                # After ES: phase goes 0.5 → 1
+                phases[i] = 0.5 + (frame_idx - es) / cycle_length
+        else:
+            # Inverted case: ES before ED in temporal sequence (less common)
+            # Treat ES as "minimum" at phase 0.5
+            cycle_length = 2.0 * (ed - es)
+            
+            if frame_idx < es:
+                # Before ES
+                phases[i] = 1.0 - (es - frame_idx) / cycle_length
+            elif frame_idx <= ed:
+                # Between ES and ED
+                phases[i] = 0.5 + (frame_idx - es) / cycle_length
+            else:
+                # After ED
+                phases[i] = (frame_idx - ed) / cycle_length
+        
+        # Clamp to [0, 1] to handle edge cases
+        phases[i] = np.clip(phases[i], 0.0, 1.0)
+    
+    return phases

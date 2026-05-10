@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from data.phase_ground_truth import compute_ed_es_from_video_rows
+from data.phase_ground_truth import compute_ed_es_from_video_rows, compute_continuous_phase_labels
 
 
 KINETICS_MEAN = (0.43216, 0.394666, 0.37645)
@@ -196,14 +196,13 @@ class EchoDataset(Dataset):
             es_original=es_original,
         )
 
-        if ed_original >= 0:
-            ed_idx = int(np.argmin(np.abs(sampled_indices - int(ed_original))))
+        # Compute continuous phase labels [0, 1] for each frame
+        phase_labels = compute_continuous_phase_labels(ed_original, es_original, sampled_indices)
+        
+        if phase_labels is not None:
+            phase_labels = torch.tensor(phase_labels, dtype=torch.float32)
         else:
-            ed_idx = 0
+            # Fallback if ED/ES not available: return zero labels
+            phase_labels = torch.zeros(len(sampled_indices), dtype=torch.float32)
 
-        if es_original >= 0:
-            es_idx = int(np.argmin(np.abs(sampled_indices - int(es_original))))
-        else:
-            es_idx = 0
-
-        return video, ef, ed_idx, es_idx
+        return video, ef, phase_labels
