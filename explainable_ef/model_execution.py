@@ -29,6 +29,7 @@ SMOKE_DEFAULTS = {
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Train and evaluate EF model (Stage 1-3).")
     parser.add_argument("--smoke", action="store_true", help="Run a tiny smoke test configuration.")
+    parser.add_argument("--data-dir", type=str, default=None, help="Override config.DATA_DIR")
     parser.add_argument("--max-videos", type=int, default=None, help="Override config.MAX_VIDEOS")
     parser.add_argument("--epochs", type=int, default=None, help="Override config.EPOCHS")
     parser.add_argument("--learning-rate", "--lr", dest="learning_rate", type=float, default=None, help="Override config.LEARNING_RATE")
@@ -47,6 +48,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
+    parser.add_argument("--phase-only-warmup-epochs", type=int, default=None, help="Temporarily disable EF loss for N initial joint-training epochs")
     parser.add_argument("--phase-backbone-freeze-epochs", type=int, default=None, help="Override config.PHASE_BACKBONE_FREEZE_EPOCHS")
     parser.add_argument("--backbone-lr-mult", type=float, default=None, help="Override config.BACKBONE_LR_MULT")
     parser.add_argument("--phase-soft-sigma", type=float, default=None, help="Override config.PHASE_SOFT_SIGMA")
@@ -59,6 +61,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-attn-align-radius", type=int, default=None, help="Override config.PHASE_ATTN_ALIGN_RADIUS")
     parser.add_argument("--phase-attn-index-weight", type=float, default=None, help="Override config.PHASE_ATTN_INDEX_WEIGHT")
     parser.add_argument("--phase-attn-order-weight", type=float, default=None, help="Override config.PHASE_ATTN_ORDER_WEIGHT")
+    parser.add_argument("--phase-attn-entropy-weight", type=float, default=None, help="Override config.PHASE_ATTN_ENTROPY_WEIGHT")
     parser.add_argument("--phase-attn-min-gap", type=int, default=None, help="Override config.PHASE_ATTN_MIN_GAP")
     parser.add_argument("--phase-pair-index-weight", type=float, default=None, help="Override config.PHASE_PAIR_INDEX_WEIGHT")
     parser.add_argument("--phase-pair-order-weight", type=float, default=None, help="Override config.PHASE_PAIR_ORDER_WEIGHT")
@@ -80,6 +83,8 @@ def apply_runtime_overrides(args, logger):
     if args.smoke:
         overrides.update(SMOKE_DEFAULTS)
 
+    if args.data_dir is not None:
+        overrides["DATA_DIR"] = args.data_dir
     if args.max_videos is not None:
         overrides["MAX_VIDEOS"] = args.max_videos
     if args.epochs is not None:
@@ -116,6 +121,8 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
     if args.phase_only is not None:
         overrides["PHASE_ONLY"] = args.phase_only
+    if args.phase_only_warmup_epochs is not None:
+        overrides["PHASE_ONLY_WARMUP_EPOCHS"] = args.phase_only_warmup_epochs
     if args.phase_backbone_freeze_epochs is not None:
         overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = args.phase_backbone_freeze_epochs
     if args.backbone_lr_mult is not None:
@@ -140,6 +147,8 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_ATTN_INDEX_WEIGHT"] = args.phase_attn_index_weight
     if args.phase_attn_order_weight is not None:
         overrides["PHASE_ATTN_ORDER_WEIGHT"] = args.phase_attn_order_weight
+    if args.phase_attn_entropy_weight is not None:
+        overrides["PHASE_ATTN_ENTROPY_WEIGHT"] = args.phase_attn_entropy_weight
     if args.phase_attn_min_gap is not None:
         overrides["PHASE_ATTN_MIN_GAP"] = args.phase_attn_min_gap
     if args.phase_pair_index_weight is not None:
@@ -166,21 +175,39 @@ def apply_runtime_overrides(args, logger):
         if args.phase_only is None:
             overrides["PHASE_ONLY"] = False
         if args.phase_loss_weight is None:
-            overrides["PHASE_LOSS_WEIGHT"] = 1.0
+            overrides["PHASE_LOSS_WEIGHT"] = 2.0
+        if args.phase_only_warmup_epochs is None:
+            overrides["PHASE_ONLY_WARMUP_EPOCHS"] = 5
+        if args.phase_soft_sigma is None:
+            overrides["PHASE_SOFT_SIGMA"] = 3.0
+        if args.phase_soft_radius is None:
+            overrides["PHASE_SOFT_RADIUS"] = 9
+        if args.phase_hard_index_weight is None:
+            overrides["PHASE_HARD_INDEX_WEIGHT"] = 0.05
+        if args.phase_frame_ce_weight is None:
+            overrides["PHASE_FRAME_CE_WEIGHT"] = 0.15
+        if args.phase_frame_radius is None:
+            overrides["PHASE_FRAME_RADIUS"] = 3
         if args.phase_attn_align_weight is None:
-            overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.45
+            overrides["PHASE_ATTN_ALIGN_WEIGHT"] = 0.70
+        if args.phase_attn_align_sigma is None:
+            overrides["PHASE_ATTN_ALIGN_SIGMA"] = 3.0
+        if args.phase_attn_align_radius is None:
+            overrides["PHASE_ATTN_ALIGN_RADIUS"] = 9
         if args.phase_attn_index_weight is None:
-            overrides["PHASE_ATTN_INDEX_WEIGHT"] = 0.30
+            overrides["PHASE_ATTN_INDEX_WEIGHT"] = 0.40
         if args.phase_attn_order_weight is None:
-            overrides["PHASE_ATTN_ORDER_WEIGHT"] = 0.10
+            overrides["PHASE_ATTN_ORDER_WEIGHT"] = 0.20
+        if args.phase_attn_entropy_weight is None:
+            overrides["PHASE_ATTN_ENTROPY_WEIGHT"] = 0.03
         if args.phase_attn_min_gap is None:
-            overrides["PHASE_ATTN_MIN_GAP"] = 2
+            overrides["PHASE_ATTN_MIN_GAP"] = 15
         if args.phase_pair_index_weight is None:
-            overrides["PHASE_PAIR_INDEX_WEIGHT"] = 0.24
+            overrides["PHASE_PAIR_INDEX_WEIGHT"] = 0.40
         if args.phase_pair_order_weight is None:
-            overrides["PHASE_PAIR_ORDER_WEIGHT"] = 0.10
+            overrides["PHASE_PAIR_ORDER_WEIGHT"] = 0.25
         if args.phase_pair_min_gap is None:
-            overrides["PHASE_PAIR_MIN_GAP"] = 2
+            overrides["PHASE_PAIR_MIN_GAP"] = 15
         overrides["PHASE_BACKBONE_FREEZE_EPOCHS"] = 0
 
     for key, value in overrides.items():
@@ -203,7 +230,7 @@ def apply_runtime_overrides(args, logger):
             setattr(config, attn_align_key, 2.0)
             logger.warning("Clamped %s from %.3f to 2.000", attn_align_key, attn_align_value)
 
-    for loss_key in ("PHASE_ATTN_INDEX_WEIGHT", "PHASE_ATTN_ORDER_WEIGHT", "PHASE_PAIR_INDEX_WEIGHT", "PHASE_PAIR_ORDER_WEIGHT"):
+    for loss_key in ("PHASE_ATTN_INDEX_WEIGHT", "PHASE_ATTN_ORDER_WEIGHT", "PHASE_ATTN_ENTROPY_WEIGHT", "PHASE_PAIR_INDEX_WEIGHT", "PHASE_PAIR_ORDER_WEIGHT"):
         if hasattr(config, loss_key):
             loss_value = float(getattr(config, loss_key, 0.0))
             if loss_value < 0.0:
@@ -229,6 +256,13 @@ def is_cuda_runtime():
 
 def is_phase_only_mode():
     return bool(getattr(config, "PHASE_ONLY", False))
+
+
+def is_phase_only_epoch(epoch_idx):
+    if is_phase_only_mode():
+        return True
+    warmup_epochs = max(0, int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)))
+    return int(epoch_idx) < warmup_epochs
 
 
 def make_grad_scaler(amp_enabled):
@@ -578,6 +612,18 @@ def compute_attention_index_loss(attention, ed_idx, es_idx):
     return index_loss, order_loss
 
 
+def compute_attention_entropy_loss(attention):
+    """Minimize normalized Stage2 attention entropy to discourage diffuse temporal focus."""
+    attn_heads, _ = _attention_heads_and_summary(attention)
+    if attn_heads is None or attn_heads.shape[1] <= 1:
+        device = attention.device if attention is not None else config.DEVICE
+        return torch.zeros((), device=device)
+
+    attn_safe = attn_heads.clamp_min(1e-8)
+    entropy = -(attn_safe * torch.log(attn_safe)).sum(dim=1) / math.log(attn_heads.shape[1])
+    return entropy.mean()
+
+
 def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx):
     """Regularize Stage3 ED/ES expectations directly in the same score space used at inference."""
     ed_logits = phase_logits[:, :, 1] - phase_logits[:, :, 0]
@@ -856,10 +902,11 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
 
     num_batches = len(loader)
-    phase_only = is_phase_only_mode()
+    phase_only = is_phase_only_epoch(epoch_idx)
     attn_align_weight = max(0.0, float(getattr(config, "PHASE_ATTN_ALIGN_WEIGHT", 0.0)))
     attn_index_weight = max(0.0, float(getattr(config, "PHASE_ATTN_INDEX_WEIGHT", 0.0)))
     attn_order_weight = max(0.0, float(getattr(config, "PHASE_ATTN_ORDER_WEIGHT", 0.0)))
+    attn_entropy_weight = max(0.0, float(getattr(config, "PHASE_ATTN_ENTROPY_WEIGHT", 0.0)))
     phase_pair_index_weight = max(0.0, float(getattr(config, "PHASE_PAIR_INDEX_WEIGHT", 0.0)))
     phase_pair_order_weight = max(0.0, float(getattr(config, "PHASE_PAIR_ORDER_WEIGHT", 0.0)))
 
@@ -889,6 +936,7 @@ def train_one_epoch(
             phase_pair_index_loss, phase_pair_order_loss = compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx)
             attn_align_loss = compute_attention_alignment_loss(attention, ed_idx, es_idx)
             attn_index_loss, attn_order_loss = compute_attention_index_loss(attention, ed_idx, es_idx)
+            attn_entropy_loss = compute_attention_entropy_loss(attention)
 
             loss = (
                 ef_loss
@@ -898,6 +946,7 @@ def train_one_epoch(
                 + attn_align_weight * attn_align_loss
                 + attn_index_weight * attn_index_loss
                 + attn_order_weight * attn_order_loss
+                + attn_entropy_weight * attn_entropy_loss
             )
             loss_for_backward = loss / accumulation_steps
 
@@ -927,9 +976,10 @@ def train_one_epoch(
         if batch_idx == 0:
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_logits)
             logger.info(
-                "Epoch %d batch %d | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | PhasePair %.4f (w=%.3f) | PhaseOrder %.4f (w=%.3f) | AttnAlign %.4f (w=%.3f) | AttnIndex %.4f (w=%.3f) | AttnOrder %.4f (w=%.3f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | Phase-only-step %s | EF loss %.4f | Phase loss %.4f (ED %.4f / ES %.4f / FrameCE %.4f) | PhasePair %.4f (w=%.3f) | PhaseOrder %.4f (w=%.3f) | AttnAlign %.4f (w=%.3f) | AttnIndex %.4f (w=%.3f) | AttnOrder %.4f (w=%.3f) | AttnEntropy %.4f (w=%.3f) | GT ED/ES (%d/%d) | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
+                phase_only,
                 ef_loss.item(),
                 phase_loss.item(),
                 ed_phase_loss.item(),
@@ -945,6 +995,8 @@ def train_one_epoch(
                 attn_index_weight,
                 attn_order_loss.item(),
                 attn_order_weight,
+                attn_entropy_loss.item(),
+                attn_entropy_weight,
                 ed_idx[0].item(),
                 es_idx[0].item(),
                 pred_ed_idx[0].item(),
@@ -976,11 +1028,16 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
                 "NUM_FRAMES": int(getattr(config, "NUM_FRAMES", 32)),
                 "CLIP_PERIOD": int(getattr(config, "CLIP_PERIOD", 1)),
                 "CLIP_EVAL_MODE": str(getattr(config, "CLIP_EVAL_MODE", "center")),
+                "PHASE_ONLY_WARMUP_EPOCHS": int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)),
+                "PHASE_ATTN_ENTROPY_WEIGHT": float(getattr(config, "PHASE_ATTN_ENTROPY_WEIGHT", 0.0)),
+                "PHASE_PAIR_MIN_GAP": int(getattr(config, "PHASE_PAIR_MIN_GAP", 1)),
             },
             "args": {
                 "num_frames": int(getattr(config, "NUM_FRAMES", 32)),
                 "clip_period": int(getattr(config, "CLIP_PERIOD", 1)),
                 "clip_eval_mode": str(getattr(config, "CLIP_EVAL_MODE", "center")),
+                "phase_only_warmup_epochs": int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)),
+                "phase_attn_entropy_weight": float(getattr(config, "PHASE_ATTN_ENTROPY_WEIGHT", 0.0)),
                 "train_stage123": True,
                 "phase_only": bool(getattr(config, "PHASE_ONLY", False)),
             },
@@ -1088,6 +1145,7 @@ def log_header(logger, amp_enabled):
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
     logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
     logger.info("Phase-only mode: %s", is_phase_only_mode())
+    logger.info("Phase-only warmup epochs: %d", int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)))
     logger.info("Phase backbone freeze epochs: %d", int(getattr(config, "PHASE_BACKBONE_FREEZE_EPOCHS", 0)))
     logger.info("Backbone LR multiplier: %.3f", float(getattr(config, "BACKBONE_LR_MULT", 1.0)))
     logger.info("Phase soft sigma: %.3f", float(getattr(config, "PHASE_SOFT_SIGMA", 0.0)))
@@ -1099,6 +1157,7 @@ def log_header(logger, amp_enabled):
     logger.info("Phase attn align radius: %d", int(getattr(config, "PHASE_ATTN_ALIGN_RADIUS", 0)))
     logger.info("Phase attn index weight: %.3f", float(getattr(config, "PHASE_ATTN_INDEX_WEIGHT", 0.0)))
     logger.info("Phase attn order weight: %.3f", float(getattr(config, "PHASE_ATTN_ORDER_WEIGHT", 0.0)))
+    logger.info("Phase attn entropy weight: %.3f", float(getattr(config, "PHASE_ATTN_ENTROPY_WEIGHT", 0.0)))
     logger.info("Phase attn min gap: %d", int(getattr(config, "PHASE_ATTN_MIN_GAP", 1)))
     logger.info("Phase pair index weight: %.3f", float(getattr(config, "PHASE_PAIR_INDEX_WEIGHT", 0.0)))
     logger.info("Phase pair order weight: %.3f", float(getattr(config, "PHASE_PAIR_ORDER_WEIGHT", 0.0)))

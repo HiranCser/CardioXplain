@@ -77,20 +77,32 @@ class EchoDataset(Dataset):
     def __len__(self):
         return len(self.filelist)
 
-    def _clip_start_indices(self, total_video_frames, mode=None):
+    def _clip_start_indices(self, total_video_frames, mode=None, ed_original=-1, es_original=-1, contain_events=False):
         required_frames = (self.num_frames - 1) * self.clip_period + 1
         padded_frames = max(int(total_video_frames), int(required_frames))
         max_start = max(0, padded_frames - required_frames)
 
+        start_low = 0
+        start_high = max_start
+        if contain_events and ed_original >= 0 and es_original >= 0:
+            left = min(int(ed_original), int(es_original))
+            right = max(int(ed_original), int(es_original))
+            start_low = max(start_low, right - required_frames + 1)
+            start_high = min(start_high, left)
+
+            if start_low > start_high:
+                start_low = 0
+                start_high = max_start
+
         if self.split == "TRAIN":
-            return np.array([np.random.randint(0, max_start + 1)], dtype=np.int32)
+            return np.array([np.random.randint(start_low, start_high + 1)], dtype=np.int32)
 
         eval_mode = self.clip_eval_mode if mode is None else str(mode).strip().lower()
         if eval_mode == "all":
             return np.arange(max_start + 1, dtype=np.int32)
         if eval_mode != "center":
             raise ValueError(f"Unsupported clip eval mode: {eval_mode}")
-        return np.array([max_start // 2], dtype=np.int32)
+        return np.array([(start_low + start_high) // 2], dtype=np.int32)
 
     def _clip_indices_from_start(self, start, total_video_frames):
         raw_indices = int(start) + self.clip_period * np.arange(self.num_frames, dtype=np.int32)
@@ -144,9 +156,14 @@ class EchoDataset(Dataset):
         return self._frames_to_tensor(sampled_frames), sampled_indices
 
     def load_video(self, path, ed_original=-1, es_original=-1):
-        del ed_original, es_original
         frames_array = self._read_video_frames(path)
-        start = self._clip_start_indices(len(frames_array), mode="center" if self.split != "TRAIN" else None)[0]
+        start = self._clip_start_indices(
+            len(frames_array),
+            mode="center" if self.split != "TRAIN" else None,
+            ed_original=ed_original,
+            es_original=es_original,
+            contain_events=True,
+        )[0]
         return self._sample_clip_from_frames(frames_array, start)
 
     def load_video_clips(self, path, mode=None):

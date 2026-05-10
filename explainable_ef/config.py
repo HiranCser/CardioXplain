@@ -9,30 +9,32 @@ DATA_DIR = '/datasets/efnet1/a4c-video-dir'  # Override for absolute path if nee
 
 # Model configuration
 BATCH_SIZE = 20
-NUM_FRAMES = 96  # VolumeTracings.csv provides only two traced frames per video, so denser temporal sampling improves ED/ES localization
+NUM_FRAMES = 64  # Smaller temporal search space improves ED/ES localization stability
 IMAGE_SIZE = 112
 MAX_VIDEOS = None  # None = use all videos
-PHASE_LOSS_WEIGHT = 0.5  # Weight of phase index loss relative to EF regression loss
+PHASE_LOSS_WEIGHT = 1.5  # Weight of phase index loss relative to EF regression loss
 PHASE_LABEL_SMOOTHING = 0.0  # Label smoothing for hard CE on ED/ES temporal indices
 PHASE_ONLY = False  # If True, disable EF loss and optimize only phase detection
+PHASE_ONLY_WARMUP_EPOCHS = 0  # Joint mode can temporarily disable EF loss for phase localization warmup
 
 # Phase training stabilizers
 PHASE_BACKBONE_FREEZE_EPOCHS = 5  # Freeze stage1 backbone for early phase-only warmup
 BACKBONE_LR_MULT = 0.2  # Backbone LR = LEARNING_RATE * BACKBONE_LR_MULT
-PHASE_SOFT_SIGMA = 1.5  # >0 enables soft temporal targets (Gaussian around GT index)
-PHASE_SOFT_RADIUS = 4  # Optional radius for soft target support; <=0 means no clipping
-PHASE_HARD_INDEX_WEIGHT = 0.5  # Mix hard CE with soft index loss when soft targets are enabled
-PHASE_FRAME_CE_WEIGHT = 0.35  # Mix ratio for frame-wise CE in phase loss
-PHASE_FRAME_RADIUS = 2  # Radius around ED/ES used for frame-wise supervision
-PHASE_ATTN_ALIGN_WEIGHT = 0.35  # KL alignment weight for Stage2 temporal attention around ED/ES
-PHASE_ATTN_ALIGN_SIGMA = 2.0  # Gaussian sigma for attention alignment targets
-PHASE_ATTN_ALIGN_RADIUS = 5  # Optional support radius for attention alignment targets
-PHASE_ATTN_INDEX_WEIGHT = 0.25  # Direct supervision on Stage2 attention head expected ED/ES indices
-PHASE_ATTN_ORDER_WEIGHT = 0.08  # Encourage ED attention to remain before ES attention
-PHASE_ATTN_MIN_GAP = 2  # Minimum frame gap enforced between ED and ES attention expectations
-PHASE_PAIR_INDEX_WEIGHT = 0.18  # Direct Stage3 ED/ES expectation supervision using the same score curves as inference
-PHASE_PAIR_ORDER_WEIGHT = 0.08  # Encourage Stage3 ES expectation to remain after ED expectation
-PHASE_PAIR_MIN_GAP = 2  # Minimum frame gap enforced between Stage3 ED and ES expectations
+PHASE_SOFT_SIGMA = 3.0  # >0 enables soft temporal targets (Gaussian around GT index)
+PHASE_SOFT_RADIUS = 9  # Optional radius for soft target support; <=0 means no clipping
+PHASE_HARD_INDEX_WEIGHT = 0.05  # Keep hard CE as a light anchor; soft KL carries localization
+PHASE_FRAME_CE_WEIGHT = 0.15  # Mix ratio for frame-wise CE in phase loss
+PHASE_FRAME_RADIUS = 3  # Radius around ED/ES used for frame-wise supervision
+PHASE_ATTN_ALIGN_WEIGHT = 0.70  # KL alignment weight for Stage2 temporal attention around ED/ES
+PHASE_ATTN_ALIGN_SIGMA = 3.0  # Gaussian sigma for attention alignment targets
+PHASE_ATTN_ALIGN_RADIUS = 9  # Optional support radius for attention alignment targets
+PHASE_ATTN_INDEX_WEIGHT = 0.40  # Direct supervision on Stage2 attention head expected ED/ES indices
+PHASE_ATTN_ORDER_WEIGHT = 0.20  # Encourage ED attention to remain before ES attention
+PHASE_ATTN_ENTROPY_WEIGHT = 0.03  # Penalize diffuse Stage2 attention curves
+PHASE_ATTN_MIN_GAP = 15  # Minimum frame gap enforced between ED and ES attention expectations
+PHASE_PAIR_INDEX_WEIGHT = 0.40  # Direct Stage3 ED/ES expectation supervision using the same score curves as inference
+PHASE_PAIR_ORDER_WEIGHT = 0.25  # Encourage Stage3 ES expectation to remain after ED expectation
+PHASE_PAIR_MIN_GAP = 15  # Minimum frame gap enforced between Stage3 ED and ES expectations
 PHASE_UNFREEZE_LR_MULT = 0.5  # Multiply LR when unfreezing stage1 in phase-only mode
 CLIP_PERIOD = 1  # EchoNet-style fixed clip sampling stride
 CLIP_EVAL_MODE = "center"  # "center" for single-clip validation/test, "all" for callers that aggregate clips

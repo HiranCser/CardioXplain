@@ -107,6 +107,8 @@ def main():
         ]
         if args.stage123_epochs is not None:
             cmd += ["--epochs", str(args.stage123_epochs)]
+        if args.data_dir is not None:
+            cmd += ["--data-dir", str(args.data_dir)]
         if args.stage123_learning_rate is not None:
             cmd += ["--learning-rate", str(args.stage123_learning_rate)]
         if args.stage123_batch_size is not None:

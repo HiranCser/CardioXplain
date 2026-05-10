@@ -66,7 +66,7 @@ class Stage3PhaseDetector(nn.Module):
     @staticmethod
     def predict_indices(
         phase_logits,
-        min_gap=2,
+        min_gap=15,
         max_gap_ratio=0.65,
         smooth_kernel=5,
     ):
@@ -92,7 +92,7 @@ class Stage3PhaseDetector(nn.Module):
             pred_es = torch.argmax(es_scores, dim=1)
             return pred_ed, pred_es
 
-        min_gap = int(max(1, min_gap))
+        min_gap = int(max(1, min(min_gap, num_frames - 1)))
         max_gap = int(round(float(max_gap_ratio) * num_frames)) if max_gap_ratio is not None else (num_frames - 1)
         max_gap = int(max(min_gap, min(num_frames - 1, max_gap)))
 
