@@ -203,3 +203,7 @@ explainable_ef/validation/outputs/homogenization/frame_preprocess_balanced.json
 best_model_stage123_96f_homog.pth
 best_stage4_segmentation_homog.pth
 explainable_ef/best_phase_detector.pth
+frame_homogenization.json
+logs/10May_Phase_2/Stage12345_Logs.txt
+dynamic
+dynamic

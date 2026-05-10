@@ -687,8 +687,16 @@ def evaluate(model, loader, amp_enabled):
     total_mae = 0.0
     total_mse = 0.0
     total_phase_loss = 0.0
+    
+    # Phase prediction metrics
+    total_ed_acc = 0.0
+    total_es_acc = 0.0
+    total_joint_acc = 0.0
+    total_ed_mae_frames = 0.0
+    total_es_mae_frames = 0.0
 
     phase_only = is_phase_only_mode()
+    phase_acc_threshold = int(getattr(config, "PHASE_ACC_THRESHOLD_FRAMES", 4))
 
     with torch.no_grad():
         for videos, efs, ed_idx, es_idx in loader:
@@ -721,6 +729,22 @@ def evaluate(model, loader, amp_enabled):
 
             # Extract ED/ES from phase predictions
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_pred)
+            
+            # Compute ED/ES accuracy metrics
+            ed_mae = torch.abs(pred_ed_idx.float() - ed_idx.float())
+            es_mae = torch.abs(pred_es_idx.float() - es_idx.float())
+            
+            total_ed_mae_frames += ed_mae.mean().item() * batch_size
+            total_es_mae_frames += es_mae.mean().item() * batch_size
+            
+            # Accuracy: within threshold frames
+            ed_acc_batch = (ed_mae <= phase_acc_threshold).float().mean()
+            es_acc_batch = (es_mae <= phase_acc_threshold).float().mean()
+            joint_acc_batch = ((ed_mae <= phase_acc_threshold) & (es_mae <= phase_acc_threshold)).float().mean()
+            
+            total_ed_acc += ed_acc_batch.item() * batch_size
+            total_es_acc += es_acc_batch.item() * batch_size
+            total_joint_acc += joint_acc_batch.item() * batch_size
 
             total_samples += batch_size
 
@@ -731,6 +755,11 @@ def evaluate(model, loader, amp_enabled):
         "ef_mae": (total_mae / total_samples) if not phase_only else float("nan"),
         "ef_rmse": ((total_mse / total_samples) ** 0.5) if not phase_only else float("nan"),
         "phase_mse": total_phase_loss / total_samples,
+        "ed_acc": total_ed_acc / total_samples,
+        "es_acc": total_es_acc / total_samples,
+        "joint_acc": total_joint_acc / total_samples,
+        "ed_mae_frames": total_ed_mae_frames / total_samples,
+        "es_mae_frames": total_es_mae_frames / total_samples,
     }
     return metrics
 
