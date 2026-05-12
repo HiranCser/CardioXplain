@@ -9,6 +9,7 @@ class Stage2TemporalModel(nn.Module):
     def __init__(self, num_frames=32, feature_dim=512, hidden_dim=256, dropout=0.1):
         super().__init__()
         self.num_frames = num_frames
+        self.output_dim = feature_dim * 2
         self.temporal_pos_embed = nn.Parameter(torch.zeros(1, num_frames, feature_dim))
 
         self.temporal_context3 = nn.Sequential(
@@ -49,6 +50,7 @@ class Stage2TemporalModel(nn.Module):
 
     def forward(self, stage1_features):
         # stage1_features: (B, 512, T')
+
         temporal_feats = F.interpolate(
             stage1_features,
             size=self.num_frames,
@@ -56,25 +58,51 @@ class Stage2TemporalModel(nn.Module):
             align_corners=False,
         )
 
+        # Multi-scale temporal context
         context3 = self.temporal_context3(temporal_feats)
         context5 = self.temporal_context5(temporal_feats)
+
         context = self.temporal_mix(torch.cat([temporal_feats, context3, context5], dim=1))
 
+        # Convert:
         # (B, 512, T) -> (B, T, 512)
         temporal_feats = temporal_feats.permute(0, 2, 1)
         context = context.permute(0, 2, 1)
+
         temporal_feats = self.temporal_norm(temporal_feats + context + self.temporal_pos_embed)
+
+        # ============================================================
+        # ED / ES Attention
+        # ============================================================
 
         temp_ed = self.attn_temperature_ed.clamp(0.25, 4.0)
         temp_es = self.attn_temperature_es.clamp(0.25, 4.0)
+
+        # Attention logits
         attn_scores_ed = self.temporal_attention(temporal_feats) / temp_ed
         attn_scores_es = self.temporal_attention_es(temporal_feats) / temp_es
+
+        # Normalize across temporal dimension
         attn_weights_ed = torch.softmax(attn_scores_ed, dim=1)
         attn_weights_es = torch.softmax(attn_scores_es, dim=1)
+
+        # Pair attention for diagnostics/losses
         attn_weights_pair = torch.cat([attn_weights_ed, attn_weights_es], dim=-1)
 
-        # Pool with mean attention so EF uses a single fused temporal context.
-        attn_weights_mean = attn_weights_pair.mean(dim=-1, keepdim=True)
-        weighted_feats = temporal_feats * attn_weights_mean
-        pooled_feats = weighted_feats.sum(dim=1)
-        return temporal_feats, pooled_feats, attn_weights_pair
+        # ============================================================
+        # Separate ED / ES pooling
+        # ============================================================
+
+        weighted_feats_ed = temporal_feats * attn_weights_ed
+        weighted_feats_es = temporal_feats * attn_weights_es
+
+        pooled_ed = weighted_feats_ed.sum(dim=1)
+        pooled_es = weighted_feats_es.sum(dim=1)
+
+        # ============================================================
+        # Final fused representation
+        # ============================================================
+
+        pooled_feats = torch.cat([pooled_ed, pooled_es], dim=-1)
+
+        return  temporal_feats, pooled_feats,  attn_weights_pair

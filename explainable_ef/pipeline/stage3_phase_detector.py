@@ -12,7 +12,7 @@ class Stage3PhaseDetector(nn.Module):
     - channels 3..4: unit-normalized sin/cos cardiac phase embedding
     """
 
-    def __init__(self, feature_dim=512, dropout=0.1, hidden_dim=256):
+    def __init__(self, feature_dim=1024, dropout=0.1, hidden_dim=256):
         super().__init__()
 
         self.temporal_conv3 = nn.Sequential(

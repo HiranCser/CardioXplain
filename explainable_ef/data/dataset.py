@@ -23,7 +23,7 @@ class EchoDataset(Dataset):
         transform=None,
         normalize_input=True,
         clip_period=1,
-        clip_eval_mode="center",
+        clip_eval_mode="all",
     ):
         self.data_dir = data_dir
         self.num_frames = int(num_frames)

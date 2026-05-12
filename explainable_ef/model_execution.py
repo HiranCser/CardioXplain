@@ -1352,6 +1352,17 @@ def main(argv=None):
     else:
         logger.info("Test EF metrics: N/A (phase-only mode)")
     logger.info("Test Phase loss: %.6f", test_metrics["phase_mse"])
+    logger.info(
+        "Test Phase Acc: ED %.2f%% | ES %.2f%% | Joint %.2f%%",
+        test_metrics["ed_acc"] * 100,
+        test_metrics["es_acc"] * 100,
+        test_metrics["joint_acc"] * 100,
+    )
+    logger.info(
+        "Test ED/ES MAE(fr): %.3f / %.3f",
+        test_metrics["ed_mae_frames"],
+        test_metrics["es_mae_frames"],
+    )
     logger.info("Test duration: %.2fs", test_duration)
     logger.info("=" * 80)
 
