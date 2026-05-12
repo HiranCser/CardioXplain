@@ -13,7 +13,7 @@ class EchoPipeline(nn.Module):
         super().__init__()
         self.stage1 = Stage1FeatureExtractor()
         self.stage2 = Stage2TemporalModel(num_frames=num_frames, feature_dim=feature_dim)
-        self.stage3 = Stage3PhaseDetector(feature_dim=feature_dim)  # Continuous phase regression
+        self.stage3 = Stage3PhaseDetector(feature_dim=feature_dim)
         self.stage45 = Stage45Pipeline()
         self.ef_regressor = nn.Linear(feature_dim, 1)
 
@@ -24,7 +24,7 @@ class EchoPipeline(nn.Module):
         """
         stage1_features = self.stage1(x)
         temporal_features, pooled_features, attention = self.stage2(stage1_features)
-        phase_pred = self.stage3(temporal_features)  # (B, T) continuous phase values
+        phase_pred = self.stage3(temporal_features)
         pred_ed_idx, pred_es_idx = self.stage3.predict_indices(phase_pred)
 
         ef = self.ef_regressor(pooled_features).squeeze(1)

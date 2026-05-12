@@ -101,6 +101,29 @@ def _safe_entropy(weights):
     return float(-(w * np.log(w)).sum() / np.log(w.shape[0]))
 
 
+def _phase_confidences(phase_output_0, pred_ed_idx, pred_es_idx):
+    """Return ED/ES temporal confidence for current and legacy phase outputs."""
+    if phase_output_0.ndim == 2 and phase_output_0.shape[-1] >= 3:
+        ed_time_prob = torch.softmax(phase_output_0[:, 1], dim=0).detach().cpu().numpy()
+        es_time_prob = torch.softmax(phase_output_0[:, 2], dim=0).detach().cpu().numpy()
+    elif phase_output_0.ndim == 1:
+        phase = phase_output_0.detach().float()
+        ed_score = -torch.minimum(torch.abs(phase), torch.abs(phase - 1.0))
+        es_score = -torch.abs(phase - 0.5)
+        ed_time_prob = torch.softmax(ed_score, dim=0).cpu().numpy()
+        es_time_prob = torch.softmax(es_score, dim=0).cpu().numpy()
+    else:
+        flat = phase_output_0.detach().float().reshape(phase_output_0.shape[0], -1)
+        score = flat.mean(dim=1)
+        prob = torch.softmax(score, dim=0).cpu().numpy()
+        ed_time_prob = prob
+        es_time_prob = prob
+
+    pred_ed_idx = int(np.clip(pred_ed_idx, 0, len(ed_time_prob) - 1))
+    pred_es_idx = int(np.clip(pred_es_idx, 0, len(es_time_prob) - 1))
+    return float(ed_time_prob[pred_ed_idx]), float(es_time_prob[pred_es_idx])
+
+
 def _get_video_dims_map(data_dir):
     filelist_path = os.path.join(data_dir, "FileList.csv")
     df = pd.read_csv(filelist_path)
@@ -260,11 +283,7 @@ def _collect_split_rows(split, args, model, device, area_lookup):
                     pred_ed_orig = int(sampled_indices[pred_ed_idx])
                     pred_es_orig = int(sampled_indices[pred_es_idx])
 
-                    phase_logits_0 = phase_logits[local_idx]
-                    ed_time_prob = torch.softmax(phase_logits_0[:, 1], dim=0).detach().cpu().numpy()
-                    es_time_prob = torch.softmax(phase_logits_0[:, 2], dim=0).detach().cpu().numpy()
-                    ed_conf = float(ed_time_prob[pred_ed_idx])
-                    es_conf = float(es_time_prob[pred_es_idx])
+                    ed_conf, es_conf = _phase_confidences(phase_logits[local_idx], pred_ed_idx, pred_es_idx)
                     phase_candidates.append(
                         {
                             "score": ed_conf + es_conf,

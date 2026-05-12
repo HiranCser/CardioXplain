@@ -5,21 +5,16 @@ import torch.nn.functional as F
 
 class Stage3PhaseDetector(nn.Module):
     """
-    Stage 3: Predict continuous cardiac phase [0, 1] for each frame.
-    
-    Instead of classifying ED/ES directly, we predict a continuous cardiac phase:
-    - ED (End-Diastole, maximum LV cavity) → phase ≈ 0.0
-    - ES (End-Systole, minimum LV cavity) → phase ≈ 0.5
-    - Full cycle: 0.0 → 0.5 → 1.0 (back to ED)
-    
-    This treats the cardiac cycle as a continuous progression, making it easier
-    for the network to learn smooth temporal dynamics.
+    Stage 3: predict ED/ES frame scores plus a cyclic phase embedding.
+
+    Output layout is (B, T, 5):
+    - channels 0..2: background, ED, ES logits
+    - channels 3..4: unit-normalized sin/cos cardiac phase embedding
     """
 
     def __init__(self, feature_dim=512, dropout=0.1, hidden_dim=256):
         super().__init__()
 
-        # Multi-scale temporal context before recurrent modeling.
         self.temporal_conv3 = nn.Sequential(
             nn.Conv1d(feature_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm1d(hidden_dim),
@@ -40,34 +35,38 @@ class Stage3PhaseDetector(nn.Module):
             bidirectional=True,
         )
 
-        # Continuous phase regression head (single output per frame)
-        self.phase_regressor = nn.Sequential(
+        self.phase_logits = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid(),  # Output in [0, 1]
+            nn.Linear(hidden_dim, 3),
+        )
+        self.phase_vector = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
         )
 
     def forward(self, temporal_features):
         # temporal_features: (B, T, C)
-        x = temporal_features.transpose(1, 2)  # (B, C, T)
+        x = temporal_features.transpose(1, 2)
 
         feat3 = self.temporal_conv3(x)
         feat5 = self.temporal_conv5(x)
         feat = torch.cat([feat3, feat5], dim=1)
         feat = self.temporal_dropout(feat)
 
-        feat = feat.transpose(1, 2)  # (B, T, 2H)
+        feat = feat.transpose(1, 2)
         feat, _ = self.temporal_gru(feat)
 
-        # (B, T, 2H) -> (B, T, 1) -> (B, T)
-        phase_pred = self.phase_regressor(feat).squeeze(-1)
-        return phase_pred
+        logits = self.phase_logits(feat)
+        phase_vec = F.normalize(self.phase_vector(feat), p=2, dim=-1, eps=1e-6)
+        return torch.cat([logits, phase_vec], dim=-1)
 
     @staticmethod
     def _smooth_scores(scores, kernel_size=5):
-        """Apply temporal smoothing to phase predictions."""
+        """Apply temporal moving-average smoothing."""
         kernel_size = int(max(1, kernel_size))
         if kernel_size <= 1:
             return scores
@@ -85,63 +84,63 @@ class Stage3PhaseDetector(nn.Module):
         smooth_kernel=5,
     ):
         """
-        Extract ED and ES frame indices from continuous phase predictions.
-        
-        ED (phase ≈ 0) is identified as the frame closest to phase 0 or 1.
-        ES (phase ≈ 0.5) is identified as the frame closest to phase 0.5.
-        
-        Args:
-            phase_predictions: (B, T) tensor of phase values in [0, 1]
-            min_gap: Minimum frame gap required between ED and ES
-            max_gap_ratio: Maximum frame gap as ratio of clip length
-            smooth_kernel: Kernel size for temporal smoothing
-        
-        Returns:
-            pred_ed, pred_es: (B,) tensors of predicted frame indices
-        """
-        if phase_predictions.ndim != 2:
-            raise ValueError("phase_predictions must have shape (B, T)")
+        Extract ED and ES frame indices.
 
-        phase_pred = Stage3PhaseDetector._smooth_scores(phase_predictions, kernel_size=smooth_kernel)
-        
-        batch_size, num_frames = phase_pred.shape
+        Supports current tensors shaped (B, T, C>=3), where channels 1 and 2 are
+        ED/ES logits, and legacy scalar continuous phase tensors shaped (B, T).
+        """
+        if phase_predictions.ndim == 3 and phase_predictions.shape[-1] >= 3:
+            scores = phase_predictions[:, :, :3].float()
+            ed_scores = Stage3PhaseDetector._smooth_scores(scores[:, :, 1], kernel_size=smooth_kernel)
+            es_scores = Stage3PhaseDetector._smooth_scores(scores[:, :, 2], kernel_size=smooth_kernel)
+            pred_ed = torch.argmax(ed_scores, dim=1)
+            pred_es = torch.argmax(es_scores, dim=1)
+            batch_size, num_frames = ed_scores.shape
+            dist_to_es = None
+        elif phase_predictions.ndim == 2:
+            phase_pred = Stage3PhaseDetector._smooth_scores(phase_predictions.float(), kernel_size=smooth_kernel)
+            batch_size, num_frames = phase_pred.shape
+            if num_frames <= 1:
+                pred_ed = torch.zeros(batch_size, dtype=torch.long, device=phase_pred.device)
+                pred_es = torch.zeros(batch_size, dtype=torch.long, device=phase_pred.device)
+                return pred_ed, pred_es
+
+            dist_to_ed = torch.min(torch.abs(phase_pred), torch.abs(phase_pred - 1.0))
+            dist_to_es = torch.abs(phase_pred - 0.5)
+            pred_ed = torch.argmin(dist_to_ed, dim=1)
+            pred_es = torch.argmin(dist_to_es, dim=1)
+            ed_scores = None
+            es_scores = None
+        else:
+            raise ValueError("phase_predictions must have shape (B, T) or (B, T, C)")
+
         if num_frames <= 1:
-            pred_ed = torch.zeros(batch_size, dtype=torch.long, device=phase_pred.device)
-            pred_es = torch.zeros(batch_size, dtype=torch.long, device=phase_pred.device)
+            device = phase_predictions.device
+            pred_ed = torch.zeros(batch_size, dtype=torch.long, device=device)
+            pred_es = torch.zeros(batch_size, dtype=torch.long, device=device)
             return pred_ed, pred_es
 
-        # ED: find frame closest to phase 0 (or 1 if that's closer)
-        # Distance to ED: min(|phase - 0|, |phase - 1|)
-        dist_to_ed = torch.min(torch.abs(phase_pred), torch.abs(phase_pred - 1.0))
-        pred_ed = torch.argmin(dist_to_ed, dim=1)
-        
-        # ES: find frame closest to phase 0.5
-        dist_to_es = torch.abs(phase_pred - 0.5)
-        pred_es = torch.argmin(dist_to_es, dim=1)
-
-        # Enforce gap constraints
         min_gap = int(max(1, min(min_gap, num_frames - 1)))
         max_gap = int(round(float(max_gap_ratio) * num_frames)) if max_gap_ratio is not None else (num_frames - 1)
         max_gap = int(max(min_gap, min(num_frames - 1, max_gap)))
 
-        # Ensure ES is after ED with proper gap
         for b in range(batch_size):
             ed_i = int(pred_ed[b].item())
             es_i = int(pred_es[b].item())
             gap = abs(es_i - ed_i)
-            
+
             if gap < min_gap or gap > max_gap:
-                # Find the best ES within the valid gap range
                 valid_start = min(num_frames - 1, ed_i + min_gap)
                 valid_end = min(num_frames - 1, ed_i + max_gap)
-                
+
                 if valid_end >= valid_start:
-                    # Find ES within valid range
-                    local_es = dist_to_es[b, valid_start:valid_end + 1]
-                    pred_es[b] = valid_start + torch.argmin(local_es)
-                else:
-                    # Fallback: just ensure ES != ED
-                    if es_i == ed_i:
-                        pred_es[b] = min(num_frames - 1, ed_i + 1)
+                    if es_scores is not None:
+                        local_es = es_scores[b, valid_start : valid_end + 1]
+                        pred_es[b] = valid_start + torch.argmax(local_es)
+                    else:
+                        local_es = dist_to_es[b, valid_start : valid_end + 1]
+                        pred_es[b] = valid_start + torch.argmin(local_es)
+                elif es_i == ed_i:
+                    pred_es[b] = min(num_frames - 1, ed_i + 1)
 
         return pred_ed, pred_es

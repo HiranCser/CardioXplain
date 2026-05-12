@@ -3,7 +3,7 @@ import os
 
 # Data configuration
 # Points to ../dynamic/a4c-video-dir (from cx/explainable_ef to cx/dynamic)
-# DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
+#DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "dynamic", "a4c-video-dir")
 DATA_DIR = '/datasets/efnet1/a4c-video-dir'  # Override for absolute path if needed
 
 
@@ -11,7 +11,7 @@ DATA_DIR = '/datasets/efnet1/a4c-video-dir'  # Override for absolute path if nee
 BATCH_SIZE = 20
 NUM_FRAMES = 64  # Smaller temporal search space improves ED/ES localization stability
 IMAGE_SIZE = 112
-MAX_VIDEOS = None  # None = use all videos
+MAX_VIDEOS = None  # LIMITED TO 10 VIDEOS FOR TESTING
 
 # Continuous cardiac phase prediction (new approach)
 # Instead of classifying ED/ES directly, we predict continuous phase ∈ [0, 1]:
@@ -43,13 +43,13 @@ PHASE_PAIR_ORDER_WEIGHT = 0.0  # Not used for regression
 PHASE_PAIR_MIN_GAP = 15        # Used for ED/ES extraction from phase
 PHASE_UNFREEZE_LR_MULT = 0.5   # Not used for regression
 CLIP_PERIOD = 1  # EchoNet-style fixed clip sampling stride
-CLIP_EVAL_MODE = "center"  # "center" for single-clip validation/test, "all" for callers that aggregate clips
+CLIP_EVAL_MODE = "all"  # "center" for single-clip validation/test, "all" for callers that aggregate clips
 
 # Training configuration
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
 MAX_GRAD_NORM = 1.0  # 0 disables gradient clipping
-EPOCHS = 50
+EPOCHS = 50  # LIMITED TO 1 EPOCH FOR TESTING
 TOLERANCE = 1
 PATIENCE = 5
 VALIDATE_EVERY = 1  # Run validation every N epochs

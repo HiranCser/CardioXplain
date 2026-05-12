@@ -166,6 +166,14 @@ class EchoDataset(Dataset):
         )[0]
         return self._sample_clip_from_frames(frames_array, start)
 
+    @staticmethod
+    def _original_to_clip_index(original_frame, sampled_indices):
+        """Map an original video frame id to the nearest sampled clip index."""
+        sampled_indices = np.asarray(sampled_indices, dtype=np.int32)
+        if sampled_indices.size == 0:
+            return 0
+        return int(np.argmin(np.abs(sampled_indices - int(original_frame))))
+
     def load_video_clips(self, path, mode=None):
         frames_array = self._read_video_frames(path)
         starts = self._clip_start_indices(len(frames_array), mode=mode)
@@ -196,8 +204,7 @@ class EchoDataset(Dataset):
             es_original=es_original,
         )
 
-        # Convert ED/ES indices to tensors
-        ed_idx = torch.tensor(ed_original, dtype=torch.long)
-        es_idx = torch.tensor(es_original, dtype=torch.long)
+        ed_idx = torch.tensor(self._original_to_clip_index(ed_original, sampled_indices), dtype=torch.long)
+        es_idx = torch.tensor(self._original_to_clip_index(es_original, sampled_indices), dtype=torch.long)
 
         return video, ef, ed_idx, es_idx

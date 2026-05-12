@@ -527,6 +527,30 @@ def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
     return targets
 
 
+def build_cyclic_phase_targets(ed_idx, es_idx, num_frames):
+    """Build per-frame sin/cos phase targets with ED=0 and ES=pi."""
+    positions = torch.arange(num_frames, device=ed_idx.device, dtype=torch.float32).unsqueeze(0)
+    ed = ed_idx.to(dtype=torch.float32).unsqueeze(1)
+    es = es_idx.to(dtype=torch.float32).unsqueeze(1)
+    half_cycle = torch.abs(es - ed).clamp_min(1.0)
+    raw_phase = (positions - ed) / (2.0 * half_cycle)
+    phase = torch.remainder(raw_phase, 1.0)
+    theta = phase * (2.0 * math.pi)
+    return torch.stack([torch.sin(theta), torch.cos(theta)], dim=-1)
+
+
+def phase_logits_from_output(phase_pred):
+    if phase_pred.ndim == 3 and phase_pred.shape[-1] >= 3:
+        return phase_pred[:, :, :3]
+    return None
+
+
+def phase_vector_from_output(phase_pred):
+    if phase_pred.ndim == 3 and phase_pred.shape[-1] >= 5:
+        return phase_pred[:, :, 3:5]
+    return None
+
+
 def _attention_heads_and_summary(attention):
     """Normalize attention to (B, T, H) heads plus a single summary curve (B, T)."""
     if attention is None:
@@ -624,6 +648,8 @@ def compute_attention_entropy_loss(attention):
 
 def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx):
     """Regularize Stage3 ED/ES expectations directly in the same score space used at inference."""
+    if phase_logits.ndim == 3 and phase_logits.shape[-1] > 3:
+        phase_logits = phase_logits[:, :, :3]
     ed_logits = phase_logits[:, :, 1] - phase_logits[:, :, 0]
     es_logits = phase_logits[:, :, 2] - phase_logits[:, :, 0]
 
@@ -655,16 +681,18 @@ def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx):
 
 def compute_continuous_phase_loss(phase_pred, phase_labels, phase_regression_loss_fn):
     """
-    Compute MSE loss for continuous phase prediction.
-    
-    Args:
-        phase_pred: (B, T) predicted phase values in [0, 1]
-        phase_labels: (B, T) ground truth phase labels in [0, 1]
-        phase_regression_loss_fn: MSELoss function
-    
-    Returns:
-        phase_loss: scalar loss value
+    Compute phase loss.
+
+    Current models emit ED/ES logits plus sin/cos vectors. Legacy scalar phase
+    checkpoints still use MSE against scalar labels.
     """
+    logits = phase_logits_from_output(phase_pred)
+    if logits is not None:
+        return F.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]),
+            phase_labels.long().reshape(-1),
+            label_smoothing=float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)),
+        )
     return phase_regression_loss_fn(phase_pred, phase_labels)
 
 
@@ -694,6 +722,16 @@ def evaluate(model, loader, amp_enabled):
     total_joint_acc = 0.0
     total_ed_mae_frames = 0.0
     total_es_mae_frames = 0.0
+    total_s1_tokens = 0.0
+    total_s1_norm = 0.0
+    total_s1_std = 0.0
+    total_s2_tokens = 0.0
+    total_s2_entropy = 0.0
+    total_s2_peak = 0.0
+    total_s2_peak_mae = 0.0
+    total_s2_feat_dist = 0.0
+    total_s3_ed_ce = 0.0
+    total_s3_es_ce = 0.0
 
     phase_only = is_phase_only_mode()
     phase_acc_threshold = int(getattr(config, "PHASE_ACC_THRESHOLD_FRAMES", 4))
@@ -719,15 +757,21 @@ def evaluate(model, loader, amp_enabled):
                 total_mae += mae.item() * batch_size
                 total_mse += mse.item() * batch_size
 
-            # Compute phase labels from ED/ES indices for num_frames
             num_frames = videos.size(2)  # videos shape: (batch, channels, frames, height, width)
-            phase_labels = build_frame_phase_targets(ed_idx, es_idx, num_frames, radius=1).float()
+            phase_labels = build_frame_phase_targets(
+                ed_idx,
+                es_idx,
+                num_frames,
+                radius=max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1))),
+            )
             
-            # Compute phase regression loss
-            phase_mse = F.mse_loss(phase_pred, phase_labels)
-            total_phase_loss += phase_mse.item() * batch_size
+            phase_loss = compute_continuous_phase_loss(phase_pred, phase_labels, nn.MSELoss())
+            phase_vec = phase_vector_from_output(phase_pred)
+            if phase_vec is not None:
+                cyclic_targets = build_cyclic_phase_targets(ed_idx, es_idx, num_frames)
+                phase_loss = phase_loss + F.smooth_l1_loss(phase_vec, cyclic_targets)
+            total_phase_loss += phase_loss.item() * batch_size
 
-            # Extract ED/ES from phase predictions
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_pred)
             
             # Compute ED/ES accuracy metrics
@@ -746,6 +790,41 @@ def evaluate(model, loader, amp_enabled):
             total_es_acc += es_acc_batch.item() * batch_size
             total_joint_acc += joint_acc_batch.item() * batch_size
 
+            stage1_features = stage_outputs.get("stage1_features")
+            temporal_features = stage_outputs.get("stage2_temporal_features")
+            if stage1_features is not None:
+                total_s1_tokens += float(stage1_features.shape[-1]) * batch_size
+                total_s1_norm += stage1_features.float().norm(dim=1).mean().item() * batch_size
+                total_s1_std += stage1_features.float().std(dim=-1).mean().item() * batch_size
+
+            attn_heads, attn_summary = _attention_heads_and_summary(attention)
+            if attn_heads is not None:
+                attn_safe = attn_heads.clamp_min(1e-8)
+                entropy = (-(attn_safe * torch.log(attn_safe)).sum(dim=1) / math.log(attn_heads.shape[1])).mean()
+                total_s2_entropy += entropy.item() * batch_size
+                total_s2_peak += attn_heads.amax(dim=1).mean().item() * batch_size
+                if attn_heads.shape[-1] >= 2:
+                    peak_ed = torch.argmax(attn_heads[:, :, 0], dim=1)
+                    peak_es = torch.argmax(attn_heads[:, :, 1], dim=1)
+                    peak_mae = 0.5 * (
+                        torch.abs(peak_ed.float() - ed_idx.float()).mean() +
+                        torch.abs(peak_es.float() - es_idx.float()).mean()
+                    )
+                    total_s2_peak_mae += peak_mae.item() * batch_size
+
+            if temporal_features is not None:
+                total_s2_tokens += float(temporal_features.shape[1]) * batch_size
+                gather_ed = ed_idx.clamp(0, temporal_features.shape[1] - 1).view(-1, 1, 1).expand(-1, 1, temporal_features.shape[2])
+                gather_es = es_idx.clamp(0, temporal_features.shape[1] - 1).view(-1, 1, 1).expand(-1, 1, temporal_features.shape[2])
+                ed_feat = temporal_features.gather(1, gather_ed).squeeze(1)
+                es_feat = temporal_features.gather(1, gather_es).squeeze(1)
+                total_s2_feat_dist += torch.norm(ed_feat - es_feat, dim=1).mean().item() * batch_size
+
+            logits = phase_logits_from_output(phase_pred)
+            if logits is not None:
+                total_s3_ed_ce += F.cross_entropy(logits[:, :, 1], ed_idx.clamp(0, logits.shape[1] - 1)).item() * batch_size
+                total_s3_es_ce += F.cross_entropy(logits[:, :, 2], es_idx.clamp(0, logits.shape[1] - 1)).item() * batch_size
+
             total_samples += batch_size
 
     if total_samples == 0:
@@ -761,16 +840,16 @@ def evaluate(model, loader, amp_enabled):
         "ed_mae_frames": total_ed_mae_frames / total_samples,
         "es_mae_frames": total_es_mae_frames / total_samples,
         # Stage-specific diagnostic metrics (set to defaults if not available)
-        "stage1_temporal_tokens": 0.0,
-        "stage1_feature_norm": 0.0,
-        "stage1_temporal_std": 0.0,
-        "stage2_temporal_tokens": 0.0,
-        "stage2_attention_entropy": 0.0,
-        "stage2_attention_peak": 0.0,
-        "stage2_peak_to_event_mae_frames": 0.0,
-        "stage2_ed_es_feature_distance": 0.0,
-        "stage3_ed_index_ce": 0.0,
-        "stage3_es_index_ce": 0.0,
+        "stage1_temporal_tokens": total_s1_tokens / total_samples,
+        "stage1_feature_norm": total_s1_norm / total_samples,
+        "stage1_temporal_std": total_s1_std / total_samples,
+        "stage2_temporal_tokens": total_s2_tokens / total_samples,
+        "stage2_attention_entropy": total_s2_entropy / total_samples,
+        "stage2_attention_peak": total_s2_peak / total_samples,
+        "stage2_peak_to_event_mae_frames": total_s2_peak_mae / total_samples,
+        "stage2_ed_es_feature_distance": total_s2_feat_dist / total_samples,
+        "stage3_ed_index_ce": total_s3_ed_ce / total_samples,
+        "stage3_es_index_ce": total_s3_es_ce / total_samples,
     }
     return metrics
 
@@ -813,9 +892,13 @@ def train_one_epoch(
         batch_size = videos.size(0)
         total_samples += batch_size
 
-        # Compute phase labels from ED/ES indices for num_frames
         num_frames = videos.size(2)  # videos shape: (batch, channels, frames, height, width)
-        phase_labels = build_frame_phase_targets(ed_idx, es_idx, num_frames, radius=1).float()
+        phase_labels = build_frame_phase_targets(
+            ed_idx,
+            es_idx,
+            num_frames,
+            radius=max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1))),
+        )
 
         compute_start = time.perf_counter()
 
@@ -827,14 +910,30 @@ def train_one_epoch(
             else:
                 ef_loss = mse_loss(ef_pred, efs)
 
-            # Continuous phase regression loss
             phase_loss = compute_continuous_phase_loss(
                 phase_pred=phase_pred,
                 phase_labels=phase_labels,
                 phase_regression_loss_fn=phase_regression_loss_fn,
             )
+
+            phase_vec = phase_vector_from_output(phase_pred)
+            if phase_vec is not None:
+                cyclic_targets = build_cyclic_phase_targets(ed_idx, es_idx, num_frames)
+                phase_loss = phase_loss + F.smooth_l1_loss(phase_vec, cyclic_targets)
+
+            if attn_align_weight > 0.0:
+                phase_loss = phase_loss + attn_align_weight * compute_attention_alignment_loss(attention, ed_idx, es_idx)
+            if attn_index_weight > 0.0 or attn_order_weight > 0.0:
+                attn_index_loss, attn_order_loss = compute_attention_index_loss(attention, ed_idx, es_idx)
+                phase_loss = phase_loss + attn_index_weight * attn_index_loss + attn_order_weight * attn_order_loss
+            if attn_entropy_weight > 0.0:
+                phase_loss = phase_loss + attn_entropy_weight * compute_attention_entropy_loss(attention)
+            if phase_pair_index_weight > 0.0 or phase_pair_order_weight > 0.0:
+                phase_logits = phase_logits_from_output(phase_pred)
+                if phase_logits is not None:
+                    pair_index_loss, pair_order_loss = compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx)
+                    phase_loss = phase_loss + phase_pair_index_weight * pair_index_loss + phase_pair_order_weight * pair_order_loss
             
-            # Simplified loss: only EF and phase losses (no attention-based losses)
             loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
             loss_for_backward = loss / accumulation_steps
 
@@ -865,7 +964,7 @@ def train_one_epoch(
             # Extract ED/ES from continuous phase predictions
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_pred)
             logger.info(
-                "Epoch %d batch %d | Phase-only %s | EF loss %.4f | Phase MSE loss %.6f | Pred ED/ES (%d/%d) | Attention shape %s",
+                "Epoch %d batch %d | Phase-only %s | EF loss %.4f | Phase loss %.6f | Pred ED/ES (%d/%d) | Attention shape %s",
                 epoch_idx + 1,
                 batch_idx,
                 phase_only,
@@ -1252,7 +1351,7 @@ def main(argv=None):
         logger.info("Test EF RMSE: %.2f%%", test_metrics["ef_rmse"] * 100)
     else:
         logger.info("Test EF metrics: N/A (phase-only mode)")
-    logger.info("Test Phase MSE loss: %.6f", test_metrics["phase_mse"])
+    logger.info("Test Phase loss: %.6f", test_metrics["phase_mse"])
     logger.info("Test duration: %.2fs", test_duration)
     logger.info("=" * 80)
 
