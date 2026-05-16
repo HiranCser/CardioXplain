@@ -534,7 +534,7 @@ def build_soft_temporal_targets(indices, num_frames, device, sigma, radius):
     return weights / sums.clamp_min(1e-8)
 
 
-def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
+def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius, ed_visible=None, es_visible=None):
     """Build per-frame 3-class targets: 0=background, 1=ED neighborhood, 2=ES neighborhood."""
     positions = torch.arange(num_frames, device=ed_idx.device).unsqueeze(0)
     ed_dist = torch.abs(positions - ed_idx.unsqueeze(1))
@@ -543,6 +543,10 @@ def build_frame_phase_targets(ed_idx, es_idx, num_frames, radius):
     targets = torch.zeros((ed_idx.shape[0], num_frames), dtype=torch.long, device=ed_idx.device)
     ed_mask = ed_dist <= radius
     es_mask = es_dist <= radius
+    if ed_visible is not None:
+        ed_mask = ed_mask & ed_visible.to(device=ed_idx.device, dtype=torch.bool).unsqueeze(1)
+    if es_visible is not None:
+        es_mask = es_mask & es_visible.to(device=es_idx.device, dtype=torch.bool).unsqueeze(1)
 
     targets[ed_mask & ~es_mask] = 1
     targets[es_mask & ~ed_mask] = 2
@@ -602,7 +606,14 @@ def _attention_heads_and_summary(attention):
     return attn_heads, attn_summary
 
 
-def compute_attention_alignment_loss(attention, ed_idx, es_idx):
+def _visible_mean(values, mask):
+    mask = mask.to(device=values.device, dtype=torch.bool)
+    if values.numel() == 0 or not bool(mask.any()):
+        return torch.zeros((), device=values.device, dtype=values.dtype)
+    return values[mask].mean()
+
+
+def compute_attention_alignment_loss(attention, ed_idx, es_idx, ed_visible=None, es_visible=None):
     """KL alignment between Stage2 attention heads and ED/ES-centered soft targets."""
     attn_heads, _ = _attention_heads_and_summary(attention)
     if attn_heads is None:
@@ -621,16 +632,25 @@ def compute_attention_alignment_loss(attention, ed_idx, es_idx):
     if attn_heads.shape[-1] >= 2:
         ed_attn = attn_heads[:, :, 0]
         es_attn = attn_heads[:, :, 1]
-        ed_kl = F.kl_div(torch.log(ed_attn.clamp_min(1e-8)), ed_target, reduction="batchmean")
-        es_kl = F.kl_div(torch.log(es_attn.clamp_min(1e-8)), es_target, reduction="batchmean")
-        return 0.5 * (ed_kl + es_kl)
+        ed_kl = (ed_target * (torch.log(ed_target.clamp_min(1e-8)) - torch.log(ed_attn.clamp_min(1e-8)))).sum(dim=1)
+        es_kl = (es_target * (torch.log(es_target.clamp_min(1e-8)) - torch.log(es_attn.clamp_min(1e-8)))).sum(dim=1)
+        if ed_visible is None:
+            ed_visible = torch.ones_like(ed_idx, dtype=torch.bool)
+        if es_visible is None:
+            es_visible = torch.ones_like(es_idx, dtype=torch.bool)
+        ed_loss = _visible_mean(ed_kl, ed_visible)
+        es_loss = _visible_mean(es_kl, es_visible)
+        denom = float(bool(ed_visible.any())) + float(bool(es_visible.any()))
+        if denom <= 0.0:
+            return torch.zeros((), device=attn_heads.device)
+        return (ed_loss * float(bool(ed_visible.any())) + es_loss * float(bool(es_visible.any()))) / denom
 
     merged_target = 0.5 * (ed_target + es_target)
     merged_target = merged_target / merged_target.sum(dim=1, keepdim=True).clamp_min(1e-8)
     return F.kl_div(torch.log(attn_heads[:, :, 0].clamp_min(1e-8)), merged_target, reduction="batchmean")
 
 
-def compute_attention_index_loss(attention, ed_idx, es_idx):
+def compute_attention_index_loss(attention, ed_idx, es_idx, ed_visible=None, es_visible=None):
     """Directly supervise Stage2 attention heads toward ED/ES indices and ordering."""
     attn_heads, _ = _attention_heads_and_summary(attention)
     if attn_heads is None:
@@ -657,12 +677,27 @@ def compute_attention_index_loss(attention, ed_idx, es_idx):
     ed_target = ed_idx.to(attn_heads.device, dtype=attn_heads.dtype) / denom
     es_target = es_idx.to(attn_heads.device, dtype=attn_heads.dtype) / denom
 
-    ed_loss = F.smooth_l1_loss(ed_expect, ed_target)
-    es_loss = F.smooth_l1_loss(es_expect, es_target)
-    index_loss = 0.5 * (ed_loss + es_loss)
+    if ed_visible is None:
+        ed_visible = torch.ones_like(ed_idx, dtype=torch.bool)
+    if es_visible is None:
+        es_visible = torch.ones_like(es_idx, dtype=torch.bool)
+
+    ed_loss_vec = F.smooth_l1_loss(ed_expect, ed_target, reduction="none")
+    es_loss_vec = F.smooth_l1_loss(es_expect, es_target, reduction="none")
+    ed_has = bool(ed_visible.any())
+    es_has = bool(es_visible.any())
+    denom_events = float(ed_has) + float(es_has)
+    if denom_events > 0.0:
+        index_loss = (
+            _visible_mean(ed_loss_vec, ed_visible) * float(ed_has) +
+            _visible_mean(es_loss_vec, es_visible) * float(es_has)
+        ) / denom_events
+    else:
+        index_loss = torch.zeros((), device=attn_heads.device)
 
     min_gap = float(max(1, int(getattr(config, "PHASE_ATTN_MIN_GAP", 1)))) / denom
-    order_loss = torch.relu(min_gap - (es_expect - ed_expect)).mean()
+    both_visible = ed_visible.to(device=attn_heads.device, dtype=torch.bool) & es_visible.to(device=attn_heads.device, dtype=torch.bool)
+    order_loss = _visible_mean(torch.relu(min_gap - (es_expect - ed_expect)), both_visible)
     return index_loss, order_loss
 
 
@@ -678,7 +713,7 @@ def compute_attention_entropy_loss(attention):
     return entropy.mean()
 
 
-def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx):
+def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx, ed_visible=None, es_visible=None):
     """Regularize Stage3 ED/ES expectations directly in the same score space used at inference."""
     if phase_logits.ndim == 3 and phase_logits.shape[-1] > 3:
         phase_logits = phase_logits[:, :, :3]
@@ -701,13 +736,27 @@ def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx):
     ed_target = ed_idx.to(device=phase_logits.device, dtype=phase_logits.dtype) / denom
     es_target = es_idx.to(device=phase_logits.device, dtype=phase_logits.dtype) / denom
 
-    index_loss = 0.5 * (
-        F.smooth_l1_loss(ed_expect, ed_target) +
-        F.smooth_l1_loss(es_expect, es_target)
-    )
+    if ed_visible is None:
+        ed_visible = torch.ones_like(ed_idx, dtype=torch.bool)
+    if es_visible is None:
+        es_visible = torch.ones_like(es_idx, dtype=torch.bool)
+
+    ed_loss_vec = F.smooth_l1_loss(ed_expect, ed_target, reduction="none")
+    es_loss_vec = F.smooth_l1_loss(es_expect, es_target, reduction="none")
+    ed_has = bool(ed_visible.any())
+    es_has = bool(es_visible.any())
+    denom_events = float(ed_has) + float(es_has)
+    if denom_events > 0.0:
+        index_loss = (
+            _visible_mean(ed_loss_vec, ed_visible) * float(ed_has) +
+            _visible_mean(es_loss_vec, es_visible) * float(es_has)
+        ) / denom_events
+    else:
+        index_loss = torch.zeros((), device=phase_logits.device)
 
     min_gap = float(max(1, int(getattr(config, "PHASE_PAIR_MIN_GAP", 1)))) / denom
-    order_loss = torch.relu(min_gap - (es_expect - ed_expect)).mean()
+    both_visible = ed_visible.to(device=phase_logits.device, dtype=torch.bool) & es_visible.to(device=phase_logits.device, dtype=torch.bool)
+    order_loss = _visible_mean(torch.relu(min_gap - (es_expect - ed_expect)), both_visible)
     return index_loss, order_loss
 
 
@@ -729,13 +778,26 @@ def compute_continuous_phase_loss(phase_pred, phase_labels, phase_regression_los
 
 
 
-def move_batch_to_device(videos, efs, ed_idx, es_idx):
+def unpack_batch(batch):
+    if len(batch) == 6:
+        return batch
+    if len(batch) == 4:
+        videos, efs, ed_idx, es_idx = batch
+        ed_visible = torch.ones_like(ed_idx, dtype=torch.bool)
+        es_visible = torch.ones_like(es_idx, dtype=torch.bool)
+        return videos, efs, ed_idx, es_idx, ed_visible, es_visible
+    raise ValueError(f"Unexpected batch size: {len(batch)}")
+
+
+def move_batch_to_device(videos, efs, ed_idx, es_idx, ed_visible, es_visible):
     non_blocking = bool(getattr(config, "NON_BLOCKING_TRANSFER", True)) and is_cuda_runtime()
     videos = videos.to(config.DEVICE, non_blocking=non_blocking)
     efs = efs.to(config.DEVICE, non_blocking=non_blocking)
     ed_idx = ed_idx.to(config.DEVICE, non_blocking=non_blocking)
     es_idx = es_idx.to(config.DEVICE, non_blocking=non_blocking)
-    return videos, efs, ed_idx, es_idx
+    ed_visible = ed_visible.to(config.DEVICE, non_blocking=non_blocking)
+    es_visible = es_visible.to(config.DEVICE, non_blocking=non_blocking)
+    return videos, efs, ed_idx, es_idx, ed_visible, es_visible
 
 
 def _phase_confidence_from_output(phase_pred, pred_ed_idx, pred_es_idx):
@@ -870,6 +932,9 @@ def evaluate_all_clip_consensus(model, dataset, amp_enabled):
         "stage2_ed_es_feature_distance": float("nan"),
         "stage3_ed_index_ce": float("nan"),
         "stage3_es_index_ce": float("nan"),
+        "ed_visible_frac": 1.0,
+        "es_visible_frac": 1.0,
+        "joint_visible_frac": 1.0,
         "eval_clips_per_video": total_clips / total_samples,
     }
 
@@ -902,13 +967,19 @@ def evaluate(model, loader, amp_enabled):
     total_s2_feat_dist = 0.0
     total_s3_ed_ce = 0.0
     total_s3_es_ce = 0.0
+    total_ed_visible = 0.0
+    total_es_visible = 0.0
+    total_joint_visible = 0.0
 
     phase_only = is_phase_only_mode()
     phase_acc_threshold = int(getattr(config, "PHASE_ACC_THRESHOLD_FRAMES", 4))
 
     with torch.no_grad():
-        for videos, efs, ed_idx, es_idx in loader:
-            videos, efs, ed_idx, es_idx = move_batch_to_device(videos, efs, ed_idx, es_idx)
+        for batch in loader:
+            videos, efs, ed_idx, es_idx, ed_visible, es_visible = unpack_batch(batch)
+            videos, efs, ed_idx, es_idx, ed_visible, es_visible = move_batch_to_device(
+                videos, efs, ed_idx, es_idx, ed_visible, es_visible
+            )
 
             with autocast_context(amp_enabled):
                 model_out = model(videos, return_stage_outputs=True)
@@ -933,13 +1004,16 @@ def evaluate(model, loader, amp_enabled):
                 es_idx,
                 num_frames,
                 radius=max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1))),
+                ed_visible=ed_visible,
+                es_visible=es_visible,
             )
             
             phase_loss = compute_continuous_phase_loss(phase_pred, phase_labels, nn.MSELoss())
             phase_vec = phase_vector_from_output(phase_pred)
-            if phase_vec is not None:
+            both_visible = ed_visible & es_visible
+            if phase_vec is not None and bool(both_visible.any()):
                 cyclic_targets = build_cyclic_phase_targets(ed_idx, es_idx, num_frames)
-                phase_loss = phase_loss + F.smooth_l1_loss(phase_vec, cyclic_targets)
+                phase_loss = phase_loss + F.smooth_l1_loss(phase_vec[both_visible], cyclic_targets[both_visible])
             total_phase_loss += phase_loss.item() * batch_size
 
             pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_pred)
@@ -947,18 +1021,18 @@ def evaluate(model, loader, amp_enabled):
             # Compute ED/ES accuracy metrics
             ed_mae = torch.abs(pred_ed_idx.float() - ed_idx.float())
             es_mae = torch.abs(pred_es_idx.float() - es_idx.float())
-            
-            total_ed_mae_frames += ed_mae.mean().item() * batch_size
-            total_es_mae_frames += es_mae.mean().item() * batch_size
-            
-            # Accuracy: within threshold frames
-            ed_acc_batch = (ed_mae <= phase_acc_threshold).float().mean()
-            es_acc_batch = (es_mae <= phase_acc_threshold).float().mean()
-            joint_acc_batch = ((ed_mae <= phase_acc_threshold) & (es_mae <= phase_acc_threshold)).float().mean()
-            
-            total_ed_acc += ed_acc_batch.item() * batch_size
-            total_es_acc += es_acc_batch.item() * batch_size
-            total_joint_acc += joint_acc_batch.item() * batch_size
+
+            ed_visible_f = ed_visible.float()
+            es_visible_f = es_visible.float()
+            both_visible_f = both_visible.float()
+            total_ed_mae_frames += (ed_mae * ed_visible_f).sum().item()
+            total_es_mae_frames += (es_mae * es_visible_f).sum().item()
+            total_ed_acc += ((ed_mae <= phase_acc_threshold).float() * ed_visible_f).sum().item()
+            total_es_acc += ((es_mae <= phase_acc_threshold).float() * es_visible_f).sum().item()
+            total_joint_acc += (((ed_mae <= phase_acc_threshold) & (es_mae <= phase_acc_threshold)).float() * both_visible_f).sum().item()
+            total_ed_visible += ed_visible_f.sum().item()
+            total_es_visible += es_visible_f.sum().item()
+            total_joint_visible += both_visible_f.sum().item()
 
             stage1_features = stage_outputs.get("stage1_features")
             temporal_features = stage_outputs.get("stage2_temporal_features")
@@ -976,24 +1050,29 @@ def evaluate(model, loader, amp_enabled):
                 if attn_heads.shape[-1] >= 2:
                     peak_ed = torch.argmax(attn_heads[:, :, 0], dim=1)
                     peak_es = torch.argmax(attn_heads[:, :, 1], dim=1)
-                    peak_mae = 0.5 * (
-                        torch.abs(peak_ed.float() - ed_idx.float()).mean() +
-                        torch.abs(peak_es.float() - es_idx.float()).mean()
-                    )
-                    total_s2_peak_mae += peak_mae.item() * batch_size
+                    peak_ed_mae = torch.abs(peak_ed.float() - ed_idx.float())
+                    peak_es_mae = torch.abs(peak_es.float() - es_idx.float())
+                    visible_events = float(ed_visible_f.sum().item() + es_visible_f.sum().item())
+                    if visible_events > 0:
+                        total_s2_peak_mae += (
+                            (peak_ed_mae * ed_visible_f).sum().item() +
+                            (peak_es_mae * es_visible_f).sum().item()
+                        ) * batch_size / visible_events
 
-            if temporal_features is not None:
+            if temporal_features is not None and bool(both_visible.any()):
                 total_s2_tokens += float(temporal_features.shape[1]) * batch_size
                 gather_ed = ed_idx.clamp(0, temporal_features.shape[1] - 1).view(-1, 1, 1).expand(-1, 1, temporal_features.shape[2])
                 gather_es = es_idx.clamp(0, temporal_features.shape[1] - 1).view(-1, 1, 1).expand(-1, 1, temporal_features.shape[2])
                 ed_feat = temporal_features.gather(1, gather_ed).squeeze(1)
                 es_feat = temporal_features.gather(1, gather_es).squeeze(1)
-                total_s2_feat_dist += torch.norm(ed_feat - es_feat, dim=1).mean().item() * batch_size
+                total_s2_feat_dist += torch.norm(ed_feat[both_visible] - es_feat[both_visible], dim=1).mean().item() * batch_size
 
             logits = phase_logits_from_output(phase_pred)
             if logits is not None:
-                total_s3_ed_ce += F.cross_entropy(logits[:, :, 1], ed_idx.clamp(0, logits.shape[1] - 1)).item() * batch_size
-                total_s3_es_ce += F.cross_entropy(logits[:, :, 2], es_idx.clamp(0, logits.shape[1] - 1)).item() * batch_size
+                if bool(ed_visible.any()):
+                    total_s3_ed_ce += F.cross_entropy(logits[ed_visible, :, 1], ed_idx[ed_visible].clamp(0, logits.shape[1] - 1)).item() * batch_size
+                if bool(es_visible.any()):
+                    total_s3_es_ce += F.cross_entropy(logits[es_visible, :, 2], es_idx[es_visible].clamp(0, logits.shape[1] - 1)).item() * batch_size
 
             total_samples += batch_size
 
@@ -1004,11 +1083,11 @@ def evaluate(model, loader, amp_enabled):
         "ef_mae": (total_mae / total_samples) if not phase_only else float("nan"),
         "ef_rmse": ((total_mse / total_samples) ** 0.5) if not phase_only else float("nan"),
         "phase_mse": total_phase_loss / total_samples,
-        "ed_acc": total_ed_acc / total_samples,
-        "es_acc": total_es_acc / total_samples,
-        "joint_acc": total_joint_acc / total_samples,
-        "ed_mae_frames": total_ed_mae_frames / total_samples,
-        "es_mae_frames": total_es_mae_frames / total_samples,
+        "ed_acc": total_ed_acc / max(1.0, total_ed_visible),
+        "es_acc": total_es_acc / max(1.0, total_es_visible),
+        "joint_acc": total_joint_acc / max(1.0, total_joint_visible),
+        "ed_mae_frames": total_ed_mae_frames / max(1.0, total_ed_visible),
+        "es_mae_frames": total_es_mae_frames / max(1.0, total_es_visible),
         # Stage-specific diagnostic metrics (set to defaults if not available)
         "stage1_temporal_tokens": total_s1_tokens / total_samples,
         "stage1_feature_norm": total_s1_norm / total_samples,
@@ -1020,6 +1099,9 @@ def evaluate(model, loader, amp_enabled):
         "stage2_ed_es_feature_distance": total_s2_feat_dist / total_samples,
         "stage3_ed_index_ce": total_s3_ed_ce / total_samples,
         "stage3_es_index_ce": total_s3_es_ce / total_samples,
+        "ed_visible_frac": total_ed_visible / total_samples,
+        "es_visible_frac": total_es_visible / total_samples,
+        "joint_visible_frac": total_joint_visible / total_samples,
     }
     return metrics
 
@@ -1055,10 +1137,13 @@ def train_one_epoch(
     phase_pair_index_weight = max(0.0, float(getattr(config, "PHASE_PAIR_INDEX_WEIGHT", 0.0)))
     phase_pair_order_weight = max(0.0, float(getattr(config, "PHASE_PAIR_ORDER_WEIGHT", 0.0)))
 
-    for batch_idx, (videos, efs, ed_idx, es_idx) in enumerate(loader):
+    for batch_idx, batch in enumerate(loader):
         data_time += time.perf_counter() - loop_end
 
-        videos, efs, ed_idx, es_idx = move_batch_to_device(videos, efs, ed_idx, es_idx)
+        videos, efs, ed_idx, es_idx, ed_visible, es_visible = unpack_batch(batch)
+        videos, efs, ed_idx, es_idx, ed_visible, es_visible = move_batch_to_device(
+            videos, efs, ed_idx, es_idx, ed_visible, es_visible
+        )
         batch_size = videos.size(0)
         total_samples += batch_size
 
@@ -1068,6 +1153,8 @@ def train_one_epoch(
             es_idx,
             num_frames,
             radius=max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1))),
+            ed_visible=ed_visible,
+            es_visible=es_visible,
         )
 
         compute_start = time.perf_counter()
@@ -1087,21 +1174,28 @@ def train_one_epoch(
             )
 
             phase_vec = phase_vector_from_output(phase_pred)
-            if phase_vec is not None:
+            both_visible = ed_visible & es_visible
+            if phase_vec is not None and bool(both_visible.any()):
                 cyclic_targets = build_cyclic_phase_targets(ed_idx, es_idx, num_frames)
-                phase_loss = phase_loss + F.smooth_l1_loss(phase_vec, cyclic_targets)
+                phase_loss = phase_loss + F.smooth_l1_loss(phase_vec[both_visible], cyclic_targets[both_visible])
 
             if attn_align_weight > 0.0:
-                phase_loss = phase_loss + attn_align_weight * compute_attention_alignment_loss(attention, ed_idx, es_idx)
+                phase_loss = phase_loss + attn_align_weight * compute_attention_alignment_loss(
+                    attention, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                )
             if attn_index_weight > 0.0 or attn_order_weight > 0.0:
-                attn_index_loss, attn_order_loss = compute_attention_index_loss(attention, ed_idx, es_idx)
+                attn_index_loss, attn_order_loss = compute_attention_index_loss(
+                    attention, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                )
                 phase_loss = phase_loss + attn_index_weight * attn_index_loss + attn_order_weight * attn_order_loss
             if attn_entropy_weight > 0.0:
                 phase_loss = phase_loss + attn_entropy_weight * compute_attention_entropy_loss(attention)
             if phase_pair_index_weight > 0.0 or phase_pair_order_weight > 0.0:
                 phase_logits = phase_logits_from_output(phase_pred)
                 if phase_logits is not None:
-                    pair_index_loss, pair_order_loss = compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx)
+                    pair_index_loss, pair_order_loss = compute_phase_pair_regularizers(
+                        phase_logits, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                    )
                     phase_loss = phase_loss + phase_pair_index_weight * pair_index_loss + phase_pair_order_weight * pair_order_loss
             
             loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
@@ -1485,7 +1579,7 @@ def main(argv=None):
                 improved = current_monitor < best_monitor
 
             logger.info(
-                "Stage diagnostics | S1(T'~%.1f) feat-norm: %.3f temp-std: %.3f | S2(T~%.1f) attn-entropy: %.3f peak-w: %.3f peak->ED/ES MAE(fr): %.3f ED-ES feat-dist: %.3f | S3 index CE (ED/ES): %.3f / %.3f | eval clips/video: %.1f",
+                "Stage diagnostics | S1(T'~%.1f) feat-norm: %.3f temp-std: %.3f | S2(T~%.1f) attn-entropy: %.3f peak-w: %.3f peak->ED/ES MAE(fr): %.3f ED-ES feat-dist: %.3f | S3 index CE (ED/ES): %.3f / %.3f | visible ED/ES/joint: %.1f%% / %.1f%% / %.1f%% | eval clips/video: %.1f",
                 val_metrics["stage1_temporal_tokens"],
                 val_metrics["stage1_feature_norm"],
                 val_metrics["stage1_temporal_std"],
@@ -1496,6 +1590,9 @@ def main(argv=None):
                 val_metrics["stage2_ed_es_feature_distance"],
                 val_metrics["stage3_ed_index_ce"],
                 val_metrics["stage3_es_index_ce"],
+                val_metrics.get("ed_visible_frac", 1.0) * 100.0,
+                val_metrics.get("es_visible_frac", 1.0) * 100.0,
+                val_metrics.get("joint_visible_frac", 1.0) * 100.0,
                 val_metrics.get("eval_clips_per_video", 1.0),
             )
             logger.info("%s: %.6f | best: %.6f", monitor_name, current_monitor, best_monitor)

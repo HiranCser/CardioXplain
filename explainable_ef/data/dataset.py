@@ -174,6 +174,13 @@ class EchoDataset(Dataset):
             return 0
         return int(np.argmin(np.abs(sampled_indices - int(original_frame))))
 
+    @staticmethod
+    def _frame_is_visible(original_frame, sampled_indices):
+        sampled_indices = np.asarray(sampled_indices, dtype=np.int32)
+        if sampled_indices.size == 0:
+            return False
+        return bool(np.any(sampled_indices == int(original_frame)))
+
     def load_video_clips(self, path, mode=None):
         frames_array = self._read_video_frames(path)
         starts = self._clip_start_indices(len(frames_array), mode=mode)
@@ -203,5 +210,7 @@ class EchoDataset(Dataset):
 
         ed_idx = torch.tensor(self._original_to_clip_index(ed_original, sampled_indices), dtype=torch.long)
         es_idx = torch.tensor(self._original_to_clip_index(es_original, sampled_indices), dtype=torch.long)
+        ed_visible = torch.tensor(self._frame_is_visible(ed_original, sampled_indices), dtype=torch.bool)
+        es_visible = torch.tensor(self._frame_is_visible(es_original, sampled_indices), dtype=torch.bool)
 
-        return video, ef, ed_idx, es_idx
+        return video, ef, ed_idx, es_idx, ed_visible, es_visible
