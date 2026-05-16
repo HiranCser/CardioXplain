@@ -157,14 +157,12 @@ class EchoDataset(Dataset):
         sampled_indices = self._clip_indices_from_start(start, total_video_frames)
         return self._frames_to_tensor(sampled_frames), sampled_indices
 
-    def load_video(self, path, ed_original=-1, es_original=-1, contain_events=True):
+    def load_video(self, path):
         frames_array = self._read_video_frames(path)
         start = self._clip_start_indices(
             len(frames_array),
             mode="center" if self.split != "TRAIN" else None,
-            ed_original=ed_original,
-            es_original=es_original,
-            contain_events=contain_events,
+            contain_events=False,
         )[0]
         return self._sample_clip_from_frames(frames_array, start)
 
@@ -190,7 +188,6 @@ class EchoDataset(Dataset):
 
     def __getitem__(self, idx):
         video_idx = int(idx) // self.train_clips_per_video if self.split == "TRAIN" else int(idx)
-        clip_variant = int(idx) % self.train_clips_per_video if self.split == "TRAIN" else 0
         row = self.filelist.iloc[video_idx]
         file_name_with_extension = row["FileName"] + ".avi"
         video_path = os.path.join(self.data_dir, "Videos", file_name_with_extension)
@@ -202,12 +199,7 @@ class EchoDataset(Dataset):
 
         ef = torch.tensor(row["EF"]).float() / 100.0
 
-        video, sampled_indices = self.load_video(
-            video_path,
-            ed_original=ed_original,
-            es_original=es_original,
-            contain_events=(clip_variant == 0),
-        )
+        video, sampled_indices = self.load_video(video_path)
 
         ed_idx = torch.tensor(self._original_to_clip_index(ed_original, sampled_indices), dtype=torch.long)
         es_idx = torch.tensor(self._original_to_clip_index(es_original, sampled_indices), dtype=torch.long)
