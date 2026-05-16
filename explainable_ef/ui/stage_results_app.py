@@ -393,6 +393,25 @@ def _abs_path(path_value):
     return os.path.abspath(os.path.join(ROOT_DIR, path_value))
 
 
+def _default_stage123_checkpoint_for_frames(num_frames):
+    candidates = []
+    if int(num_frames) == 64:
+        candidates.extend(
+            [
+                "best_model_stage123_64f_img96_phasefix.pth",
+                "best_model_stage123_64f_img96_scratch.pth",
+            ]
+        )
+    candidates.append(getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
+    candidates.append("best_model_stage123_96f.pth")
+
+    for candidate in candidates:
+        candidate_path = _abs_path(candidate)
+        if os.path.exists(candidate_path):
+            return candidate_path
+    return _abs_path(candidates[0])
+
+
 def _resolve_device(device_choice):
     if device_choice == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
@@ -1142,9 +1161,6 @@ def load_dataset_resource(data_dir, split, num_frames, temporal_window_mode, tem
         split=str(split).upper(),
         num_frames=int(num_frames),
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
-        temporal_window_mode=str(temporal_window_mode).lower(),
-        temporal_window_margin_mult=float(temporal_window_margin_mult),
-        temporal_window_jitter_mult=0.0,
     )
 
 
@@ -1392,11 +1408,18 @@ def _make_attention_plot(attn, gt_ed_idx, gt_es_idx, pred_ed_idx, pred_es_idx):
 
 def _make_phase_plot(phase_probs, gt_ed_idx, gt_es_idx, pred_ed_idx, pred_es_idx):
     fig, ax = plt.subplots(figsize=(8, 2.8))
+    phase_probs = np.asarray(phase_probs)
+    if phase_probs.ndim == 1:
+        phase_probs = phase_probs[:, None]
+    if phase_probs.shape[1] > 3:
+        phase_probs = phase_probs[:, :3]
     x = np.arange(phase_probs.shape[0])
-    labels = ["ED", "ES", "Other"]
-    colors = ["#2ca02c", "#d62728", "#7f7f7f"]
+    labels = ["Background", "ED", "ES"]
+    colors = ["#7f7f7f", "#2ca02c", "#d62728"]
     for k in range(phase_probs.shape[1]):
-        ax.plot(x, phase_probs[:, k], label=f"P({labels[k]})", color=colors[k])
+        label = labels[k] if k < len(labels) else f"Class {k}"
+        color = colors[k] if k < len(colors) else None
+        ax.plot(x, phase_probs[:, k], label=f"P({label})", color=color)
 
     ax.axvline(gt_ed_idx, color="green", linestyle="--")
     ax.axvline(gt_es_idx, color="red", linestyle="--")
@@ -2241,7 +2264,11 @@ def run_case(
     ef_pred_pct = float(ef_pred[0].item() * 100.0)
 
     attn = attention[0].detach().cpu().numpy()
-    phase_probs = torch.softmax(phase_logits[0], dim=-1).detach().cpu().numpy()
+    phase_output = phase_logits[0]
+    if phase_output.ndim == 2 and phase_output.shape[-1] >= 3:
+        phase_probs = torch.softmax(phase_output[:, :3], dim=-1).detach().cpu().numpy()
+    else:
+        phase_probs = phase_output.detach().cpu().numpy()
 
     stage1_features = stage_outputs.get("stage1_features")
     if stage1_features is not None:
@@ -2650,6 +2677,12 @@ def _explainability_interpretation_lines(result):
 
 def _render_overview_tab(result, stage67_case):
     final_ef = float(result["ef_pred_pct"])
+    if not (0.0 <= float(result["ef_pred_pct"]) <= 100.0):
+        st.warning(
+            "Temporal Stage1-3 EF is outside the valid 0-100% range. "
+            "This usually means the selected Stage1-3 checkpoint does not match the sidebar num-frames setting. "
+            "Use the 64-frame phasefix checkpoint with 64 frames."
+        )
     if stage67_case and stage67_case.get("available") and np.isfinite(stage67_case.get("fused_ef", float("nan"))):
         final_ef = float(stage67_case["fused_ef"])
 
@@ -3171,6 +3204,225 @@ def _render_debug_tab(result, selected_video, split, stage67_output_dir, show_st
             st.info("Stage 6/7 summary is disabled in the sidebar settings.")
 
 
+@st.cache_data(show_spinner=False, ttl=5)
+def load_perturbation_results(output_dir):
+    output_dir = _abs_path(output_dir)
+    csv_path = os.path.join(output_dir, "temporal_perturbation_results.csv")
+    summary_path = os.path.join(output_dir, "temporal_perturbation_summary.json")
+    rows = pd.DataFrame()
+    summary = {}
+    if os.path.exists(csv_path):
+        rows = pd.read_csv(csv_path)
+    if os.path.exists(summary_path):
+        with open(summary_path, "r", encoding="utf-8") as f:
+            summary = json.load(f)
+    if rows.empty:
+        rows = _scan_perturbation_artifacts(output_dir)
+    return rows, summary, csv_path, summary_path
+
+
+def _scan_perturbation_artifacts(output_dir):
+    artifacts_dir = os.path.join(_abs_path(output_dir), "artifacts")
+    if not os.path.isdir(artifacts_dir):
+        return pd.DataFrame()
+
+    rows = []
+    for case_name in sorted(os.listdir(artifacts_dir)):
+        case_dir = os.path.join(artifacts_dir, case_name)
+        if not os.path.isdir(case_dir):
+            continue
+        case_parts = case_name.split("_", 1)
+        sample_index = int(case_parts[0]) if case_parts and case_parts[0].isdigit() else -1
+        file_stem = case_parts[1] if len(case_parts) > 1 else case_name
+
+        for perturb_name in sorted(os.listdir(case_dir)):
+            perturb_dir = os.path.join(case_dir, perturb_name)
+            if not os.path.isdir(perturb_dir):
+                continue
+            perturbation = perturb_name
+            severity = float("nan")
+            if "_sev" in perturb_name:
+                perturbation, severity_text = perturb_name.rsplit("_sev", 1)
+                try:
+                    severity = float(severity_text.replace("p", "."))
+                except ValueError:
+                    severity = float("nan")
+
+            row = {
+                "sample_index": sample_index,
+                "file_name": f"{file_stem}.avi",
+                "perturbation": perturbation,
+                "severity": severity,
+                "clean_video_path": os.path.join(perturb_dir, "clean.mp4"),
+                "perturbed_video_path": os.path.join(perturb_dir, "perturbed.mp4"),
+                "clean_gt_ed_frame_path": os.path.join(perturb_dir, "clean_gt_ed.png"),
+                "clean_gt_es_frame_path": os.path.join(perturb_dir, "clean_gt_es.png"),
+                "clean_clean_pred_ed_frame_path": os.path.join(perturb_dir, "clean_clean_pred_ed.png"),
+                "clean_clean_pred_es_frame_path": os.path.join(perturb_dir, "clean_clean_pred_es.png"),
+                "perturbed_perturbed_pred_ed_frame_path": os.path.join(perturb_dir, "perturbed_perturbed_pred_ed.png"),
+                "perturbed_perturbed_pred_es_frame_path": os.path.join(perturb_dir, "perturbed_perturbed_pred_es.png"),
+                "spatial_overlay_frame_path": os.path.join(perturb_dir, "spatial_overlay.png"),
+                "perturbation_metadata_json": "{}",
+            }
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _resolve_artifact_path(path_value, output_dir):
+    if path_value is None or (isinstance(path_value, float) and np.isnan(path_value)):
+        return None
+    path_text = str(path_value).strip()
+    if not path_text:
+        return None
+    candidates = []
+    if os.path.isabs(path_text):
+        candidates.append(path_text)
+    else:
+        candidates.append(os.path.join(ROOT_DIR, path_text))
+        candidates.append(os.path.join(_abs_path(output_dir), path_text))
+        candidates.append(os.path.join(os.path.dirname(_abs_path(output_dir)), path_text))
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _render_artifact_video(path_value, title, output_dir):
+    path = _resolve_artifact_path(path_value, output_dir)
+    if path and os.path.exists(path):
+        st.markdown(f"**{title}**")
+        gif_bytes, gif_err = _prepare_gif_preview(path)
+        if gif_bytes:
+            st.image(gif_bytes, caption=title, use_container_width=True)
+            return
+
+        playable_path, _was_converted, error_message, mime_type = _prepare_browser_video(path)
+        if playable_path and os.path.exists(playable_path):
+            st.video(playable_path, format=mime_type)
+        else:
+            st.warning(gif_err or error_message or f"{title} video could not be prepared for browser playback.")
+    else:
+        st.info(f"{title} video artifact not found.")
+
+
+def _render_artifact_image(path_value, caption, output_dir):
+    path = _resolve_artifact_path(path_value, output_dir)
+    if path and os.path.exists(path):
+        st.image(path, caption=caption, use_container_width=True)
+
+
+def _render_perturbations_tab(perturbation_output_dir):
+    rows, summary, csv_path, summary_path = load_perturbation_results(perturbation_output_dir)
+
+    if rows.empty:
+        st.info("No perturbation results found yet. Run the validation script with --save-artifacts to populate this tab.")
+        st.code(
+            "python validation/validate_temporal_perturbations.py "
+            "--checkpoint best_model_stage123_64f_img96_phasefix.pth "
+            "--split TEST --num-frames 64 --clip-period 1 --clip-eval-mode center "
+            "--perturbations attention_guided_mask,spatial_occlusion,random_mask "
+            "--severities 0.10,0.25 --save-artifacts "
+            "--output-dir validation/outputs/perturbation_test",
+            language="bash",
+        )
+        return
+
+    st.caption(f"Rows: {len(rows):,} | Results: {csv_path} | Summary: {summary_path}")
+
+    groups = summary.get("groups", []) if isinstance(summary, dict) else []
+    if groups:
+        group_df = pd.DataFrame(groups)
+        display_cols = [
+            "perturbation",
+            "severity",
+            "samples",
+            "clean_ef_mae_pct",
+            "perturbed_ef_mae_pct",
+            "delta_ef_mae_pct",
+            "clean_ed_mae_frames",
+            "perturbed_ed_mae_frames",
+            "clean_es_mae_frames",
+            "perturbed_es_mae_frames",
+            "phase_joint_within_tol_clean",
+            "phase_joint_within_tol_perturbed",
+        ]
+        display_cols = [col for col in display_cols if col in group_df.columns]
+        st.markdown('<div class="section-heading"><div class="section-title">Aggregate Perturbation Response</div></div>', unsafe_allow_html=True)
+        st.dataframe(group_df[display_cols], use_container_width=True, hide_index=True)
+
+    st.markdown('<div class="section-heading"><div class="section-title">Case-Level Perturbation Viewer</div></div>', unsafe_allow_html=True)
+    file_options = sorted(rows["file_name"].dropna().astype(str).unique().tolist()) if "file_name" in rows else []
+    if not file_options:
+        st.warning("Perturbation rows do not contain file_name.")
+        return
+
+    control_a, control_b, control_c = st.columns([1.5, 1.0, 0.8])
+    with control_a:
+        selected_file = st.selectbox("Video", options=file_options, index=0, key="perturbation_video")
+
+    filtered = rows[rows["file_name"].astype(str) == selected_file].copy()
+    perturbation_options = sorted(filtered["perturbation"].dropna().astype(str).unique().tolist())
+    with control_b:
+        selected_perturbation = st.selectbox("Perturbation", options=perturbation_options, index=0, key="perturbation_kind")
+
+    filtered = filtered[filtered["perturbation"].astype(str) == selected_perturbation].copy()
+    severity_options = sorted(filtered["severity"].dropna().astype(float).unique().tolist())
+    with control_c:
+        selected_severity = st.selectbox("Severity", options=severity_options, index=0, format_func=lambda x: f"{float(x):.2f}", key="perturbation_severity")
+
+    filtered = filtered[np.isclose(filtered["severity"].astype(float), float(selected_severity))]
+    if filtered.empty:
+        st.warning("No row found for that perturbation selection.")
+        return
+    row = filtered.iloc[0]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Clean EF", f"{float(row.get('clean_ef_pred_pct', float('nan'))):.2f}%")
+    m2.metric("Perturbed EF", f"{float(row.get('perturbed_ef_pred_pct', float('nan'))):.2f}%")
+    m3.metric("EF Error Change", f"{float(row.get('delta_ef_abs_error_pct', float('nan'))):+.2f}%")
+    m4.metric("Joint Phase OK", f"{int(row.get('clean_joint_within_tol', 0))} -> {int(row.get('perturbed_joint_within_tol', 0))}")
+
+    vcol1, vcol2 = st.columns(2)
+    with vcol1:
+        _render_artifact_video(row.get("clean_video_path"), "Clean Clip", perturbation_output_dir)
+    with vcol2:
+        _render_artifact_video(row.get("perturbed_video_path"), "Perturbed Clip", perturbation_output_dir)
+
+    frame_cols = st.columns(3)
+    with frame_cols[0]:
+        _render_artifact_image(row.get("clean_gt_ed_frame_path"), "Clean ground-truth ED", perturbation_output_dir)
+        _render_artifact_image(row.get("clean_gt_es_frame_path"), "Clean ground-truth ES", perturbation_output_dir)
+    with frame_cols[1]:
+        _render_artifact_image(row.get("clean_clean_pred_ed_frame_path"), "Clean predicted ED", perturbation_output_dir)
+        _render_artifact_image(row.get("clean_clean_pred_es_frame_path"), "Clean predicted ES", perturbation_output_dir)
+    with frame_cols[2]:
+        _render_artifact_image(row.get("perturbed_perturbed_pred_ed_frame_path"), "Perturbed predicted ED", perturbation_output_dir)
+        _render_artifact_image(row.get("perturbed_perturbed_pred_es_frame_path"), "Perturbed predicted ES", perturbation_output_dir)
+        _render_artifact_image(row.get("spatial_overlay_frame_path"), "Spatial regions removed", perturbation_output_dir)
+
+    detail_cols = st.columns(2)
+    with detail_cols[0]:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"metric": "GT ED/ES clip", "value": f"{int(row.get('gt_ed_clip_idx', -1))} / {int(row.get('gt_es_clip_idx', -1))}"},
+                    {"metric": "Clean predicted ED/ES", "value": f"{int(row.get('clean_pred_ed_idx', -1))} / {int(row.get('clean_pred_es_idx', -1))}"},
+                    {"metric": "Perturbed predicted ED/ES", "value": f"{int(row.get('perturbed_pred_ed_idx', -1))} / {int(row.get('perturbed_pred_es_idx', -1))}"},
+                    {"metric": "ED error change", "value": f"{float(row.get('delta_ed_abs_error_frames', float('nan'))):+.2f} frames"},
+                    {"metric": "ES error change", "value": f"{float(row.get('delta_es_abs_error_frames', float('nan'))):+.2f} frames"},
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with detail_cols[1]:
+        metadata_text = row.get("perturbation_metadata_json", "{}")
+        try:
+            st.json(json.loads(metadata_text))
+        except Exception:
+            st.code(str(metadata_text))
+
+
 
 def main():
     _inject_page_styles()
@@ -3180,7 +3432,6 @@ def main():
         unsafe_allow_html=True,
     )
 
-    default_stage123_ckpt = _abs_path(getattr(config, "CHECKPOINT_PATH", "best_model_stage123_96f.pth"))
     default_stage4_ckpt = _abs_path(getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
 
     with st.sidebar:
@@ -3191,6 +3442,7 @@ def main():
         device_choice = st.selectbox("Device", options=["auto", "cuda", "cpu"], index=0)
         device = _resolve_device(device_choice)
         st.subheader("Stage1-3")
+        default_stage123_ckpt = _default_stage123_checkpoint_for_frames(int(num_frames))
         stage123_checkpoint = st.text_input("Stage1-3 checkpoint", value=default_stage123_ckpt)
         st.subheader("Stage4/5")
         run_stage4 = st.checkbox("Run Stage4 + Stage5", value=True)
@@ -3200,6 +3452,8 @@ def main():
         st.subheader("Stage6/7")
         show_stage67 = st.checkbox("Show Stage6/7 clinical summary", value=True)
         stage67_output_dir = st.text_input("Stage6/7 output dir", value=_abs_path(os.path.join("validation", "outputs", "stage67")))
+        st.subheader("Perturbations")
+        perturbation_output_dir = st.text_input("Perturbation output dir", value=_abs_path(os.path.join("validation", "outputs", "perturbation_test")))
 
     if not os.path.exists(data_dir):
         st.error(f"Data directory not found: {data_dir}")
@@ -3282,7 +3536,7 @@ def main():
     if result is not None and result_show_stage67:
         stage67_case = _load_stage67_case_summary(result_video, result_split, result_stage67_dir)
 
-    tab_overview, tab_video, tab_explain, tab_seg, tab_debug = st.tabs(['Overview', 'Video Analysis', 'Explainability', 'Segmentation', 'Debug'])
+    tab_overview, tab_video, tab_explain, tab_perturb, tab_seg, tab_debug = st.tabs(['Overview', 'Video Analysis', 'Explainability', 'Perturbations', 'Segmentation', 'Debug'])
 
     with tab_overview:
         if result is None:
@@ -3301,6 +3555,9 @@ def main():
             st.info("Run inference to inspect temporal importance and the model's key frames.")
         else:
             _render_explainability_tab(result)
+
+    with tab_perturb:
+        _render_perturbations_tab(perturbation_output_dir)
 
     with tab_seg:
         if result is None:

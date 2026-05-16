@@ -706,9 +706,147 @@ def move_batch_to_device(videos, efs, ed_idx, es_idx):
     return videos, efs, ed_idx, es_idx
 
 
+def _phase_confidence_from_output(phase_pred, pred_ed_idx, pred_es_idx):
+    if phase_pred.ndim != 3:
+        return torch.ones_like(pred_ed_idx, dtype=torch.float32), torch.ones_like(pred_es_idx, dtype=torch.float32)
+
+    if phase_pred.shape[-1] >= 7:
+        ed_scores = phase_pred[:, :, 5] + phase_pred[:, :, 1]
+        es_scores = phase_pred[:, :, 6] + phase_pred[:, :, 2]
+    elif phase_pred.shape[-1] >= 3:
+        ed_scores = phase_pred[:, :, 1]
+        es_scores = phase_pred[:, :, 2]
+    else:
+        return torch.ones_like(pred_ed_idx, dtype=torch.float32), torch.ones_like(pred_es_idx, dtype=torch.float32)
+
+    ed_probs = F.softmax(ed_scores.float(), dim=1)
+    es_probs = F.softmax(es_scores.float(), dim=1)
+    ed_conf = ed_probs.gather(1, pred_ed_idx.view(-1, 1).clamp(0, ed_probs.shape[1] - 1)).squeeze(1)
+    es_conf = es_probs.gather(1, pred_es_idx.view(-1, 1).clamp(0, es_probs.shape[1] - 1)).squeeze(1)
+    return ed_conf, es_conf
+
+
+def _weighted_consensus_frame(candidates, weights, total_frames):
+    candidates = np.asarray(candidates, dtype=np.int32)
+    weights = np.asarray(weights, dtype=np.float64)
+    total_frames = int(max(1, total_frames))
+    if candidates.size == 0:
+        return 0
+    candidates = np.clip(candidates, 0, total_frames - 1)
+    if weights.size != candidates.size or not np.isfinite(weights).all() or float(weights.sum()) <= 0.0:
+        weights = np.ones(candidates.shape[0], dtype=np.float64)
+
+    vote_curve = np.zeros(total_frames, dtype=np.float64)
+    positions = np.arange(total_frames, dtype=np.float64)
+    sigma = max(1.0, float(getattr(config, "PHASE_CONSENSUS_SIGMA", 2.0)))
+    for frame_idx, weight in zip(candidates, weights):
+        vote_curve += float(weight) * np.exp(-((positions - float(frame_idx)) ** 2) / (2.0 * sigma * sigma))
+    return int(np.argmax(vote_curve))
+
+
+def evaluate_all_clip_consensus(model, dataset, amp_enabled):
+    """GT-free deployment-style evaluation: scan all clips and vote in original-frame space."""
+    model.eval()
+    phase_only = is_phase_only_mode()
+    phase_acc_threshold = int(getattr(config, "PHASE_ACC_THRESHOLD_FRAMES", 4))
+    clip_batch_size = max(1, int(getattr(config, "CLIP_EVAL_BATCH_SIZE", min(8, config.BATCH_SIZE))))
+
+    total_samples = 0
+    total_mae = 0.0
+    total_mse = 0.0
+    total_ed_acc = 0.0
+    total_es_acc = 0.0
+    total_joint_acc = 0.0
+    total_ed_mae_frames = 0.0
+    total_es_mae_frames = 0.0
+    total_clips = 0.0
+
+    with torch.no_grad():
+        for sample_index in range(len(dataset)):
+            row = dataset.filelist.iloc[sample_index]
+            file_stem = str(row["FileName"])
+            file_name_ext = file_stem + ".avi"
+            video_path = os.path.join(dataset.data_dir, "Videos", file_name_ext)
+            ed_orig = int(dataset.phase_dict[file_name_ext]["ed"])
+            es_orig = int(dataset.phase_dict[file_name_ext]["es"])
+            ef_gt = float(row["EF"]) / 100.0
+
+            clips, sampled_indices = dataset.load_video_clips(video_path, mode="all")
+            clips = clips.to(config.DEVICE)
+            ef_preds = []
+            ed_candidates = []
+            es_candidates = []
+            ed_weights = []
+            es_weights = []
+
+            for start in range(0, clips.shape[0], clip_batch_size):
+                clip_batch = clips[start : start + clip_batch_size]
+                with autocast_context(amp_enabled):
+                    ef_pred, _attention, phase_pred = model(clip_batch)
+                pred_ed_idx, pred_es_idx = Stage3PhaseDetector.predict_indices(phase_pred)
+                ed_conf, es_conf = _phase_confidence_from_output(phase_pred, pred_ed_idx, pred_es_idx)
+
+                ef_preds.extend(ef_pred.detach().float().cpu().tolist())
+                batch_indices = sampled_indices[start : start + clip_batch.shape[0]]
+                for local_i in range(clip_batch.shape[0]):
+                    ed_clip = int(pred_ed_idx[local_i].detach().cpu().item())
+                    es_clip = int(pred_es_idx[local_i].detach().cpu().item())
+                    ed_candidates.append(int(batch_indices[local_i, np.clip(ed_clip, 0, batch_indices.shape[1] - 1)]))
+                    es_candidates.append(int(batch_indices[local_i, np.clip(es_clip, 0, batch_indices.shape[1] - 1)]))
+                    ed_weights.append(float(ed_conf[local_i].detach().cpu().item()))
+                    es_weights.append(float(es_conf[local_i].detach().cpu().item()))
+
+            total_video_frames = int(np.max(sampled_indices)) + 1 if sampled_indices.size else 1
+            pred_ed_orig = _weighted_consensus_frame(ed_candidates, ed_weights, total_video_frames)
+            pred_es_orig = _weighted_consensus_frame(es_candidates, es_weights, total_video_frames)
+            ef_pred = float(np.mean(ef_preds)) if ef_preds else float("nan")
+
+            if not phase_only and np.isfinite(ef_pred):
+                ef_err = abs(ef_pred - ef_gt)
+                total_mae += ef_err
+                total_mse += ef_err * ef_err
+
+            ed_mae = abs(pred_ed_orig - ed_orig)
+            es_mae = abs(pred_es_orig - es_orig)
+            total_ed_mae_frames += float(ed_mae)
+            total_es_mae_frames += float(es_mae)
+            total_ed_acc += float(ed_mae <= phase_acc_threshold)
+            total_es_acc += float(es_mae <= phase_acc_threshold)
+            total_joint_acc += float(ed_mae <= phase_acc_threshold and es_mae <= phase_acc_threshold)
+            total_clips += float(clips.shape[0])
+            total_samples += 1
+
+    if total_samples == 0:
+        raise RuntimeError("No samples found during all-clip consensus evaluation")
+
+    return {
+        "ef_mae": (total_mae / total_samples) if not phase_only else float("nan"),
+        "ef_rmse": ((total_mse / total_samples) ** 0.5) if not phase_only else float("nan"),
+        "phase_mse": float("nan"),
+        "ed_acc": total_ed_acc / total_samples,
+        "es_acc": total_es_acc / total_samples,
+        "joint_acc": total_joint_acc / total_samples,
+        "ed_mae_frames": total_ed_mae_frames / total_samples,
+        "es_mae_frames": total_es_mae_frames / total_samples,
+        "stage1_temporal_tokens": float(getattr(config, "NUM_FRAMES", 0)),
+        "stage1_feature_norm": float("nan"),
+        "stage1_temporal_std": float("nan"),
+        "stage2_temporal_tokens": float(getattr(config, "NUM_FRAMES", 0)),
+        "stage2_attention_entropy": float("nan"),
+        "stage2_attention_peak": float("nan"),
+        "stage2_peak_to_event_mae_frames": float("nan"),
+        "stage2_ed_es_feature_distance": float("nan"),
+        "stage3_ed_index_ce": float("nan"),
+        "stage3_es_index_ce": float("nan"),
+        "eval_clips_per_video": total_clips / total_samples,
+    }
+
 
 def evaluate(model, loader, amp_enabled):
     """Evaluate EF regression and phase prediction."""
+    if str(getattr(config, "CLIP_EVAL_MODE", "center")).lower() == "all":
+        return evaluate_all_clip_consensus(model, loader.dataset, amp_enabled)
+
     model.eval()
 
     total_samples = 0
@@ -1279,7 +1417,7 @@ def main(argv=None):
                 improved = current_monitor < best_monitor
 
             logger.info(
-                "Stage diagnostics | S1(T'~%.1f) feat-norm: %.3f temp-std: %.3f | S2(T~%.1f) attn-entropy: %.3f peak-w: %.3f peak->ED/ES MAE(fr): %.3f ED-ES feat-dist: %.3f | S3 index CE (ED/ES): %.3f / %.3f",
+                "Stage diagnostics | S1(T'~%.1f) feat-norm: %.3f temp-std: %.3f | S2(T~%.1f) attn-entropy: %.3f peak-w: %.3f peak->ED/ES MAE(fr): %.3f ED-ES feat-dist: %.3f | S3 index CE (ED/ES): %.3f / %.3f | eval clips/video: %.1f",
                 val_metrics["stage1_temporal_tokens"],
                 val_metrics["stage1_feature_norm"],
                 val_metrics["stage1_temporal_std"],
@@ -1290,6 +1428,7 @@ def main(argv=None):
                 val_metrics["stage2_ed_es_feature_distance"],
                 val_metrics["stage3_ed_index_ce"],
                 val_metrics["stage3_es_index_ce"],
+                val_metrics.get("eval_clips_per_video", 1.0),
             )
 
             if improved:
