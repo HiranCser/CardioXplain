@@ -2437,10 +2437,10 @@ def run_case(
                     max_width=640,
                 )
 
-                gt_mask_pred_ed = gt_masks.get(ed_frame_idx, gt_masks.get(int(pred_ed_orig)))
-                gt_mask_pred_es = gt_masks.get(es_frame_idx, gt_masks.get(int(pred_es_orig)))
-                gt_area_pred_ed = gt_areas.get(ed_frame_idx, float("nan"))
-                gt_area_pred_es = gt_areas.get(es_frame_idx, float("nan"))
+                gt_mask_pred_ed = gt_masks.get(ed_frame_idx, gt_masks.get(int(pred_ed_orig), gt_masks.get(int(ed_orig))))
+                gt_mask_pred_es = gt_masks.get(es_frame_idx, gt_masks.get(int(pred_es_orig), gt_masks.get(int(es_orig))))
+                gt_area_pred_ed = gt_areas.get(ed_frame_idx, gt_areas.get(int(pred_ed_orig), gt_areas.get(int(ed_orig), float("nan"))))
+                gt_area_pred_es = gt_areas.get(es_frame_idx, gt_areas.get(int(pred_es_orig), gt_areas.get(int(es_orig), float("nan"))))
 
                 stage4_out = {
                     "enabled": True,
@@ -2710,8 +2710,11 @@ def _render_overview_tab(result, stage67_case):
     segmentation_ef = _format_display_number(result["stage4"].get("ef_stage5_pred_pct", float("nan")), digits=1, suffix="%") if result["stage4"].get("available") else "Unavailable"
     fused_ef_text = _format_display_number(final_ef, digits=1, suffix="%")
 
+    gt_ef_text = _format_display_number(result["ef_gt_pct"], digits=1, suffix="%")
+    
     summary_rows = [
         ("Final EF", fused_ef_text),
+        ("Ground Truth EF", gt_ef_text),
         ("Condition", condition_text),
         ("Confidence", confidence_text),
         ("Model Agreement", agreement_display),

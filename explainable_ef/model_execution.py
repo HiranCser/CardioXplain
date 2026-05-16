@@ -1429,7 +1429,7 @@ def main(argv=None):
                 val_metrics["stage2_ed_es_feature_distance"],
                 val_metrics["stage3_ed_index_ce"],
                 val_metrics["stage3_es_index_ce"],
-                val_metrics.get("eval_clips_per_video", 1.0),
+                # val_metrics.get("eval_clips_per_video", 1.0),
             )
 
             if improved:
