@@ -9,7 +9,7 @@ class Stage2TemporalModel(nn.Module):
     def __init__(self, num_frames=32, feature_dim=512, hidden_dim=256, dropout=0.1):
         super().__init__()
         self.num_frames = num_frames
-        self.output_dim = feature_dim * 2
+        self.output_dim = feature_dim * 4 + 7
         self.temporal_pos_embed = nn.Parameter(torch.zeros(1, num_frames, feature_dim))
 
         self.temporal_context3 = nn.Sequential(
@@ -98,11 +98,27 @@ class Stage2TemporalModel(nn.Module):
 
         pooled_ed = weighted_feats_ed.sum(dim=1)
         pooled_es = weighted_feats_es.sum(dim=1)
+        pooled_delta = torch.abs(pooled_ed - pooled_es)
+        pooled_product = pooled_ed * pooled_es
+
+        positions = torch.linspace(0.0, 1.0, steps=self.num_frames, device=temporal_feats.device, dtype=temporal_feats.dtype)
+        positions = positions.view(1, self.num_frames, 1)
+        ed_expect = (attn_weights_ed * positions).sum(dim=1)
+        es_expect = (attn_weights_es * positions).sum(dim=1)
+        gap = es_expect - ed_expect
+        attn_safe_ed = attn_weights_ed.clamp_min(1e-8)
+        attn_safe_es = attn_weights_es.clamp_min(1e-8)
+        entropy_scale = torch.log(torch.tensor(float(self.num_frames), device=temporal_feats.device, dtype=temporal_feats.dtype)).clamp_min(1e-8)
+        ed_entropy = -(attn_safe_ed * torch.log(attn_safe_ed)).sum(dim=1) / entropy_scale
+        es_entropy = -(attn_safe_es * torch.log(attn_safe_es)).sum(dim=1) / entropy_scale
+        peak_ed = attn_weights_ed.max(dim=1).values
+        peak_es = attn_weights_es.max(dim=1).values
+        attn_features = torch.cat([ed_expect, es_expect, gap, ed_entropy, es_entropy, peak_ed, peak_es], dim=-1)
 
         # ============================================================
         # Final fused representation
         # ============================================================
 
-        pooled_feats = torch.cat([pooled_ed, pooled_es], dim=-1)
+        pooled_feats = torch.cat([pooled_ed, pooled_es, pooled_delta, pooled_product, attn_features], dim=-1)
 
         return  temporal_feats, pooled_feats,  attn_weights_pair

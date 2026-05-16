@@ -44,6 +44,13 @@ PHASE_PAIR_MIN_GAP = 15        # Used for ED/ES extraction from phase
 PHASE_UNFREEZE_LR_MULT = 0.5   # Not used for regression
 CLIP_PERIOD = 1  # EchoNet-style fixed clip sampling stride
 CLIP_EVAL_MODE = "all"  # "center" for single-clip validation/test, "all" for callers that aggregate clips
+TRAIN_CLIPS_PER_VIDEO = 4  # Repeat each training video with independently sampled clips per epoch
+
+# EF regression training
+EF_LOSS = "smooth_l1"  # "smooth_l1", "l1", or "mse"
+EF_SMOOTH_L1_BETA = 0.05
+STAGE123_MONITOR = "ef_mae_with_phase_gate"  # "joint_score", "ef_mae", or "ef_mae_with_phase_gate"
+STAGE123_PHASE_GATE = 0.80
 
 # Training configuration
 LEARNING_RATE = 1e-4

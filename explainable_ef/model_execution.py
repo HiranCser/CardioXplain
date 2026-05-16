@@ -72,6 +72,11 @@ def parse_args(argv=None):
     parser.add_argument("--max-grad-norm", type=float, default=None, help="Override config.MAX_GRAD_NORM")
     parser.add_argument("--clip-period", type=int, default=None, help="Override config.CLIP_PERIOD")
     parser.add_argument("--clip-eval-mode", type=str, choices=["center", "all"], default=None, help="Override config.CLIP_EVAL_MODE")
+    parser.add_argument("--train-clips-per-video", type=int, default=None, help="Repeat each training video with N independently sampled clips per epoch")
+    parser.add_argument("--ef-loss", type=str, choices=["smooth_l1", "l1", "mse"], default=None, help="EF regression loss")
+    parser.add_argument("--ef-smooth-l1-beta", type=float, default=None, help="SmoothL1 beta for EF regression")
+    parser.add_argument("--stage123-monitor", type=str, choices=["joint_score", "ef_mae", "ef_mae_with_phase_gate"], default=None, help="Validation metric used to save Stage1-3 checkpoints")
+    parser.add_argument("--stage123-phase-gate", type=float, default=None, help="Required joint phase accuracy for ef_mae_with_phase_gate monitor")
     parser.add_argument("--warm-start-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Warm-start model weights from existing checkpoint path if available")
     parser.add_argument("--protect-best-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Do not overwrite checkpoint unless monitor improves over existing checkpoint")
     parser.add_argument("--train-stage123", action=argparse.BooleanOptionalAction, default=False, help="Train Stage1+Stage2+Stage3 end-to-end with joint EF+phase supervision")
@@ -168,6 +173,16 @@ def apply_runtime_overrides(args, logger):
         overrides["CLIP_PERIOD"] = args.clip_period
     if args.clip_eval_mode is not None:
         overrides["CLIP_EVAL_MODE"] = args.clip_eval_mode
+    if args.train_clips_per_video is not None:
+        overrides["TRAIN_CLIPS_PER_VIDEO"] = args.train_clips_per_video
+    if args.ef_loss is not None:
+        overrides["EF_LOSS"] = args.ef_loss
+    if args.ef_smooth_l1_beta is not None:
+        overrides["EF_SMOOTH_L1_BETA"] = args.ef_smooth_l1_beta
+    if args.stage123_monitor is not None:
+        overrides["STAGE123_MONITOR"] = args.stage123_monitor
+    if args.stage123_phase_gate is not None:
+        overrides["STAGE123_PHASE_GATE"] = args.stage123_phase_gate
 
     if bool(getattr(args, "train_stage123", False)):
         logger.info("Enabled Stage1-3 end-to-end training profile (joint EF + phase)")
@@ -176,9 +191,9 @@ def apply_runtime_overrides(args, logger):
         if args.phase_only is None:
             overrides["PHASE_ONLY"] = False
         if args.phase_loss_weight is None:
-            overrides["PHASE_LOSS_WEIGHT"] = 2.0
+            overrides["PHASE_LOSS_WEIGHT"] = 0.8
         if args.phase_only_warmup_epochs is None:
-            overrides["PHASE_ONLY_WARMUP_EPOCHS"] = 5
+            overrides["PHASE_ONLY_WARMUP_EPOCHS"] = 0
         if args.phase_soft_sigma is None:
             overrides["PHASE_SOFT_SIGMA"] = 3.0
         if args.phase_soft_radius is None:
@@ -361,6 +376,7 @@ def build_dataloaders():
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         clip_period=clip_period,
         clip_eval_mode=clip_eval_mode,
+        train_clips_per_video=int(getattr(config, "TRAIN_CLIPS_PER_VIDEO", 1)),
     )
     val_dataset = EchoDataset(
         config.DATA_DIR,
@@ -447,6 +463,21 @@ def build_optimizer(model, logger):
     return optimizer
 
 
+def build_ef_loss(logger):
+    loss_name = str(getattr(config, "EF_LOSS", "smooth_l1")).strip().lower()
+    if loss_name == "smooth_l1":
+        beta = max(1e-6, float(getattr(config, "EF_SMOOTH_L1_BETA", 0.05)))
+        logger.info("EF loss: SmoothL1Loss(beta=%s)", beta)
+        return nn.SmoothL1Loss(beta=beta)
+    if loss_name == "l1":
+        logger.info("EF loss: L1Loss")
+        return nn.L1Loss()
+    if loss_name == "mse":
+        logger.info("EF loss: MSELoss")
+        return nn.MSELoss()
+    raise ValueError(f"Unsupported EF_LOSS: {loss_name}")
+
+
 def build_model_stack(logger):
     """Create model, optimizer and losses."""
     model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
@@ -459,12 +490,12 @@ def build_model_stack(logger):
 
     optimizer = build_optimizer(model, logger)
 
-    mse_loss = nn.MSELoss()
+    ef_loss_fn = build_ef_loss(logger)
     phase_regression_loss = nn.MSELoss()  # MSE for continuous phase prediction
 
     amp_enabled = bool(getattr(config, "USE_MIXED_PRECISION", False)) and is_cuda_runtime()
     scaler = make_grad_scaler(amp_enabled)
-    return model, optimizer, mse_loss, phase_regression_loss, amp_enabled, scaler
+    return model, optimizer, ef_loss_fn, phase_regression_loss, amp_enabled, scaler
 
 
 def log_stage_trainability(model, logger):
@@ -1141,6 +1172,11 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
                 "PHASE_ONLY_WARMUP_EPOCHS": int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)),
                 "PHASE_ATTN_ENTROPY_WEIGHT": float(getattr(config, "PHASE_ATTN_ENTROPY_WEIGHT", 0.0)),
                 "PHASE_PAIR_MIN_GAP": int(getattr(config, "PHASE_PAIR_MIN_GAP", 1)),
+                "TRAIN_CLIPS_PER_VIDEO": int(getattr(config, "TRAIN_CLIPS_PER_VIDEO", 1)),
+                "EF_LOSS": str(getattr(config, "EF_LOSS", "smooth_l1")),
+                "EF_SMOOTH_L1_BETA": float(getattr(config, "EF_SMOOTH_L1_BETA", 0.05)),
+                "STAGE123_MONITOR": str(getattr(config, "STAGE123_MONITOR", "joint_score")),
+                "STAGE123_PHASE_GATE": float(getattr(config, "STAGE123_PHASE_GATE", 0.80)),
             },
             "args": {
                 "num_frames": int(getattr(config, "NUM_FRAMES", 32)),
@@ -1148,6 +1184,9 @@ def save_checkpoint(model, optimizer, monitor_name, monitor_value, epoch, val_ma
                 "clip_eval_mode": str(getattr(config, "CLIP_EVAL_MODE", "center")),
                 "phase_only_warmup_epochs": int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)),
                 "phase_attn_entropy_weight": float(getattr(config, "PHASE_ATTN_ENTROPY_WEIGHT", 0.0)),
+                "train_clips_per_video": int(getattr(config, "TRAIN_CLIPS_PER_VIDEO", 1)),
+                "ef_loss": str(getattr(config, "EF_LOSS", "smooth_l1")),
+                "stage123_monitor": str(getattr(config, "STAGE123_MONITOR", "joint_score")),
                 "train_stage123": True,
                 "phase_only": bool(getattr(config, "PHASE_ONLY", False)),
             },
@@ -1234,6 +1273,33 @@ def load_existing_monitor_baseline(logger, expected_monitor_name):
     return monitor_value
 
 
+def stage123_monitor_name():
+    monitor = str(getattr(config, "STAGE123_MONITOR", "ef_mae_with_phase_gate")).strip().lower()
+    if monitor not in {"joint_score", "ef_mae", "ef_mae_with_phase_gate"}:
+        monitor = "ef_mae_with_phase_gate"
+    return f"stage123_{monitor}"
+
+
+def monitor_higher_is_better(monitor_name):
+    return str(monitor_name).endswith("joint_score") or str(monitor_name) == "phase_score_joint_minus_mae"
+
+
+def compute_stage123_monitor(val_metrics):
+    monitor = str(getattr(config, "STAGE123_MONITOR", "ef_mae_with_phase_gate")).strip().lower()
+    phase_score = val_metrics["joint_acc"] - 0.01 * (
+        val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
+    )
+
+    if monitor == "joint_score":
+        return phase_score
+    if monitor == "ef_mae":
+        return val_metrics["ef_mae"]
+
+    phase_gate = float(getattr(config, "STAGE123_PHASE_GATE", 0.80))
+    phase_shortfall = max(0.0, phase_gate - float(val_metrics["joint_acc"]))
+    return val_metrics["ef_mae"] + phase_shortfall
+
+
 def log_header(logger, amp_enabled):
     logger.info("=" * 80)
     logger.info("TRAINING SCRIPT STARTED")
@@ -1243,6 +1309,7 @@ def log_header(logger, amp_enabled):
     logger.info("Batch size: %d", config.BATCH_SIZE)
     logger.info("Number of frames: %d", config.NUM_FRAMES)
     logger.info("Max videos: %s", config.MAX_VIDEOS if config.MAX_VIDEOS else "All")
+    logger.info("Train clips per video: %d", int(getattr(config, "TRAIN_CLIPS_PER_VIDEO", 1)))
     logger.info("Learning rate: %s", config.LEARNING_RATE)
     logger.info("Epochs: %d", config.EPOCHS)
     logger.info("Workers: %d", config.NUM_WORKERS)
@@ -1253,6 +1320,10 @@ def log_header(logger, amp_enabled):
     logger.info("Normalize input: %s", bool(getattr(config, "NORMALIZE_INPUT", True)))
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
+    logger.info("EF loss: %s", str(getattr(config, "EF_LOSS", "smooth_l1")))
+    logger.info("EF SmoothL1 beta: %.4f", float(getattr(config, "EF_SMOOTH_L1_BETA", 0.05)))
+    logger.info("Stage1-3 monitor: %s", str(getattr(config, "STAGE123_MONITOR", "ef_mae_with_phase_gate")))
+    logger.info("Stage1-3 phase gate: %.2f%%", float(getattr(config, "STAGE123_PHASE_GATE", 0.80)) * 100.0)
     logger.info("Phase label smoothing: %.3f", float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)))
     logger.info("Phase-only mode: %s", is_phase_only_mode())
     logger.info("Phase-only warmup epochs: %d", int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)))
@@ -1297,8 +1368,8 @@ def main(argv=None):
         best_monitor = -float("inf")
         monitor_name = "phase_score_joint_minus_mae"
     elif train_stage123_mode:
-        best_monitor = -float("inf")
-        monitor_name = "stage123_joint_score"
+        monitor_name = stage123_monitor_name()
+        best_monitor = -float("inf") if monitor_higher_is_better(monitor_name) else float("inf")
     else:
         best_monitor = float("inf")
         monitor_name = "ef_mae"
@@ -1319,7 +1390,7 @@ def main(argv=None):
     if protect_checkpoint_enabled:
         baseline_monitor = load_existing_monitor_baseline(logger, expected_monitor_name=monitor_name)
         if baseline_monitor is not None:
-            if phase_only or train_stage123_mode:
+            if monitor_higher_is_better(monitor_name):
                 best_monitor = max(best_monitor, baseline_monitor)
             else:
                 best_monitor = min(best_monitor, baseline_monitor)
@@ -1395,12 +1466,8 @@ def main(argv=None):
                     val_metrics["es_mae_frames"],
                 )
 
-                phase_score = val_metrics["joint_acc"] - 0.01 * (
-                    val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
-                )
-                ef_score = 1.0 - val_metrics["ef_mae"]
-                current_monitor = 0.65 * phase_score + 0.35 * ef_score
-                improved = current_monitor > best_monitor
+                current_monitor = compute_stage123_monitor(val_metrics)
+                improved = current_monitor > best_monitor if monitor_higher_is_better(monitor_name) else current_monitor < best_monitor
             else:
                 logger.info(
                     "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%% | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%%",
@@ -1429,8 +1496,9 @@ def main(argv=None):
                 val_metrics["stage2_ed_es_feature_distance"],
                 val_metrics["stage3_ed_index_ce"],
                 val_metrics["stage3_es_index_ce"],
-                # val_metrics.get("eval_clips_per_video", 1.0),
+                val_metrics.get("eval_clips_per_video", 1.0),
             )
+            logger.info("%s: %.6f | best: %.6f", monitor_name, current_monitor, best_monitor)
 
             if improved:
                 best_monitor = current_monitor

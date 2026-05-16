@@ -5,9 +5,11 @@ import subprocess
 import sys
 import time
 
-import config
-
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+import config
 
 
 def _run_step(step_name, cmd, env=None):
@@ -40,6 +42,11 @@ def parse_args():
     parser.add_argument("--stage123-num-frames", type=int, default=None)
     parser.add_argument("--stage123-workers", type=int, default=None)
     parser.add_argument("--stage123-max-videos", type=int, default=None)
+    parser.add_argument("--stage123-train-clips-per-video", type=int, default=None)
+    parser.add_argument("--stage123-ef-loss", type=str, choices=["smooth_l1", "l1", "mse"], default=None)
+    parser.add_argument("--stage123-ef-smooth-l1-beta", type=float, default=None)
+    parser.add_argument("--stage123-monitor", type=str, choices=["joint_score", "ef_mae", "ef_mae_with_phase_gate"], default=None)
+    parser.add_argument("--stage123-phase-gate", type=float, default=None)
 
     parser.add_argument("--stage4-checkpoint", type=str, default=getattr(config, "STAGE4_CHECKPOINT_PATH", "best_stage4_segmentation_area.pth"))
     parser.add_argument("--stage4-epochs", type=int, default=50)
@@ -119,6 +126,16 @@ def main():
             cmd += ["--workers", str(args.stage123_workers)]
         if args.stage123_max_videos is not None:
             cmd += ["--max-videos", str(args.stage123_max_videos)]
+        if args.stage123_train_clips_per_video is not None:
+            cmd += ["--train-clips-per-video", str(args.stage123_train_clips_per_video)]
+        if args.stage123_ef_loss is not None:
+            cmd += ["--ef-loss", str(args.stage123_ef_loss)]
+        if args.stage123_ef_smooth_l1_beta is not None:
+            cmd += ["--ef-smooth-l1-beta", str(args.stage123_ef_smooth_l1_beta)]
+        if args.stage123_monitor is not None:
+            cmd += ["--stage123-monitor", str(args.stage123_monitor)]
+        if args.stage123_phase_gate is not None:
+            cmd += ["--stage123-phase-gate", str(args.stage123_phase_gate)]
         if args.device is not None and str(args.device).lower() == "cpu":
             cmd += ["--no-amp"]
 

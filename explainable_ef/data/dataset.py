@@ -24,6 +24,7 @@ class EchoDataset(Dataset):
         normalize_input=True,
         clip_period=1,
         clip_eval_mode="all",
+        train_clips_per_video=1,
     ):
         self.data_dir = data_dir
         self.num_frames = int(num_frames)
@@ -34,6 +35,7 @@ class EchoDataset(Dataset):
         self.split = str(split).strip().upper()
         self.clip_period = max(1, int(clip_period))
         self.clip_eval_mode = str(clip_eval_mode).strip().lower()
+        self.train_clips_per_video = max(1, int(train_clips_per_video)) if self.split == "TRAIN" else 1
         if self.clip_eval_mode not in {"center", "all"}:
             raise ValueError(f"Unsupported clip_eval_mode: {clip_eval_mode}")
 
@@ -75,7 +77,7 @@ class EchoDataset(Dataset):
             }
 
     def __len__(self):
-        return len(self.filelist)
+        return len(self.filelist) * self.train_clips_per_video
 
     def _clip_start_indices(self, total_video_frames, mode=None, ed_original=-1, es_original=-1, contain_events=False):
         required_frames = (self.num_frames - 1) * self.clip_period + 1
@@ -155,14 +157,14 @@ class EchoDataset(Dataset):
         sampled_indices = self._clip_indices_from_start(start, total_video_frames)
         return self._frames_to_tensor(sampled_frames), sampled_indices
 
-    def load_video(self, path, ed_original=-1, es_original=-1):
+    def load_video(self, path, ed_original=-1, es_original=-1, contain_events=True):
         frames_array = self._read_video_frames(path)
         start = self._clip_start_indices(
             len(frames_array),
             mode="center" if self.split != "TRAIN" else None,
             ed_original=ed_original,
             es_original=es_original,
-            contain_events=True,
+            contain_events=contain_events,
         )[0]
         return self._sample_clip_from_frames(frames_array, start)
 
@@ -187,7 +189,9 @@ class EchoDataset(Dataset):
         return torch.stack(clips, dim=0), np.stack(sampled_indices, axis=0)
 
     def __getitem__(self, idx):
-        row = self.filelist.iloc[idx]
+        video_idx = int(idx) // self.train_clips_per_video if self.split == "TRAIN" else int(idx)
+        clip_variant = int(idx) % self.train_clips_per_video if self.split == "TRAIN" else 0
+        row = self.filelist.iloc[video_idx]
         file_name_with_extension = row["FileName"] + ".avi"
         video_path = os.path.join(self.data_dir, "Videos", file_name_with_extension)
         if not os.path.exists(video_path):
@@ -202,6 +206,7 @@ class EchoDataset(Dataset):
             video_path,
             ed_original=ed_original,
             es_original=es_original,
+            contain_events=(clip_variant == 0),
         )
 
         ed_idx = torch.tensor(self._original_to_clip_index(ed_original, sampled_indices), dtype=torch.long)

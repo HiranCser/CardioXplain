@@ -15,7 +15,16 @@ class EchoPipeline(nn.Module):
         self.stage2 = Stage2TemporalModel(num_frames=num_frames, feature_dim=feature_dim)
         self.stage3 = Stage3PhaseDetector(feature_dim=feature_dim)
         self.stage45 = Stage45Pipeline()
-        self.ef_regressor = nn.Linear(self.stage2.output_dim, 1)
+        self.ef_regressor = nn.Sequential(
+            nn.LayerNorm(self.stage2.output_dim),
+            nn.Linear(self.stage2.output_dim, 512),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, 128),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 1),
+        )
 
     def forward(self, x, stage45_context=None, return_stage_outputs=False):
         """
