@@ -73,6 +73,9 @@ def parse_args(argv=None):
     parser.add_argument("--clip-period", type=int, default=None, help="Override config.CLIP_PERIOD")
     parser.add_argument("--clip-eval-mode", type=str, choices=["center", "all"], default=None, help="Override config.CLIP_EVAL_MODE")
     parser.add_argument("--train-clips-per-video", type=int, default=None, help="Repeat each training video with N independently sampled clips per epoch")
+    parser.add_argument("--clip-start-mode", type=str, choices=["random", "center", "prior"], default=None, help="Clip start policy for non-all clip loading")
+    parser.add_argument("--clip-prior-path", type=str, default=None, help="TRAIN-derived ED/ES prior JSON for --clip-start-mode prior")
+    parser.add_argument("--clip-prior-jitter-std", type=float, default=None, help="Training jitter multiplier for prior relative-position std")
     parser.add_argument("--ef-loss", type=str, choices=["smooth_l1", "l1", "mse"], default=None, help="EF regression loss")
     parser.add_argument("--ef-smooth-l1-beta", type=float, default=None, help="SmoothL1 beta for EF regression")
     parser.add_argument("--stage123-monitor", type=str, choices=["joint_score", "ef_mae", "ef_mae_with_phase_gate"], default=None, help="Validation metric used to save Stage1-3 checkpoints")
@@ -175,6 +178,12 @@ def apply_runtime_overrides(args, logger):
         overrides["CLIP_EVAL_MODE"] = args.clip_eval_mode
     if args.train_clips_per_video is not None:
         overrides["TRAIN_CLIPS_PER_VIDEO"] = args.train_clips_per_video
+    if args.clip_start_mode is not None:
+        overrides["CLIP_START_MODE"] = args.clip_start_mode
+    if args.clip_prior_path is not None:
+        overrides["CLIP_PRIOR_PATH"] = args.clip_prior_path
+    if args.clip_prior_jitter_std is not None:
+        overrides["CLIP_PRIOR_JITTER_STD"] = args.clip_prior_jitter_std
     if args.ef_loss is not None:
         overrides["EF_LOSS"] = args.ef_loss
     if args.ef_smooth_l1_beta is not None:
@@ -377,6 +386,9 @@ def build_dataloaders():
         clip_period=clip_period,
         clip_eval_mode=clip_eval_mode,
         train_clips_per_video=int(getattr(config, "TRAIN_CLIPS_PER_VIDEO", 1)),
+        clip_start_mode=str(getattr(config, "CLIP_START_MODE", "random")),
+        clip_prior_path=getattr(config, "CLIP_PRIOR_PATH", None),
+        clip_prior_jitter_std=float(getattr(config, "CLIP_PRIOR_JITTER_STD", 0.5)),
     )
     val_dataset = EchoDataset(
         config.DATA_DIR,
@@ -386,6 +398,9 @@ def build_dataloaders():
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         clip_period=clip_period,
         clip_eval_mode=clip_eval_mode,
+        clip_start_mode=str(getattr(config, "CLIP_START_MODE", "random")),
+        clip_prior_path=getattr(config, "CLIP_PRIOR_PATH", None),
+        clip_prior_jitter_std=0.0,
     )
     test_dataset = EchoDataset(
         config.DATA_DIR,
@@ -395,6 +410,9 @@ def build_dataloaders():
         normalize_input=bool(getattr(config, "NORMALIZE_INPUT", True)),
         clip_period=clip_period,
         clip_eval_mode=clip_eval_mode,
+        clip_start_mode=str(getattr(config, "CLIP_START_MODE", "random")),
+        clip_prior_path=getattr(config, "CLIP_PRIOR_PATH", None),
+        clip_prior_jitter_std=0.0,
     )
 
     train_loader = DataLoader(train_dataset, **dataloader_kwargs(shuffle=True))
@@ -1443,6 +1461,9 @@ def log_header(logger, amp_enabled):
     logger.info("Max grad norm: %s", getattr(config, "MAX_GRAD_NORM", 0.0))
     logger.info("Clip period: %d", int(getattr(config, "CLIP_PERIOD", 1)))
     logger.info("Clip eval mode: %s", str(getattr(config, "CLIP_EVAL_MODE", "center")))
+    logger.info("Clip start mode: %s", str(getattr(config, "CLIP_START_MODE", "random")))
+    logger.info("Clip prior path: %s", getattr(config, "CLIP_PRIOR_PATH", None))
+    logger.info("Clip prior jitter std: %.3f", float(getattr(config, "CLIP_PRIOR_JITTER_STD", 0.5)))
 
 
 def main(argv=None):

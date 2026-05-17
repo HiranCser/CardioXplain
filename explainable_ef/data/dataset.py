@@ -1,4 +1,5 @@
 import os
+import json
 import cv2
 import numpy as np
 import pandas as pd
@@ -25,6 +26,9 @@ class EchoDataset(Dataset):
         clip_period=1,
         clip_eval_mode="all",
         train_clips_per_video=1,
+        clip_start_mode="random",
+        clip_prior_path=None,
+        clip_prior_jitter_std=0.5,
     ):
         self.data_dir = data_dir
         self.num_frames = int(num_frames)
@@ -36,8 +40,15 @@ class EchoDataset(Dataset):
         self.clip_period = max(1, int(clip_period))
         self.clip_eval_mode = str(clip_eval_mode).strip().lower()
         self.train_clips_per_video = max(1, int(train_clips_per_video)) if self.split == "TRAIN" else 1
+        self.clip_start_mode = str(clip_start_mode).strip().lower()
+        self.clip_prior_jitter_std = max(0.0, float(clip_prior_jitter_std))
+        self.clip_prior = self._load_clip_prior(clip_prior_path)
         if self.clip_eval_mode not in {"center", "all"}:
             raise ValueError(f"Unsupported clip_eval_mode: {clip_eval_mode}")
+        if self.clip_start_mode not in {"random", "center", "prior"}:
+            raise ValueError(f"Unsupported clip_start_mode: {clip_start_mode}")
+        if self.clip_start_mode == "prior" and self.clip_prior is None:
+            raise ValueError("clip_start_mode='prior' requires clip_prior_path")
 
         self._mean = torch.tensor(KINETICS_MEAN, dtype=torch.float32).view(3, 1, 1, 1)
         self._std = torch.tensor(KINETICS_STD, dtype=torch.float32).view(3, 1, 1, 1)
@@ -76,8 +87,34 @@ class EchoDataset(Dataset):
                 "es": phase_info["es_frame"],
             }
 
+    @staticmethod
+    def _load_clip_prior(path):
+        if path is None or str(path).strip() == "":
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
     def __len__(self):
         return len(self.filelist) * self.train_clips_per_video
+
+    def _prior_center_frame(self, total_video_frames):
+        priors = self.clip_prior.get("clip_center_priors", {}) if self.clip_prior else {}
+        if not priors:
+            return None
+
+        if self.split == "TRAIN":
+            keys = ["pair_mid_rel_mean", "ed_rel_mean", "es_rel_mean"]
+            key = str(np.random.choice(keys, p=np.array([0.5, 0.25, 0.25])))
+        else:
+            key = "pair_mid_rel_mean"
+
+        rel = float(priors.get(key, priors.get("pair_mid_rel_mean", 0.5)))
+        std_key = key.replace("_mean", "_std")
+        rel_std = float(priors.get(std_key, 0.0))
+        if self.split == "TRAIN" and rel_std > 0.0 and self.clip_prior_jitter_std > 0.0:
+            rel += float(np.random.normal(0.0, rel_std * self.clip_prior_jitter_std))
+        rel = float(np.clip(rel, 0.0, 1.0))
+        return int(round(rel * max(0, int(total_video_frames) - 1)))
 
     def _clip_start_indices(self, total_video_frames, mode=None, ed_original=-1, es_original=-1, contain_events=False):
         required_frames = (self.num_frames - 1) * self.clip_period + 1
@@ -97,6 +134,13 @@ class EchoDataset(Dataset):
                 start_high = max_start
 
         if self.split == "TRAIN":
+            if self.clip_start_mode == "center":
+                return np.array([max_start // 2], dtype=np.int32)
+            if self.clip_start_mode == "prior":
+                center = self._prior_center_frame(total_video_frames)
+                if center is not None:
+                    start = int(np.clip(center - required_frames // 2, 0, max_start))
+                    return np.array([start], dtype=np.int32)
             return np.array([np.random.randint(start_low, start_high + 1)], dtype=np.int32)
 
         eval_mode = self.clip_eval_mode if mode is None else str(mode).strip().lower()
@@ -104,6 +148,10 @@ class EchoDataset(Dataset):
             return np.arange(max_start + 1, dtype=np.int32)
         if eval_mode != "center":
             raise ValueError(f"Unsupported clip eval mode: {eval_mode}")
+        if self.clip_start_mode == "prior":
+            center = self._prior_center_frame(total_video_frames)
+            if center is not None:
+                return np.array([int(np.clip(center - required_frames // 2, 0, max_start))], dtype=np.int32)
         return np.array([(start_low + start_high) // 2], dtype=np.int32)
 
     def _clip_indices_from_start(self, start, total_video_frames):
