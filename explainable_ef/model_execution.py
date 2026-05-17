@@ -49,6 +49,7 @@ def parse_args(argv=None):
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     parser.add_argument("--phase-frame-class-weights", type=str, default=None, help="Comma-separated CE weights for background,ED,ES")
+    parser.add_argument("--phase-event-heatmap-weight", type=float, default=None, help="Direct temporal KL weight for ED/ES event logits")
     parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
     parser.add_argument("--phase-only-warmup-epochs", type=int, default=None, help="Temporarily disable EF loss for N initial joint-training epochs")
     parser.add_argument("--phase-backbone-freeze-epochs", type=int, default=None, help="Override config.PHASE_BACKBONE_FREEZE_EPOCHS")
@@ -131,6 +132,8 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
     if args.phase_frame_class_weights is not None:
         overrides["PHASE_FRAME_CLASS_WEIGHTS"] = args.phase_frame_class_weights
+    if args.phase_event_heatmap_weight is not None:
+        overrides["PHASE_EVENT_HEATMAP_WEIGHT"] = args.phase_event_heatmap_weight
     if args.phase_only is not None:
         overrides["PHASE_ONLY"] = args.phase_only
     if args.phase_only_warmup_epochs is not None:
@@ -794,6 +797,38 @@ def compute_phase_pair_regularizers(phase_logits, ed_idx, es_idx, ed_visible=Non
     return index_loss, order_loss
 
 
+def compute_phase_event_heatmap_loss(phase_pred, ed_idx, es_idx, ed_visible=None, es_visible=None):
+    logits = phase_logits_from_output(phase_pred)
+    if logits is None:
+        return torch.zeros((), device=ed_idx.device)
+
+    if ed_visible is None:
+        ed_visible = torch.ones_like(ed_idx, dtype=torch.bool)
+    if es_visible is None:
+        es_visible = torch.ones_like(es_idx, dtype=torch.bool)
+
+    num_frames = logits.shape[1]
+    sigma = float(getattr(config, "PHASE_SOFT_SIGMA", 3.0))
+    radius = int(getattr(config, "PHASE_SOFT_RADIUS", 9))
+    ed_target = build_soft_temporal_targets(ed_idx.clamp(0, num_frames - 1), num_frames, logits.device, sigma, radius)
+    es_target = build_soft_temporal_targets(es_idx.clamp(0, num_frames - 1), num_frames, logits.device, sigma, radius)
+
+    ed_log_probs = F.log_softmax(logits[:, :, 1], dim=1)
+    es_log_probs = F.log_softmax(logits[:, :, 2], dim=1)
+    ed_kl = (ed_target * (torch.log(ed_target.clamp_min(1e-8)) - ed_log_probs)).sum(dim=1)
+    es_kl = (es_target * (torch.log(es_target.clamp_min(1e-8)) - es_log_probs)).sum(dim=1)
+
+    ed_has = bool(ed_visible.any())
+    es_has = bool(es_visible.any())
+    denom = float(ed_has) + float(es_has)
+    if denom <= 0.0:
+        return torch.zeros((), device=logits.device)
+    return (
+        _visible_mean(ed_kl, ed_visible) * float(ed_has) +
+        _visible_mean(es_kl, es_visible) * float(es_has)
+    ) / denom
+
+
 def compute_continuous_phase_loss(phase_pred, phase_labels, phase_regression_loss_fn):
     """
     Compute phase loss.
@@ -1172,6 +1207,7 @@ def train_one_epoch(
     attn_entropy_weight = max(0.0, float(getattr(config, "PHASE_ATTN_ENTROPY_WEIGHT", 0.0)))
     phase_pair_index_weight = max(0.0, float(getattr(config, "PHASE_PAIR_INDEX_WEIGHT", 0.0)))
     phase_pair_order_weight = max(0.0, float(getattr(config, "PHASE_PAIR_ORDER_WEIGHT", 0.0)))
+    phase_event_heatmap_weight = max(0.0, float(getattr(config, "PHASE_EVENT_HEATMAP_WEIGHT", 0.0)))
 
     for batch_idx, batch in enumerate(loader):
         data_time += time.perf_counter() - loop_end
@@ -1208,6 +1244,10 @@ def train_one_epoch(
                 phase_labels=phase_labels,
                 phase_regression_loss_fn=phase_regression_loss_fn,
             )
+            if phase_event_heatmap_weight > 0.0:
+                phase_loss = phase_loss + phase_event_heatmap_weight * compute_phase_event_heatmap_loss(
+                    phase_pred, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                )
 
             phase_vec = phase_vector_from_output(phase_pred)
             both_visible = ed_visible & es_visible
@@ -1457,6 +1497,7 @@ def log_header(logger, amp_enabled):
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
     logger.info("Phase frame class weights: %s", getattr(config, "PHASE_FRAME_CLASS_WEIGHTS", None))
+    logger.info("Phase event heatmap weight: %.3f", float(getattr(config, "PHASE_EVENT_HEATMAP_WEIGHT", 0.0)))
     logger.info("EF loss: %s", str(getattr(config, "EF_LOSS", "smooth_l1")))
     logger.info("EF SmoothL1 beta: %.4f", float(getattr(config, "EF_SMOOTH_L1_BETA", 0.05)))
     logger.info("Stage1-3 monitor: %s", str(getattr(config, "STAGE123_MONITOR", "ef_mae_with_phase_gate")))
