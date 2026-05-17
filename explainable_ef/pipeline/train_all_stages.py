@@ -43,6 +43,8 @@ def parse_args():
     parser.add_argument("--stage123-workers", type=int, default=None)
     parser.add_argument("--stage123-max-videos", type=int, default=None)
     parser.add_argument("--stage123-train-clips-per-video", type=int, default=None)
+    parser.add_argument("--stage123-phase-loss-weight", type=float, default=None)
+    parser.add_argument("--stage123-phase-only-warmup-epochs", type=int, default=None)
     parser.add_argument("--stage123-ef-loss", type=str, choices=["smooth_l1", "l1", "mse"], default=None)
     parser.add_argument("--stage123-ef-smooth-l1-beta", type=float, default=None)
     parser.add_argument("--stage123-monitor", type=str, choices=["joint_score", "ef_mae", "ef_mae_with_phase_gate"], default=None)
@@ -128,6 +130,10 @@ def main():
             cmd += ["--max-videos", str(args.stage123_max_videos)]
         if args.stage123_train_clips_per_video is not None:
             cmd += ["--train-clips-per-video", str(args.stage123_train_clips_per_video)]
+        if args.stage123_phase_loss_weight is not None:
+            cmd += ["--phase-loss-weight", str(args.stage123_phase_loss_weight)]
+        if args.stage123_phase_only_warmup_epochs is not None:
+            cmd += ["--phase-only-warmup-epochs", str(args.stage123_phase_only_warmup_epochs)]
         if args.stage123_ef_loss is not None:
             cmd += ["--ef-loss", str(args.stage123_ef_loss)]
         if args.stage123_ef_smooth_l1_beta is not None:
