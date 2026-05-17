@@ -43,6 +43,7 @@ def parse_args():
     parser.add_argument("--stage123-workers", type=int, default=None)
     parser.add_argument("--stage123-max-videos", type=int, default=None)
     parser.add_argument("--stage123-train-clips-per-video", type=int, default=None)
+    parser.add_argument("--stage123-train-phase-detection", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--stage123-clip-start-mode", type=str, choices=["random", "center", "prior"], default=None)
     parser.add_argument("--stage123-clip-prior-path", type=str, default=None)
     parser.add_argument("--stage123-clip-prior-jitter-std", type=float, default=None)
@@ -135,6 +136,8 @@ def main():
             cmd += ["--max-videos", str(args.stage123_max_videos)]
         if args.stage123_train_clips_per_video is not None:
             cmd += ["--train-clips-per-video", str(args.stage123_train_clips_per_video)]
+        if args.stage123_train_phase_detection is not None:
+            cmd += ["--train-phase-detection" if args.stage123_train_phase_detection else "--no-train-phase-detection"]
         if args.stage123_clip_start_mode is not None:
             cmd += ["--clip-start-mode", str(args.stage123_clip_start_mode)]
         if args.stage123_clip_prior_path is not None:

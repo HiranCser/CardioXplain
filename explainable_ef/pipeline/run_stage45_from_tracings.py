@@ -262,6 +262,7 @@ def parse_args():
     parser.add_argument("--eval-threshold", type=float, default=0.5)
     parser.add_argument("--curve-smooth-window", type=int, default=11, help="Smoothing window for full-video Stage4 size curve")
     parser.add_argument("--curve-batch-size", type=int, default=16, help="Batch size for full-video Stage4 inference")
+    parser.add_argument("--phase-acc-threshold", type=int, default=4, help="Frame tolerance for ED/ES phase accuracy")
     parser.add_argument("--device", type=str, default="auto")
     return parser.parse_args()
 
@@ -298,6 +299,9 @@ def main():
     per_video_rows = []
     per_frame_rows = []
     errors = []
+    ed_frame_errors = []
+    es_frame_errors = []
+    joint_hits = []
 
     for _, row in split_df.iterrows():
         fname = str(row["FileName"])
@@ -416,7 +420,16 @@ def main():
             ef_pred = ef_gt_proxy
 
         abs_err = abs(float(ef_pred) - float(ef_gt))
+        ed_frame_error = abs(int(pred_ed_frame) - int(gt_ed_frame))
+        es_frame_error = abs(int(pred_es_frame) - int(gt_es_frame))
+        phase_threshold = int(args.phase_acc_threshold)
+        ed_hit = ed_frame_error <= phase_threshold
+        es_hit = es_frame_error <= phase_threshold
+        joint_hit = bool(ed_hit and es_hit)
         errors.append(abs_err)
+        ed_frame_errors.append(float(ed_frame_error))
+        es_frame_errors.append(float(es_frame_error))
+        joint_hits.append(float(joint_hit))
 
         per_video_rows.append(
             {
@@ -436,8 +449,12 @@ def main():
                 "gt_es_area": float(gt_es_area),
                 "pred_ed_area": float(pred_ed_area),
                 "pred_es_area": float(pred_es_area),
-                "pred_ed_frame_error": float(abs(pred_ed_frame - gt_ed_frame)),
-                "pred_es_frame_error": float(abs(pred_es_frame - gt_es_frame)),
+                "pred_ed_frame_error": float(ed_frame_error),
+                "pred_es_frame_error": float(es_frame_error),
+                "pred_ed_hit": bool(ed_hit),
+                "pred_es_hit": bool(es_hit),
+                "pred_joint_hit": bool(joint_hit),
+                "phase_acc_threshold": int(phase_threshold),
                 "pred_curve_method": ("full_video_stage4_curve" if args.mode == "predicted_masks" else "tracing"),
                 "pred_pair_swapped": bool(pred_pair_swapped),
             }
@@ -507,6 +524,11 @@ def main():
         return
 
     mae = float(np.mean(errors))
+    ed_mae = float(np.mean(ed_frame_errors))
+    es_mae = float(np.mean(es_frame_errors))
+    ed_acc = float(np.mean(np.asarray(ed_frame_errors) <= int(args.phase_acc_threshold)))
+    es_acc = float(np.mean(np.asarray(es_frame_errors) <= int(args.phase_acc_threshold)))
+    joint_acc = float(np.mean(joint_hits))
 
     video_csv = os.path.join(args.output_dir, "stage5_video_metrics.csv")
     frame_csv = os.path.join(args.output_dir, "stage5_frame_metrics.csv")
@@ -523,6 +545,10 @@ def main():
     print(f"Videos processed:      {len(per_video_rows)}")
     print(f"EF MAE (0-1):          {mae:.4f}")
     print(f"EF MAE (%):            {mae * 100:.2f}")
+    print(f"Phase threshold(fr):   {int(args.phase_acc_threshold)}")
+    print(f"ED/ES MAE(fr):         {ed_mae:.2f} / {es_mae:.2f}")
+    print(f"ED/ES Acc:             {ed_acc * 100:.2f}% / {es_acc * 100:.2f}%")
+    print(f"Joint Phase Acc:       {joint_acc * 100:.2f}%")
     print(f"Video metrics CSV:     {os.path.abspath(video_csv)}")
     if per_frame_rows:
         print(f"Frame metrics CSV:     {os.path.abspath(frame_csv)}")

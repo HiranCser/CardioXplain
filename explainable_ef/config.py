@@ -19,6 +19,7 @@ MAX_VIDEOS = None  # LIMITED TO 10 VIDEOS FOR TESTING
 # - ES (End-Systole, min LV cavity) → phase ≈ 0.5
 # - Full cycle: 0.0 → 0.5 → 1.0 → (back to 0.0)
 PHASE_LOSS_WEIGHT = 1.5  # Weight of phase regression loss relative to EF regression loss
+TRAIN_PHASE_DETECTION = True
 PHASE_ONLY = False  # If True, disable EF loss and optimize only phase detection
 PHASE_ONLY_WARMUP_EPOCHS = 5  # Joint mode can temporarily disable EF loss for phase learning warmup
 PHASE_FRAME_CLASS_WEIGHTS = "0.15,2.0,2.0"  # background, ED, ES weights for per-frame CE

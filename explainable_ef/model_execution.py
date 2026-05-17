@@ -47,6 +47,7 @@ def parse_args(argv=None):
     parser.add_argument("--benchmark", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable cuDNN benchmark")
     parser.add_argument("--normalize-input", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable Kinetics input normalization")
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
+    parser.add_argument("--train-phase-detection", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable Stage1-3 phase detection losses during training")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
     parser.add_argument("--phase-frame-class-weights", type=str, default=None, help="Comma-separated CE weights for background,ED,ES")
     parser.add_argument("--phase-event-heatmap-weight", type=float, default=None, help="Direct temporal KL weight for ED/ES event logits")
@@ -128,6 +129,8 @@ def apply_runtime_overrides(args, logger):
         overrides["NORMALIZE_INPUT"] = args.normalize_input
     if args.phase_loss_weight is not None:
         overrides["PHASE_LOSS_WEIGHT"] = args.phase_loss_weight
+    if args.train_phase_detection is not None:
+        overrides["TRAIN_PHASE_DETECTION"] = args.train_phase_detection
     if args.phase_label_smoothing is not None:
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
     if args.phase_frame_class_weights is not None:
@@ -208,6 +211,9 @@ def apply_runtime_overrides(args, logger):
         if args.phase_loss_weight is None:
             overrides["PHASE_LOSS_WEIGHT"] = 0.8
         if args.phase_only_warmup_epochs is None:
+            overrides["PHASE_ONLY_WARMUP_EPOCHS"] = 0
+        if args.train_phase_detection is False:
+            overrides["PHASE_LOSS_WEIGHT"] = 0.0
             overrides["PHASE_ONLY_WARMUP_EPOCHS"] = 0
         if args.phase_soft_sigma is None:
             overrides["PHASE_SOFT_SIGMA"] = 3.0
@@ -290,10 +296,16 @@ def is_phase_only_mode():
 
 
 def is_phase_only_epoch(epoch_idx):
+    if not bool(getattr(config, "TRAIN_PHASE_DETECTION", True)):
+        return False
     if is_phase_only_mode():
         return True
     warmup_epochs = max(0, int(getattr(config, "PHASE_ONLY_WARMUP_EPOCHS", 0)))
     return int(epoch_idx) < warmup_epochs
+
+
+def train_phase_detection_enabled():
+    return bool(getattr(config, "TRAIN_PHASE_DETECTION", True)) and float(getattr(config, "PHASE_LOSS_WEIGHT", 0.0)) > 0.0
 
 
 def make_grad_scaler(amp_enabled):
@@ -1208,6 +1220,7 @@ def train_one_epoch(
     phase_pair_index_weight = max(0.0, float(getattr(config, "PHASE_PAIR_INDEX_WEIGHT", 0.0)))
     phase_pair_order_weight = max(0.0, float(getattr(config, "PHASE_PAIR_ORDER_WEIGHT", 0.0)))
     phase_event_heatmap_weight = max(0.0, float(getattr(config, "PHASE_EVENT_HEATMAP_WEIGHT", 0.0)))
+    train_phase = train_phase_detection_enabled()
 
     for batch_idx, batch in enumerate(loader):
         data_time += time.perf_counter() - loop_end
@@ -1220,14 +1233,16 @@ def train_one_epoch(
         total_samples += batch_size
 
         num_frames = videos.size(2)  # videos shape: (batch, channels, frames, height, width)
-        phase_labels = build_frame_phase_targets(
-            ed_idx,
-            es_idx,
-            num_frames,
-            radius=max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1))),
-            ed_visible=ed_visible,
-            es_visible=es_visible,
-        )
+        phase_labels = None
+        if train_phase:
+            phase_labels = build_frame_phase_targets(
+                ed_idx,
+                es_idx,
+                num_frames,
+                radius=max(0, int(getattr(config, "PHASE_FRAME_RADIUS", 1))),
+                ed_visible=ed_visible,
+                es_visible=es_visible,
+            )
 
         compute_start = time.perf_counter()
 
@@ -1239,40 +1254,42 @@ def train_one_epoch(
             else:
                 ef_loss = mse_loss(ef_pred, efs)
 
-            phase_loss = compute_continuous_phase_loss(
-                phase_pred=phase_pred,
-                phase_labels=phase_labels,
-                phase_regression_loss_fn=phase_regression_loss_fn,
-            )
-            if phase_event_heatmap_weight > 0.0:
-                phase_loss = phase_loss + phase_event_heatmap_weight * compute_phase_event_heatmap_loss(
-                    phase_pred, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+            phase_loss = torch.zeros((), device=videos.device)
+            if train_phase:
+                phase_loss = compute_continuous_phase_loss(
+                    phase_pred=phase_pred,
+                    phase_labels=phase_labels,
+                    phase_regression_loss_fn=phase_regression_loss_fn,
                 )
-
-            phase_vec = phase_vector_from_output(phase_pred)
-            both_visible = ed_visible & es_visible
-            if phase_vec is not None and bool(both_visible.any()):
-                cyclic_targets = build_cyclic_phase_targets(ed_idx, es_idx, num_frames)
-                phase_loss = phase_loss + F.smooth_l1_loss(phase_vec[both_visible], cyclic_targets[both_visible])
-
-            if attn_align_weight > 0.0:
-                phase_loss = phase_loss + attn_align_weight * compute_attention_alignment_loss(
-                    attention, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
-                )
-            if attn_index_weight > 0.0 or attn_order_weight > 0.0:
-                attn_index_loss, attn_order_loss = compute_attention_index_loss(
-                    attention, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
-                )
-                phase_loss = phase_loss + attn_index_weight * attn_index_loss + attn_order_weight * attn_order_loss
-            if attn_entropy_weight > 0.0:
-                phase_loss = phase_loss + attn_entropy_weight * compute_attention_entropy_loss(attention)
-            if phase_pair_index_weight > 0.0 or phase_pair_order_weight > 0.0:
-                phase_logits = phase_logits_from_output(phase_pred)
-                if phase_logits is not None:
-                    pair_index_loss, pair_order_loss = compute_phase_pair_regularizers(
-                        phase_logits, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                if phase_event_heatmap_weight > 0.0:
+                    phase_loss = phase_loss + phase_event_heatmap_weight * compute_phase_event_heatmap_loss(
+                        phase_pred, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
                     )
-                    phase_loss = phase_loss + phase_pair_index_weight * pair_index_loss + phase_pair_order_weight * pair_order_loss
+
+                phase_vec = phase_vector_from_output(phase_pred)
+                both_visible = ed_visible & es_visible
+                if phase_vec is not None and bool(both_visible.any()):
+                    cyclic_targets = build_cyclic_phase_targets(ed_idx, es_idx, num_frames)
+                    phase_loss = phase_loss + F.smooth_l1_loss(phase_vec[both_visible], cyclic_targets[both_visible])
+
+                if attn_align_weight > 0.0:
+                    phase_loss = phase_loss + attn_align_weight * compute_attention_alignment_loss(
+                        attention, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                    )
+                if attn_index_weight > 0.0 or attn_order_weight > 0.0:
+                    attn_index_loss, attn_order_loss = compute_attention_index_loss(
+                        attention, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                    )
+                    phase_loss = phase_loss + attn_index_weight * attn_index_loss + attn_order_weight * attn_order_loss
+                if attn_entropy_weight > 0.0:
+                    phase_loss = phase_loss + attn_entropy_weight * compute_attention_entropy_loss(attention)
+                if phase_pair_index_weight > 0.0 or phase_pair_order_weight > 0.0:
+                    phase_logits = phase_logits_from_output(phase_pred)
+                    if phase_logits is not None:
+                        pair_index_loss, pair_order_loss = compute_phase_pair_regularizers(
+                            phase_logits, ed_idx, es_idx, ed_visible=ed_visible, es_visible=es_visible
+                        )
+                        phase_loss = phase_loss + phase_pair_index_weight * pair_index_loss + phase_pair_order_weight * pair_order_loss
             
             loss = ef_loss + config.PHASE_LOSS_WEIGHT * phase_loss
             loss_for_backward = loss / accumulation_steps
@@ -1495,6 +1512,7 @@ def log_header(logger, amp_enabled):
     logger.info("AMP enabled: %s", amp_enabled)
     logger.info("Normalize input: %s", bool(getattr(config, "NORMALIZE_INPUT", True)))
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
+    logger.info("Train phase detection: %s", bool(getattr(config, "TRAIN_PHASE_DETECTION", True)))
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
     logger.info("Phase frame class weights: %s", getattr(config, "PHASE_FRAME_CLASS_WEIGHTS", None))
     logger.info("Phase event heatmap weight: %.3f", float(getattr(config, "PHASE_EVENT_HEATMAP_WEIGHT", 0.0)))
@@ -1549,7 +1567,7 @@ def main(argv=None):
         best_monitor = -float("inf")
         monitor_name = "phase_score_joint_minus_mae"
     elif train_stage123_mode:
-        monitor_name = stage123_monitor_name()
+        monitor_name = "ef_mae" if not train_phase_detection_enabled() else stage123_monitor_name()
         best_monitor = -float("inf") if monitor_higher_is_better(monitor_name) else float("inf")
     else:
         best_monitor = float("inf")
@@ -1649,6 +1667,9 @@ def main(argv=None):
                     current_monitor = compute_phase_monitor(val_metrics)
                     improved = False
                     monitor_for_checkpoint = False
+                elif not train_phase_detection_enabled():
+                    current_monitor = val_metrics["ef_mae"]
+                    improved = current_monitor < best_monitor
                 else:
                     current_monitor = compute_stage123_monitor(val_metrics)
                     improved = current_monitor > best_monitor if monitor_higher_is_better(monitor_name) else current_monitor < best_monitor
