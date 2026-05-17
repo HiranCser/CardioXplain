@@ -48,6 +48,7 @@ def parse_args(argv=None):
     parser.add_argument("--normalize-input", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable Kinetics input normalization")
     parser.add_argument("--phase-loss-weight", type=float, default=None, help="Override config.PHASE_LOSS_WEIGHT")
     parser.add_argument("--phase-label-smoothing", type=float, default=None, help="Override phase index CE label smoothing")
+    parser.add_argument("--phase-frame-class-weights", type=str, default=None, help="Comma-separated CE weights for background,ED,ES")
     parser.add_argument("--phase-only", action=argparse.BooleanOptionalAction, default=None, help="Enable/disable phase-only training (no EF loss)")
     parser.add_argument("--phase-only-warmup-epochs", type=int, default=None, help="Temporarily disable EF loss for N initial joint-training epochs")
     parser.add_argument("--phase-backbone-freeze-epochs", type=int, default=None, help="Override config.PHASE_BACKBONE_FREEZE_EPOCHS")
@@ -128,6 +129,8 @@ def apply_runtime_overrides(args, logger):
         overrides["PHASE_LOSS_WEIGHT"] = args.phase_loss_weight
     if args.phase_label_smoothing is not None:
         overrides["PHASE_LABEL_SMOOTHING"] = args.phase_label_smoothing
+    if args.phase_frame_class_weights is not None:
+        overrides["PHASE_FRAME_CLASS_WEIGHTS"] = args.phase_frame_class_weights
     if args.phase_only is not None:
         overrides["PHASE_ONLY"] = args.phase_only
     if args.phase_only_warmup_epochs is not None:
@@ -605,6 +608,19 @@ def phase_vector_from_output(phase_pred):
     return None
 
 
+def phase_class_weights(device, dtype):
+    raw = getattr(config, "PHASE_FRAME_CLASS_WEIGHTS", None)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        values = [float(x.strip()) for x in str(raw).split(",") if x.strip()]
+    except Exception:
+        values = []
+    if len(values) != 3:
+        return None
+    return torch.tensor(values, device=device, dtype=dtype)
+
+
 def _attention_heads_and_summary(attention):
     """Normalize attention to (B, T, H) heads plus a single summary curve (B, T)."""
     if attention is None:
@@ -787,9 +803,11 @@ def compute_continuous_phase_loss(phase_pred, phase_labels, phase_regression_los
     """
     logits = phase_logits_from_output(phase_pred)
     if logits is not None:
+        weights = phase_class_weights(logits.device, logits.dtype)
         return F.cross_entropy(
             logits.reshape(-1, logits.shape[-1]),
             phase_labels.long().reshape(-1),
+            weight=weights,
             label_smoothing=float(getattr(config, "PHASE_LABEL_SMOOTHING", 0.0)),
         )
     return phase_regression_loss_fn(phase_pred, phase_labels)
@@ -1412,6 +1430,12 @@ def compute_stage123_monitor(val_metrics):
     return val_metrics["ef_mae"] + phase_shortfall
 
 
+def compute_phase_monitor(val_metrics):
+    return val_metrics["joint_acc"] - 0.01 * (
+        val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
+    )
+
+
 def log_header(logger, amp_enabled):
     logger.info("=" * 80)
     logger.info("TRAINING SCRIPT STARTED")
@@ -1432,6 +1456,7 @@ def log_header(logger, amp_enabled):
     logger.info("Normalize input: %s", bool(getattr(config, "NORMALIZE_INPUT", True)))
     logger.info("Validate every: %d epoch(s)", int(getattr(config, "VALIDATE_EVERY", 1)))
     logger.info("Phase loss weight: %.3f", float(getattr(config, "PHASE_LOSS_WEIGHT", 0.5)))
+    logger.info("Phase frame class weights: %s", getattr(config, "PHASE_FRAME_CLASS_WEIGHTS", None))
     logger.info("EF loss: %s", str(getattr(config, "EF_LOSS", "smooth_l1")))
     logger.info("EF SmoothL1 beta: %.4f", float(getattr(config, "EF_SMOOTH_L1_BETA", 0.05)))
     logger.info("Stage1-3 monitor: %s", str(getattr(config, "STAGE123_MONITOR", "ef_mae_with_phase_gate")))
@@ -1547,6 +1572,7 @@ def main(argv=None):
             val_start = time.perf_counter()
             val_metrics = evaluate(model, val_loader, amp_enabled=amp_enabled)
             val_duration = time.perf_counter() - val_start
+            monitor_for_checkpoint = True
 
             if phase_only:
                 logger.info(
@@ -1561,10 +1587,7 @@ def main(argv=None):
                     val_metrics["es_mae_frames"],
                 )
 
-                phase_score = val_metrics["joint_acc"] - 0.01 * (
-                    val_metrics["ed_mae_frames"] + val_metrics["es_mae_frames"]
-                )
-                current_monitor = phase_score
+                current_monitor = compute_phase_monitor(val_metrics)
                 improved = current_monitor > best_monitor
             elif train_stage123_mode:
                 logger.info(
@@ -1581,8 +1604,13 @@ def main(argv=None):
                     val_metrics["es_mae_frames"],
                 )
 
-                current_monitor = compute_stage123_monitor(val_metrics)
-                improved = current_monitor > best_monitor if monitor_higher_is_better(monitor_name) else current_monitor < best_monitor
+                if is_phase_only_epoch(epoch):
+                    current_monitor = compute_phase_monitor(val_metrics)
+                    improved = False
+                    monitor_for_checkpoint = False
+                else:
+                    current_monitor = compute_stage123_monitor(val_metrics)
+                    improved = current_monitor > best_monitor if monitor_higher_is_better(monitor_name) else current_monitor < best_monitor
             else:
                 logger.info(
                     "Epoch [%d/%d] | Train Loss: %.4f | Val EF MAE: %.2f%% | Val EF RMSE: %.2f%% | Val ED Acc: %.2f%% | Val ES Acc: %.2f%% | Val Joint Acc: %.2f%%",
@@ -1618,7 +1646,9 @@ def main(argv=None):
             )
             logger.info("%s: %.6f | best: %.6f", monitor_name, current_monitor, best_monitor)
 
-            if improved:
+            if not monitor_for_checkpoint:
+                logger.info("Warmup monitor only; checkpoint and early-stop patience unchanged")
+            elif improved:
                 best_monitor = current_monitor
                 epochs_without_improvement = 0
                 save_checkpoint(
@@ -1634,7 +1664,7 @@ def main(argv=None):
                 epochs_without_improvement += 1
                 logger.info("No improvement (%d/%d)", epochs_without_improvement, config.PATIENCE)
 
-            if epochs_without_improvement >= config.PATIENCE:
+            if monitor_for_checkpoint and epochs_without_improvement >= config.PATIENCE:
                 logger.info("Early stopping triggered")
                 break
         else:

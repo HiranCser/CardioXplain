@@ -47,6 +47,7 @@ def parse_args():
     parser.add_argument("--stage123-clip-prior-path", type=str, default=None)
     parser.add_argument("--stage123-clip-prior-jitter-std", type=float, default=None)
     parser.add_argument("--stage123-phase-loss-weight", type=float, default=None)
+    parser.add_argument("--stage123-phase-frame-class-weights", type=str, default=None)
     parser.add_argument("--stage123-phase-only-warmup-epochs", type=int, default=None)
     parser.add_argument("--stage123-ef-loss", type=str, choices=["smooth_l1", "l1", "mse"], default=None)
     parser.add_argument("--stage123-ef-smooth-l1-beta", type=float, default=None)
@@ -141,6 +142,8 @@ def main():
             cmd += ["--clip-prior-jitter-std", str(args.stage123_clip_prior_jitter_std)]
         if args.stage123_phase_loss_weight is not None:
             cmd += ["--phase-loss-weight", str(args.stage123_phase_loss_weight)]
+        if args.stage123_phase_frame_class_weights is not None:
+            cmd += ["--phase-frame-class-weights", str(args.stage123_phase_frame_class_weights)]
         if args.stage123_phase_only_warmup_epochs is not None:
             cmd += ["--phase-only-warmup-epochs", str(args.stage123_phase_only_warmup_epochs)]
         if args.stage123_ef_loss is not None:
