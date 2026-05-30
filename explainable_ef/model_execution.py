@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import EFModel, infer_ef_head_arch
 from pipeline.stage3_phase_detector import Stage3PhaseDetector
 
 
@@ -516,7 +516,17 @@ def build_ef_loss(logger):
 
 def build_model_stack(logger):
     """Create model, optimizer and losses."""
-    model = EFModel(num_frames=config.NUM_FRAMES).to(config.DEVICE)
+    ef_head_arch = "mlp"
+    ckpt_path = str(getattr(config, "CHECKPOINT_PATH", "")).strip()
+    if ckpt_path and os.path.exists(ckpt_path):
+        try:
+            checkpoint = torch.load(ckpt_path, map_location=config.DEVICE)
+            state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+            ef_head_arch = infer_ef_head_arch(state_dict)
+        except Exception as exc:
+            logger.warning("Could not inspect checkpoint EF head architecture (%s): %s", ckpt_path, exc)
+    model = EFModel(num_frames=config.NUM_FRAMES, ef_head_arch=ef_head_arch).to(config.DEVICE)
+    logger.info("EF head architecture: %s", ef_head_arch)
 
     maybe_freeze_ef_head(model, logger)
 

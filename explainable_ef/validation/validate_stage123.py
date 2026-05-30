@@ -16,7 +16,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import EFModel, infer_ef_head_arch
 from pipeline.stage3_phase_detector import Stage3PhaseDetector
 
 
@@ -38,9 +38,9 @@ def parse_args():
 
 
 def load_model(checkpoint_path, num_frames, device):
-    model = EFModel(num_frames=int(num_frames)).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    model = EFModel(num_frames=int(num_frames), ef_head_arch=infer_ef_head_arch(state_dict)).to(device)
     model_state = model.state_dict()
     filtered = {
         key: value

@@ -15,7 +15,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import EFModel, infer_ef_head_arch
 from pipeline.stage3_phase_detector import Stage3PhaseDetector
 from pipeline.stage45_pipeline import Stage45Pipeline
 from pipeline.stage67_similarity import (
@@ -200,9 +200,9 @@ def _load_stage123_model(checkpoint_path, num_frames, device):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Stage1-3 checkpoint not found: {checkpoint_path}")
 
-    model = EFModel(num_frames=int(num_frames)).to(device)
     ckpt = torch.load(checkpoint_path, map_location=device)
     state_dict = ckpt.get("model_state_dict", ckpt)
+    model = EFModel(num_frames=int(num_frames), ef_head_arch=infer_ef_head_arch(state_dict)).to(device)
     model_state = model.state_dict()
     filtered_state_dict = {
         key: value

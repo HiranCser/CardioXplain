@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import EFModel, infer_ef_head_arch
 
 
 def _window_bounds(center, radius, num_frames):
@@ -68,9 +68,9 @@ def main():
         pin_memory=torch.cuda.is_available() and str(device).startswith("cuda"),
     )
 
-    model = EFModel(num_frames=args.num_frames).to(device)
     checkpoint = torch.load(args.checkpoint, map_location=device)
     state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
+    model = EFModel(num_frames=args.num_frames, ef_head_arch=infer_ef_head_arch(state_dict)).to(device)
     model_state = model.state_dict()
     filtered_state_dict = {
         key: value

@@ -23,7 +23,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from data.dataset import EchoDataset
-from models.ef_model import EFModel
+from models.ef_model import EFModel, infer_ef_head_arch
 from models.stage4_segmentation_model import build_stage4_segmentation_model
 from pipeline.stage3_phase_detector import Stage3PhaseDetector
 from pipeline.stage45_pipeline import Stage45Pipeline
@@ -1083,9 +1083,9 @@ def _render_stage67_section(selected_video, split, stage67_output_dir):
 @st.cache_resource(show_spinner=False)
 
 def load_stage123_model(checkpoint_path, num_frames, device):
-    model = EFModel(num_frames=int(num_frames)).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict, checkpoint_dict = _safe_checkpoint_state_dict(checkpoint)
+    model = EFModel(num_frames=int(num_frames), ef_head_arch=infer_ef_head_arch(state_dict)).to(device)
     model_state = model.state_dict()
     filtered_state_dict = {
         key: value

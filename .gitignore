@@ -198,6 +198,12 @@ explainable_ef/validation/outputs/homogenization/frame_homogenization_luma_unsha
 explainable_ef/validation/outputs/homogenization/frame_homogenization_sharp.json
 explainable_ef/validation/outputs/homogenization/frame_homogenization_smoke5_homog.json
 explainable_ef/validation/outputs/homogenization/frame_homogenization_smoke5.json
+
+# Ignore all PNG files
+*.png
+**/*.png
+**/*.pth
+
 explainable_ef/validation/outputs/homogenization/frame_homogenization.json
 explainable_ef/validation/outputs/homogenization/frame_preprocess_balanced.json
 best_model_stage123_96f_homog.pth
@@ -248,4 +254,7 @@ trained_models/Phase_2/12-May/best_model_stage123_64f_img96_phasefix.pth
 trained_models/Phase_2/12-May/best_stage4_segmentation_img96_scratch.pth
 trained_models/Phase_2/13-May/best_model_stage123_64f_img96_phasefix.pth
 trained_models/Phase_2/13-May/best_stage4_segmentation_img96_scratch.pth
-explainable_ef/validation/outputs/perturbation_test/artifacts/*
+explainable_ef/validation/outputs/**/artifacts/*/*
+explainable_ef/validation/outputs/perturbation_test_old/artifacts/00000_0X100CF05D141FF143/attention_guided_mask_sev0p10/clean_clean_pred_es.png
+.gitignore
+explainable_ef/validation/outputs/**/*.csv

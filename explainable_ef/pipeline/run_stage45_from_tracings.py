@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 
@@ -396,27 +397,38 @@ def main():
                 smooth_window=int(args.curve_smooth_window),
                 enforce_es_after_ed=True,
             )
-            curve_area_lookup = {int(fid): float(area) for fid, area in zip(curve_frame_ids.tolist(), curve_areas.tolist())}
-            pred_ed_frame = int(detected["ed_frame"])
-            pred_es_frame = int(detected["es_frame"])
-            pred_ed_area = float(curve_area_lookup.get(pred_ed_frame, float(np.max(curve_areas))))
-            pred_es_area = float(curve_area_lookup.get(pred_es_frame, float(np.min(curve_areas))))
-            canonical_pair = _canonicalize_ed_es_pair_safe(
-                pred_ed_frame,
-                pred_ed_area,
-                pred_es_frame,
-                pred_es_area,
+            robust_pair = stage45.select_robust_ed_es_pair(
+                frame_ids=curve_frame_ids,
+                areas=curve_areas,
+                candidate_ed_frame=int(detected["ed_frame"]),
+                candidate_es_frame=int(detected["es_frame"]),
+                smooth_window=int(args.curve_smooth_window),
+                enforce_es_after_ed=True,
             )
-            pred_ed_frame = int(canonical_pair["ed_frame"])
-            pred_es_frame = int(canonical_pair["es_frame"])
-            pred_ed_area = float(canonical_pair["ed_area"])
-            pred_es_area = float(canonical_pair["es_area"])
-            pred_pair_swapped = bool(canonical_pair["swapped"])
+            pred_ed_frame = int(robust_pair["ed_frame"])
+            pred_es_frame = int(robust_pair["es_frame"])
+            pred_ed_area = float(robust_pair["ed_area"])
+            pred_es_area = float(robust_pair["es_area"])
+            pred_pair_swapped = bool(robust_pair.get("swapped", False))
+            pred_quality = robust_pair.get("quality", {})
+            pred_fallback_used = str(robust_pair.get("fallback_used", "none"))
+            pred_quality_issues = pred_quality.get("issues", [])
             ef_pred = Stage45Pipeline.compute_ef_from_areas(pred_ed_area, pred_es_area)
         else:
             pred_ed_frame, pred_ed_area = gt_ed_frame, gt_ed_area
             pred_es_frame, pred_es_area = gt_es_frame, gt_es_area
             pred_pair_swapped = False
+            pred_quality = stage45.validate_ed_es_quality(
+                frame_ids=[fid for fid, _ in gt_frame_areas],
+                ed_frame=pred_ed_frame,
+                ed_area=pred_ed_area,
+                es_frame=pred_es_frame,
+                es_area=pred_es_area,
+                ed_mask=frame_masks_gt.get(int(pred_ed_frame)),
+                es_mask=frame_masks_gt.get(int(pred_es_frame)),
+            )
+            pred_fallback_used = "none"
+            pred_quality_issues = pred_quality.get("issues", [])
             ef_pred = ef_gt_proxy
 
         abs_err = abs(float(ef_pred) - float(ef_gt))
@@ -457,6 +469,9 @@ def main():
                 "phase_acc_threshold": int(phase_threshold),
                 "pred_curve_method": ("full_video_stage4_curve" if args.mode == "predicted_masks" else "tracing"),
                 "pred_pair_swapped": bool(pred_pair_swapped),
+                "quality_valid": bool(pred_quality.get("valid", False)),
+                "quality_issues": json.dumps(pred_quality_issues),
+                "fallback_used": pred_fallback_used,
             }
         )
 

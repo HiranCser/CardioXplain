@@ -205,12 +205,16 @@ class EchoDataset(Dataset):
         sampled_indices = self._clip_indices_from_start(start, total_video_frames)
         return self._frames_to_tensor(sampled_frames), sampled_indices
 
-    def load_video(self, path):
+    def load_video(self, path, ed_original=-1, es_original=-1, contain_events=None):
         frames_array = self._read_video_frames(path)
+        if contain_events is None:
+            contain_events = int(ed_original) >= 0 and int(es_original) >= 0
         start = self._clip_start_indices(
             len(frames_array),
             mode="center" if self.split != "TRAIN" else None,
-            contain_events=False,
+            ed_original=ed_original,
+            es_original=es_original,
+            contain_events=bool(contain_events),
         )[0]
         return self._sample_clip_from_frames(frames_array, start)
 
