@@ -412,7 +412,7 @@ def main():
             video_path = os.path.join(args.data_dir, "Videos", file_name_ext)
             ed_orig = int(dataset.phase_dict[file_name_ext]["ed"])
             es_orig = int(dataset.phase_dict[file_name_ext]["es"])
-            video, sampled_indices = dataset.load_video(video_path, ed_original=ed_orig, es_original=es_orig)
+            video, sampled_indices = dataset.load_video(video_path)
             ed_idx = dataset._original_to_clip_index(ed_orig, sampled_indices)
             es_idx = dataset._original_to_clip_index(es_orig, sampled_indices)
             ef_gt_pct = float(meta["EF"])

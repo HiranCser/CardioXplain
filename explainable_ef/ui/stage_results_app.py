@@ -902,11 +902,20 @@ def _load_stage67_case_summary(selected_video, split, stage67_output_dir):
     row = row.iloc[0]
     pred_text_full = _doctor_severity_text(row.get("pred_text_cal", row.get("pred_text_raw", "Unknown")))
     gt_text_full = _doctor_severity_text(row.get("severity_text_gt", "Unknown"))
-    fused_ef = float(row.get("ef_fused_pct", float("nan")))
-    ci90_lo = float(row.get("ef_ci90_low", float("nan")))
-    ci90_hi = float(row.get("ef_ci90_high", float("nan")))
-    ci95_lo = float(row.get("ef_ci95_low", float("nan")))
-    ci95_hi = float(row.get("ef_ci95_high", float("nan")))
+    ef_stage123 = float(row.get("ef_stage123_pct", float("nan")))
+    ef_stage5 = float(row.get("ef_stage5_pct", float("nan")))
+    if np.isfinite(ef_stage123) and np.isfinite(ef_stage5):
+        fused_ef = 0.5 * ef_stage123 + 0.5 * ef_stage5
+    else:
+        fused_ef = ef_stage123 if np.isfinite(ef_stage123) else float(row.get("ef_fused_pct", float("nan")))
+
+    stage7 = summary.get("stage7", {}) if isinstance(summary, dict) else {}
+    q90 = float(stage7.get("q90_abs_error", float("nan")))
+    q95 = float(stage7.get("q95_abs_error", float("nan")))
+    ci90_lo = fused_ef - q90 if np.isfinite(fused_ef) and np.isfinite(q90) else float("nan")
+    ci90_hi = fused_ef + q90 if np.isfinite(fused_ef) and np.isfinite(q90) else float("nan")
+    ci95_lo = fused_ef - q95 if np.isfinite(fused_ef) and np.isfinite(q95) else float("nan")
+    ci95_hi = fused_ef + q95 if np.isfinite(fused_ef) and np.isfinite(q95) else float("nan")
     probs = [float(row.get(col, float("nan"))) for col in ["prob_cal_c0", "prob_cal_c1", "prob_cal_c2"]]
     max_prob = max([p for p in probs if np.isfinite(p)], default=float("nan"))
     confidence_text = _confidence_bucket(max_prob) if np.isfinite(max_prob) else "Unknown"
@@ -2239,7 +2248,7 @@ def run_case(
     ed_orig = int(dataset.phase_dict[file_name_ext]["ed"])
     es_orig = int(dataset.phase_dict[file_name_ext]["es"])
 
-    clip, sampled_indices = dataset.load_video(video_path, ed_original=ed_orig, es_original=es_orig)
+    clip, sampled_indices = dataset.load_video(video_path)
 
     gt_ed_idx = int(np.argmin(np.abs(sampled_indices - int(ed_orig)))) if ed_orig >= 0 else 0
     gt_es_idx = int(np.argmin(np.abs(sampled_indices - int(es_orig)))) if es_orig >= 0 else 0

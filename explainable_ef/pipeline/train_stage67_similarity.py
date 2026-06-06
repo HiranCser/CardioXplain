@@ -75,6 +75,9 @@ def parse_args():
     parser.add_argument("--clip-eval-mode", type=str, choices=["center", "all"], default="all")
     parser.add_argument("--clip-batch-size", type=int, default=8)
     parser.add_argument("--save-per-split-csv", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fit-split", type=str, default="TRAIN", choices=["TRAIN", "VAL", "TEST"], help="Split used to fit Stage6.")
+    parser.add_argument("--calibration-split", type=str, default="VAL", choices=["TRAIN", "VAL", "TEST"], help="Split used to fit Stage7 calibration.")
+    parser.add_argument("--predict-splits", type=str, default="TRAIN,VAL,TEST", help="Comma-separated splits to write predictions for.")
 
     parser.add_argument("--stage6-backend", type=str, choices=["similarity", "mlp"], default="similarity")
     parser.add_argument("--stage6-mlp-hidden-dim", type=int, default=64)
@@ -239,11 +242,7 @@ def _collect_split_rows(split, args, model, device, area_lookup):
         if str(args.clip_eval_mode) == "all":
             clips, sampled_indices_batch = dataset.load_video_clips(video_path, mode="all")
         else:
-            clip, sampled_indices = dataset.load_video(
-                video_path,
-                ed_original=ed_orig,
-                es_original=es_orig,
-            )
+            clip, sampled_indices = dataset.load_video(video_path)
             clips = clip.unsqueeze(0)
             sampled_indices_batch = np.expand_dims(sampled_indices, axis=0)
 
@@ -525,6 +524,55 @@ def _train_stage6_mlp(x_train, y_train, x_val, y_val, args, device):
     }
 
 
+def _parse_split_list(value):
+    splits = []
+    for item in str(value).split(","):
+        split = item.strip().upper()
+        if not split:
+            continue
+        if split not in {"TRAIN", "VAL", "TEST"}:
+            raise ValueError(f"Unsupported split: {split}")
+        if split not in splits:
+            splits.append(split)
+    if not splits:
+        raise ValueError("At least one prediction split is required")
+    return splits
+
+
+def _impute_and_scale_from_fit(split_dfs, fit_split, feature_cols):
+    fit_x = split_dfs[fit_split][feature_cols].to_numpy(dtype=np.float64)
+    med = np.nanmedian(fit_x, axis=0)
+    med = np.where(np.isfinite(med), med, 0.0)
+
+    fit_prepped = np.where(np.isfinite(fit_x), fit_x, med)
+    mean = np.mean(fit_prepped, axis=0)
+    std = np.std(fit_prepped, axis=0)
+    std = np.where(std < 1e-8, 1.0, std)
+
+    x_by_split = {}
+    for split, df in split_dfs.items():
+        x = df[feature_cols].to_numpy(dtype=np.float64)
+        x = np.where(np.isfinite(x), x, med)
+        x_by_split[split] = (x - mean) / std
+
+    return x_by_split, med, mean, std
+
+
+def _split_metrics(df, y, pred_raw, pred_cal, fused, lo90, hi90, lo95, hi95):
+    gt = df["ef_gt_pct"].to_numpy(dtype=np.float64)
+    return {
+        "stage6_acc_raw": accuracy_np(pred_raw, y),
+        "stage6_macro_f1_raw": macro_f1_np(pred_raw, y),
+        "stage6_acc_cal": accuracy_np(pred_cal, y),
+        "stage6_macro_f1_cal": macro_f1_np(pred_cal, y),
+        "stage5_fused_ef_mae_pct": float(np.mean(np.abs(fused - gt))),
+        "ef_ci90_coverage": _coverage(gt, lo90, hi90),
+        "ef_ci95_coverage": _coverage(gt, lo95, hi95),
+        "confusion_raw": confusion_matrix_np(pred_raw, y).tolist(),
+        "confusion_cal": confusion_matrix_np(pred_cal, y).tolist(),
+    }
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -556,66 +604,84 @@ def main():
             f"missing={len(incompatible.missing_keys)} unexpected={len(incompatible.unexpected_keys)}"
         )
 
+    fit_split = str(args.fit_split).upper()
+    calibration_split = str(args.calibration_split).upper()
+    predict_splits = _parse_split_list(args.predict_splits)
+    required_splits = []
+    for split in [fit_split, calibration_split, *predict_splits]:
+        if split not in required_splits:
+            required_splits.append(split)
+
+    print(f"Stage6 fit split: {fit_split}")
+    print(f"Stage7 calibration split: {calibration_split}")
+    print(f"Prediction splits: {','.join(predict_splits)}")
+
     area_lookup = _build_frame_area_lookup(args.data_dir)
 
-    train_df = _collect_split_rows("TRAIN", args, model, device, area_lookup)
-    val_df = _collect_split_rows("VAL", args, model, device, area_lookup)
-    test_df = _collect_split_rows("TEST", args, model, device, area_lookup)
+    split_dfs = {
+        split: _collect_split_rows(split, args, model, device, area_lookup)
+        for split in required_splits
+    }
+    print("Feature rows -> " + " ".join(f"{split.lower()}={len(df)}" for split, df in split_dfs.items()))
 
-    print(f"Feature rows -> train={len(train_df)} val={len(val_df)} test={len(test_df)}")
-
-    x_train, x_val, x_test, med, mean, std = _impute_and_scale(
-        train_df=train_df,
-        val_df=val_df,
-        test_df=test_df,
+    x_by_split, med, mean, std = _impute_and_scale_from_fit(
+        split_dfs=split_dfs,
+        fit_split=fit_split,
         feature_cols=FEATURE_COLUMNS,
     )
+    y_by_split = {
+        split: df["severity_label"].to_numpy(dtype=np.int64)
+        for split, df in split_dfs.items()
+    }
 
-    y_train = train_df["severity_label"].to_numpy(dtype=np.int64)
-    y_val = val_df["severity_label"].to_numpy(dtype=np.int64)
-    y_test = test_df["severity_label"].to_numpy(dtype=np.int64)
+    x_fit = x_by_split[fit_split]
+    y_fit = y_by_split[fit_split]
+    x_cal = x_by_split[calibration_split]
+    y_cal = y_by_split[calibration_split]
 
     stage6_artifact = None
     stage6_extra = {}
 
     if str(args.stage6_backend) == "similarity":
         stage6 = Stage6SimilarityEngine()
-        stage6.fit(x_train, y_train)
+        stage6.fit(x_fit, y_fit)
 
-        logits_train = stage6.predict_logits(x_train)
-        logits_val = stage6.predict_logits(x_val)
-        logits_test = stage6.predict_logits(x_test)
-
-        probs_train_raw = stage6.predict_proba(x_train, temperature=1.0)
-        probs_val_raw = stage6.predict_proba(x_val, temperature=1.0)
-        probs_test_raw = stage6.predict_proba(x_test, temperature=1.0)
+        logits_by_split = {
+            split: stage6.predict_logits(x)
+            for split, x in x_by_split.items()
+        }
+        probs_raw_by_split = {
+            split: stage6.predict_proba(x, temperature=1.0)
+            for split, x in x_by_split.items()
+        }
 
         stage6_npz = os.path.join(args.output_dir, "stage6_similarity_engine.npz")
         stage6.save_npz(stage6_npz)
         stage6_artifact = stage6_npz
     else:
         stage6_mlp, mlp_info = _train_stage6_mlp(
-            x_train=x_train,
-            y_train=y_train,
-            x_val=x_val,
-            y_val=y_val,
+            x_train=x_fit,
+            y_train=y_fit,
+            x_val=x_cal,
+            y_val=y_cal,
             args=args,
             device=device,
         )
 
-        logits_train = _predict_logits_mlp(stage6_mlp, x_train, device=device)
-        logits_val = _predict_logits_mlp(stage6_mlp, x_val, device=device)
-        logits_test = _predict_logits_mlp(stage6_mlp, x_test, device=device)
-
-        probs_train_raw = softmax_np(logits_train, temperature=1.0)
-        probs_val_raw = softmax_np(logits_val, temperature=1.0)
-        probs_test_raw = softmax_np(logits_test, temperature=1.0)
+        logits_by_split = {
+            split: _predict_logits_mlp(stage6_mlp, x, device=device)
+            for split, x in x_by_split.items()
+        }
+        probs_raw_by_split = {
+            split: softmax_np(logits, temperature=1.0)
+            for split, logits in logits_by_split.items()
+        }
 
         stage6_pth = os.path.join(args.output_dir, "stage6_mlp_model.pth")
         torch.save(
             {
                 "model_state_dict": stage6_mlp.state_dict(),
-                "input_dim": int(x_train.shape[1]),
+                "input_dim": int(x_fit.shape[1]),
                 "hidden_dim": int(args.stage6_mlp_hidden_dim),
                 "dropout": float(args.stage6_mlp_dropout),
                 "feature_columns": FEATURE_COLUMNS,
@@ -631,47 +697,55 @@ def main():
             "mlp_best_val_loss": float(mlp_info["best_val_loss"]),
         }
 
-    pred_train_raw = np.argmax(probs_train_raw, axis=1)
-    pred_val_raw = np.argmax(probs_val_raw, axis=1)
-    pred_test_raw = np.argmax(probs_test_raw, axis=1)
+    pred_raw_by_split = {
+        split: np.argmax(probs, axis=1)
+        for split, probs in probs_raw_by_split.items()
+    }
 
     stage7 = Stage7UncertaintyCalibrator()
+    calibration_df = split_dfs[calibration_split]
     stage7.fit(
-        val_logits=logits_val,
-        val_labels=y_val,
-        ef_stage123_pct=val_df["ef_stage123_pct"].to_numpy(dtype=np.float64),
-        ef_stage5_pct=val_df["ef_stage5_pct"].to_numpy(dtype=np.float64),
-        ef_gt_pct=val_df["ef_gt_pct"].to_numpy(dtype=np.float64),
+        val_logits=logits_by_split[calibration_split],
+        val_labels=y_cal,
+        ef_stage123_pct=calibration_df["ef_stage123_pct"].to_numpy(dtype=np.float64),
+        ef_stage5_pct=calibration_df["ef_stage5_pct"].to_numpy(dtype=np.float64),
+        ef_gt_pct=calibration_df["ef_gt_pct"].to_numpy(dtype=np.float64),
     )
 
-    probs_train_cal = stage7.calibrated_proba(logits_train)
-    probs_val_cal = stage7.calibrated_proba(logits_val)
-    probs_test_cal = stage7.calibrated_proba(logits_test)
-
-    pred_train_cal = np.argmax(probs_train_cal, axis=1)
-    pred_val_cal = np.argmax(probs_val_cal, axis=1)
-    pred_test_cal = np.argmax(probs_test_cal, axis=1)
-
-    ef_train_fused = stage7.fuse_ef(train_df["ef_stage123_pct"].to_numpy(), train_df["ef_stage5_pct"].to_numpy())
-    ef_val_fused = stage7.fuse_ef(val_df["ef_stage123_pct"].to_numpy(), val_df["ef_stage5_pct"].to_numpy())
-    ef_test_fused = stage7.fuse_ef(test_df["ef_stage123_pct"].to_numpy(), test_df["ef_stage5_pct"].to_numpy())
-
-    tr_lo90, tr_hi90, tr_lo95, tr_hi95 = stage7.intervals(ef_train_fused)
-    va_lo90, va_hi90, va_lo95, va_hi95 = stage7.intervals(ef_val_fused)
-    te_lo90, te_hi90, te_lo95, te_hi95 = stage7.intervals(ef_test_fused)
-
-    train_pred_df = _attach_predictions(
-        train_df, probs_train_raw, probs_train_cal, pred_train_raw, pred_train_cal,
-        ef_train_fused, tr_lo90, tr_hi90, tr_lo95, tr_hi95
-    )
-    val_pred_df = _attach_predictions(
-        val_df, probs_val_raw, probs_val_cal, pred_val_raw, pred_val_cal,
-        ef_val_fused, va_lo90, va_hi90, va_lo95, va_hi95
-    )
-    test_pred_df = _attach_predictions(
-        test_df, probs_test_raw, probs_test_cal, pred_test_raw, pred_test_cal,
-        ef_test_fused, te_lo90, te_hi90, te_lo95, te_hi95
-    )
+    pred_dfs = {}
+    metrics_by_split = {}
+    for split, df in split_dfs.items():
+        probs_cal = stage7.calibrated_proba(logits_by_split[split])
+        pred_cal = np.argmax(probs_cal, axis=1)
+        fused = stage7.fuse_ef(
+            df["ef_stage123_pct"].to_numpy(dtype=np.float64),
+            df["ef_stage5_pct"].to_numpy(dtype=np.float64),
+        )
+        lo90, hi90, lo95, hi95 = stage7.intervals(fused)
+        if split in predict_splits:
+            pred_dfs[split] = _attach_predictions(
+                df,
+                probs_raw_by_split[split],
+                probs_cal,
+                pred_raw_by_split[split],
+                pred_cal,
+                fused,
+                lo90,
+                hi90,
+                lo95,
+                hi95,
+            )
+        metrics_by_split[split.lower()] = _split_metrics(
+            df=df,
+            y=y_by_split[split],
+            pred_raw=pred_raw_by_split[split],
+            pred_cal=pred_cal,
+            fused=fused,
+            lo90=lo90,
+            hi90=hi90,
+            lo95=lo95,
+            hi95=hi95,
+        )
 
     metrics = {
         "stage6": {
@@ -679,39 +753,7 @@ def main():
             "artifact": os.path.abspath(stage6_artifact) if stage6_artifact else None,
             **stage6_extra,
         },
-        "train": {
-            "stage6_acc_raw": accuracy_np(pred_train_raw, y_train),
-            "stage6_macro_f1_raw": macro_f1_np(pred_train_raw, y_train),
-            "stage6_acc_cal": accuracy_np(pred_train_cal, y_train),
-            "stage6_macro_f1_cal": macro_f1_np(pred_train_cal, y_train),
-            "stage5_fused_ef_mae_pct": float(np.mean(np.abs(ef_train_fused - train_df["ef_gt_pct"].to_numpy()))),
-            "ef_ci90_coverage": _coverage(train_df["ef_gt_pct"].to_numpy(), tr_lo90, tr_hi90),
-            "ef_ci95_coverage": _coverage(train_df["ef_gt_pct"].to_numpy(), tr_lo95, tr_hi95),
-            "confusion_raw": confusion_matrix_np(pred_train_raw, y_train).tolist(),
-            "confusion_cal": confusion_matrix_np(pred_train_cal, y_train).tolist(),
-        },
-        "val": {
-            "stage6_acc_raw": accuracy_np(pred_val_raw, y_val),
-            "stage6_macro_f1_raw": macro_f1_np(pred_val_raw, y_val),
-            "stage6_acc_cal": accuracy_np(pred_val_cal, y_val),
-            "stage6_macro_f1_cal": macro_f1_np(pred_val_cal, y_val),
-            "stage5_fused_ef_mae_pct": float(np.mean(np.abs(ef_val_fused - val_df["ef_gt_pct"].to_numpy()))),
-            "ef_ci90_coverage": _coverage(val_df["ef_gt_pct"].to_numpy(), va_lo90, va_hi90),
-            "ef_ci95_coverage": _coverage(val_df["ef_gt_pct"].to_numpy(), va_lo95, va_hi95),
-            "confusion_raw": confusion_matrix_np(pred_val_raw, y_val).tolist(),
-            "confusion_cal": confusion_matrix_np(pred_val_cal, y_val).tolist(),
-        },
-        "test": {
-            "stage6_acc_raw": accuracy_np(pred_test_raw, y_test),
-            "stage6_macro_f1_raw": macro_f1_np(pred_test_raw, y_test),
-            "stage6_acc_cal": accuracy_np(pred_test_cal, y_test),
-            "stage6_macro_f1_cal": macro_f1_np(pred_test_cal, y_test),
-            "stage5_fused_ef_mae_pct": float(np.mean(np.abs(ef_test_fused - test_df["ef_gt_pct"].to_numpy()))),
-            "ef_ci90_coverage": _coverage(test_df["ef_gt_pct"].to_numpy(), te_lo90, te_hi90),
-            "ef_ci95_coverage": _coverage(test_df["ef_gt_pct"].to_numpy(), te_lo95, te_hi95),
-            "confusion_raw": confusion_matrix_np(pred_test_raw, y_test).tolist(),
-            "confusion_cal": confusion_matrix_np(pred_test_cal, y_test).tolist(),
-        },
+        **metrics_by_split,
         "stage7": {
             "temperature": float(stage7.temperature),
             "fusion_alpha": float(stage7.fusion_alpha),
@@ -724,9 +766,13 @@ def main():
             "severe_threshold": float(args.severe_threshold),
         },
         "n_samples": {
-            "train": int(len(train_df)),
-            "val": int(len(val_df)),
-            "test": int(len(test_df)),
+            split.lower(): int(len(df))
+            for split, df in split_dfs.items()
+        },
+        "split_config": {
+            "fit_split": fit_split,
+            "calibration_split": calibration_split,
+            "predict_splits": predict_splits,
         },
     }
 
@@ -747,9 +793,8 @@ def main():
         )
 
     if args.save_per_split_csv:
-        train_pred_df.to_csv(os.path.join(args.output_dir, "stage67_train_predictions.csv"), index=False)
-        val_pred_df.to_csv(os.path.join(args.output_dir, "stage67_val_predictions.csv"), index=False)
-        test_pred_df.to_csv(os.path.join(args.output_dir, "stage67_test_predictions.csv"), index=False)
+        for split, pred_df in pred_dfs.items():
+            pred_df.to_csv(os.path.join(args.output_dir, f"stage67_{split.lower()}_predictions.csv"), index=False)
 
     summary_json = os.path.join(args.output_dir, "stage67_summary.json")
     with open(summary_json, "w", encoding="utf-8") as f:
@@ -762,24 +807,27 @@ def main():
     print("=" * 96)
     print(f"Stage6 backend: {metrics['stage6']['backend']}")
     print(f"Stage6 artifact: {metrics['stage6']['artifact']}")
-    print(
-        f"VAL Stage6 acc raw/cal: {metrics['val']['stage6_acc_raw']*100:.2f}% / {metrics['val']['stage6_acc_cal']*100:.2f}% | "
-        f"macro-F1 raw/cal: {metrics['val']['stage6_macro_f1_raw']:.4f} / {metrics['val']['stage6_macro_f1_cal']:.4f}"
-    )
-    print(
-        f"TEST Stage6 acc raw/cal: {metrics['test']['stage6_acc_raw']*100:.2f}% / {metrics['test']['stage6_acc_cal']*100:.2f}% | "
-        f"macro-F1 raw/cal: {metrics['test']['stage6_macro_f1_raw']:.4f} / {metrics['test']['stage6_macro_f1_cal']:.4f}"
-    )
+    for split in required_splits:
+        split_key = split.lower()
+        split_metrics = metrics.get(split_key)
+        if split_metrics:
+            print(
+                f"{split} Stage6 acc raw/cal: {split_metrics['stage6_acc_raw']*100:.2f}% / {split_metrics['stage6_acc_cal']*100:.2f}% | "
+                f"macro-F1 raw/cal: {split_metrics['stage6_macro_f1_raw']:.4f} / {split_metrics['stage6_macro_f1_cal']:.4f}"
+            )
     print(
         f"Stage7 temperature={metrics['stage7']['temperature']:.3f} | "
         f"fusion_alpha={metrics['stage7']['fusion_alpha']:.3f} | "
         f"q90={metrics['stage7']['q90_abs_error']:.2f} | q95={metrics['stage7']['q95_abs_error']:.2f}"
     )
-    print(
-        f"TEST EF fused MAE: {metrics['test']['stage5_fused_ef_mae_pct']:.2f}% | "
-        f"CI90 coverage: {metrics['test']['ef_ci90_coverage']*100:.2f}% | "
-        f"CI95 coverage: {metrics['test']['ef_ci95_coverage']*100:.2f}%"
-    )
+    for split in predict_splits:
+        split_metrics = metrics.get(split.lower())
+        if split_metrics:
+            print(
+                f"{split} EF fused MAE: {split_metrics['stage5_fused_ef_mae_pct']:.2f}% | "
+                f"CI90 coverage: {split_metrics['ef_ci90_coverage']*100:.2f}% | "
+                f"CI95 coverage: {split_metrics['ef_ci95_coverage']*100:.2f}%"
+            )
     print(f"Artifacts: {os.path.abspath(args.output_dir)}")
     print(f"Total duration: {dt:.1f}s")
     print("=" * 96)

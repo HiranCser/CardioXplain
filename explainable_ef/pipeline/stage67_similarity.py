@@ -21,6 +21,9 @@ LABEL_TO_TEXT = {
 TEXT_TO_LABEL = {v: k for k, v in LABEL_TO_TEXT.items()}
 
 
+FIXED_FUSION_ALPHA = 0.5
+
+
 def ef_to_severity_label(ef_pct, normal_threshold=50.0, severe_threshold=30.0):
     """
     Convert EF (%) to 3-class contraction label.
@@ -191,9 +194,12 @@ class Stage6SimilarityEngine:
 @dataclass
 class Stage7UncertaintyCalibrator:
     temperature: float = 1.0
-    fusion_alpha: float = 0.5
+    fusion_alpha: float = FIXED_FUSION_ALPHA
     q90_abs_error: float = 10.0
     q95_abs_error: float = 15.0
+
+    def __post_init__(self):
+        self.fusion_alpha = FIXED_FUSION_ALPHA
 
     def fit_temperature(self, val_logits, val_labels, grid=None):
         logits = np.asarray(val_logits, dtype=np.float64)
@@ -219,30 +225,8 @@ class Stage7UncertaintyCalibrator:
         self.temperature = best_t
 
     def fit_fusion_alpha(self, ef_stage123_pct, ef_stage5_pct, ef_gt_pct, grid=None):
-        ef1 = np.asarray(ef_stage123_pct, dtype=np.float64)
-        ef5 = np.asarray(ef_stage5_pct, dtype=np.float64)
-        gt = np.asarray(ef_gt_pct, dtype=np.float64)
-
-        if ef1.shape[0] == 0:
-            self.fusion_alpha = 0.5
-            return
-
-        ef5 = np.where(np.isfinite(ef5), ef5, ef1)
-
-        if grid is None:
-            grid = np.linspace(0.0, 1.0, 51)
-
-        best_a = 0.5
-        best_mae = float("inf")
-
-        for a in grid:
-            fused = float(a) * ef1 + (1.0 - float(a)) * ef5
-            mae = float(np.mean(np.abs(fused - gt)))
-            if mae < best_mae:
-                best_mae = mae
-                best_a = float(a)
-
-        self.fusion_alpha = best_a
+        """Use an equal Stage 1-3 and Stage 4-5 contribution by policy."""
+        self.fusion_alpha = FIXED_FUSION_ALPHA
 
     def fuse_ef(self, ef_stage123_pct, ef_stage5_pct):
         ef1 = np.asarray(ef_stage123_pct, dtype=np.float64)
@@ -296,7 +280,7 @@ class Stage7UncertaintyCalibrator:
             d = json.load(f)
         return cls(
             temperature=float(d.get("temperature", 1.0)),
-            fusion_alpha=float(d.get("fusion_alpha", 0.5)),
+            fusion_alpha=FIXED_FUSION_ALPHA,
             q90_abs_error=float(d.get("q90_abs_error", 10.0)),
             q95_abs_error=float(d.get("q95_abs_error", 15.0)),
         )

@@ -116,22 +116,13 @@ class EchoDataset(Dataset):
         rel = float(np.clip(rel, 0.0, 1.0))
         return int(round(rel * max(0, int(total_video_frames) - 1)))
 
-    def _clip_start_indices(self, total_video_frames, mode=None, ed_original=-1, es_original=-1, contain_events=False):
+    def _clip_start_indices(self, total_video_frames, mode=None):
         required_frames = (self.num_frames - 1) * self.clip_period + 1
         padded_frames = max(int(total_video_frames), int(required_frames))
         max_start = max(0, padded_frames - required_frames)
 
         start_low = 0
         start_high = max_start
-        if contain_events and ed_original >= 0 and es_original >= 0:
-            left = min(int(ed_original), int(es_original))
-            right = max(int(ed_original), int(es_original))
-            start_low = max(start_low, right - required_frames + 1)
-            start_high = min(start_high, left)
-
-            if start_low > start_high:
-                start_low = 0
-                start_high = max_start
 
         if self.split == "TRAIN":
             if self.clip_start_mode == "center":
@@ -207,14 +198,9 @@ class EchoDataset(Dataset):
 
     def load_video(self, path, ed_original=-1, es_original=-1, contain_events=None):
         frames_array = self._read_video_frames(path)
-        if contain_events is None:
-            contain_events = int(ed_original) >= 0 and int(es_original) >= 0
         start = self._clip_start_indices(
             len(frames_array),
             mode="center" if self.split != "TRAIN" else None,
-            ed_original=ed_original,
-            es_original=es_original,
-            contain_events=bool(contain_events),
         )[0]
         return self._sample_clip_from_frames(frames_array, start)
 
