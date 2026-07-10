@@ -791,6 +791,15 @@ def _confidence_bucket(prob):
     return "Low"
 
 
+def _confidence_from_ef_error(error_pct):
+    if not np.isfinite(error_pct):
+        return "Unknown"
+    if float(error_pct) <= 5.0:
+        return "High"
+    if float(error_pct) <= 10.0:
+        return "Moderate"
+    return "Low"
+
 def _agreement_bucket(disagreement_pct):
     if not np.isfinite(disagreement_pct):
         return "Stage5 unavailable"
@@ -817,10 +826,10 @@ def _agreement_explanation(disagreement_pct):
         return "Agreement is unavailable because the Stage4/5 mask-based EF estimate is missing for this study."
     d = abs(float(disagreement_pct))
     if d <= 5.0:
-        return f"Good agreement means the Stage1-3 EF head and the Stage4/5 mask-based EF differ by only {d:.1f} percentage points."
+        return f"Temporal EF and mask-based EF are in good agreement, differing by {d:.1f} percentage points."
     if d <= 10.0:
-        return f"Borderline agreement means the Stage1-3 EF head and the Stage4/5 mask-based EF differ by {d:.1f} percentage points."
-    return f"High disagreement means the Stage1-3 EF head and the Stage4/5 mask-based EF differ by {d:.1f} percentage points, which is above the 10-point threshold."
+        return f"Temporal EF and mask-based EF show borderline agreement, differing by {d:.1f} percentage points."
+    return f"Temporal EF and mask-based EF differ by {d:.1f} percentage points, above the 10-point review threshold."
 
 
 def _severity_thresholds_from_summary(summary):
@@ -900,7 +909,6 @@ def _load_stage67_case_summary(selected_video, split, stage67_output_dir):
         return case
 
     row = row.iloc[0]
-    pred_text_full = _doctor_severity_text(row.get("pred_text_cal", row.get("pred_text_raw", "Unknown")))
     gt_text_full = _doctor_severity_text(row.get("severity_text_gt", "Unknown"))
     ef_stage123 = float(row.get("ef_stage123_pct", float("nan")))
     ef_stage5 = float(row.get("ef_stage5_pct", float("nan")))
@@ -918,7 +926,9 @@ def _load_stage67_case_summary(selected_video, split, stage67_output_dir):
     ci95_hi = fused_ef + q95 if np.isfinite(fused_ef) and np.isfinite(q95) else float("nan")
     probs = [float(row.get(col, float("nan"))) for col in ["prob_cal_c0", "prob_cal_c1", "prob_cal_c2"]]
     max_prob = max([p for p in probs if np.isfinite(p)], default=float("nan"))
-    confidence_text = _confidence_bucket(max_prob) if np.isfinite(max_prob) else "Unknown"
+    gt_ef = float(row.get("ef_gt_pct", float("nan")))
+    ef_error = abs(fused_ef - gt_ef) if np.isfinite(fused_ef) and np.isfinite(gt_ef) else float("nan")
+    confidence_text = _confidence_from_ef_error(ef_error) if np.isfinite(ef_error) else (_confidence_bucket(max_prob) if np.isfinite(max_prob) else "Unknown")
     disagreement_pct = float(row.get("ef_disagreement_pct", float("nan")))
     agreement_text = _agreement_bucket(disagreement_pct)
     agreement_note = _agreement_explanation(disagreement_pct)
@@ -926,6 +936,9 @@ def _load_stage67_case_summary(selected_video, split, stage67_output_dir):
     ci90_width = float(ci90_hi - ci90_lo) if np.isfinite(ci90_hi) and np.isfinite(ci90_lo) else float("nan")
     uncertainty_text = _interval_bucket(ci90_width)
     normal_threshold, severe_threshold = _severity_thresholds_from_summary(summary)
+    pred_text_full = _condition_from_ef(fused_ef, normal_threshold, severe_threshold)
+    if pred_text_full == "Unknown":
+        pred_text_full = _doctor_severity_text(row.get("pred_text_fused_ef", row.get("pred_text_cal", row.get("pred_text_raw", "Unknown"))))
     case.update(
         {
             "available": True,
@@ -1011,7 +1024,7 @@ def _render_stage67_section(selected_video, split, stage67_output_dir):
     case = _load_stage67_case_summary(selected_video, split, stage67_output_dir)
 
     st.subheader("Clinical Summary (Stage 6/7)")
-    st.caption("Doctor-facing view of contraction class, fused EF estimate, and uncertainty based on the Stage 6 severity model and Stage 7 calibration.")
+    st.caption("Doctor-facing view of EF-derived contraction class, fused EF estimate, and uncertainty based on Stage 6/7 outputs.")
 
     if not case["available"]:
         st.info(f"Stage 6/7 predictions not found for {split} at {case['pred_path']}")
@@ -1072,7 +1085,7 @@ def _render_stage67_section(selected_video, split, stage67_output_dir):
     st.write(f"- {_possible_severity_labels_text()}")
 
     interpretation = []
-    interpretation.append(f"Stage 6 classifies this study as {pred_text.lower()}.")
+    interpretation.append(f"The fused EF places this study in the {pred_text.lower()} category.")
     if np.isfinite(fused_ef):
         interpretation.append(f"Stage 7 fused EF estimate is {fused_ef:.1f}%.")
     if np.isfinite(ci90_lo) and np.isfinite(ci90_hi):
@@ -2625,39 +2638,37 @@ def _make_temporal_importance_plot(result):
 def _overview_interpretation_lines(result, stage67_case):
     lines = []
     disagreement_pct = float("nan")
-    if stage67_case and stage67_case.get("available"):
-        disagreement_pct = float(stage67_case.get("disagreement_pct", float("nan")))
-    elif result["stage4"].get("available"):
+    if result["stage4"].get("available"):
         disagreement_pct = float(result["ef_pred_pct"] - result["stage4"].get("ef_stage5_pred_pct", float("nan")))
+    elif stage67_case and stage67_case.get("available"):
+        disagreement_pct = float(stage67_case.get("disagreement_pct", float("nan")))
     if np.isfinite(disagreement_pct):
         gap = abs(disagreement_pct)
         if gap > 10.0:
-            lines.append("Models disagree -> review recommended.")
+            lines.append("Temporal EF and mask-based EF disagree; visual review is recommended.")
         elif gap > 5.0:
-            lines.append("Models show moderate disagreement -> correlate with visual review.")
+            lines.append("Temporal EF and mask-based EF show moderate disagreement; correlate with visual review.")
         else:
-            lines.append("Temporal and segmentation outputs are broadly aligned.")
+            lines.append("Temporal EF and mask-based EF are broadly aligned.")
     else:
-        lines.append("Segmentation agreement is unavailable, so the EF readout is based on the temporal path alone.")
+        lines.append("Mask-based EF is unavailable, so the EF readout is based on the temporal path alone.")
     frame_weights = _expand_attention_to_full_frames(result["stage2_attention"], result["sampled_indices"], len(result["full_frames"]))
     peak_frame = int(np.argmax(frame_weights)) if frame_weights.size > 0 else int(result["pred_es_orig"])
     peak_context = _phase_window_label(peak_frame, result["ed_orig"], result["es_orig"])
     if peak_context == "Post-ES":
-        lines.append("Temporal model focuses after systole.")
+        lines.append("Temporal attention peaks after end-systole.")
     elif peak_context == "End-Systole":
-        lines.append("Temporal model focus lands directly on end-systole.")
+        lines.append("Temporal attention peaks at end-systole.")
     elif peak_context == "Systolic window":
-        lines.append("Temporal model focus stays within the systolic window.")
+        lines.append("Temporal attention stays within the systolic window.")
     else:
-        lines.append(f"Temporal model focus peaks around {peak_context.lower()}.")
+        lines.append(f"Temporal attention peaks around {peak_context.lower()}.")
     if int(result["es_err_orig"]) >= max(15, int(result["ed_err_orig"]) + 5):
-        lines.append(f"End-systolic timing error is dominant ({int(result['es_err_orig'])} frames).")
+        lines.append(f"End-systolic timing error is the larger phase error ({int(result['es_err_orig'])} frames).")
     elif int(result["ed_err_orig"]) >= 15:
         lines.append(f"End-diastolic timing error is elevated ({int(result['ed_err_orig'])} frames).")
     else:
         lines.append(f"Phase timing error is {int(result['ed_err_orig'])} frames at ED and {int(result['es_err_orig'])} frames at ES.")
-    if stage67_case and stage67_case.get("available") and np.isfinite(stage67_case.get("ci90_width", float("nan"))):
-        lines.append(f"Calibrated 90% EF interval width is {stage67_case['ci90_width']:.1f}%, which is {stage67_case['uncertainty_text'].lower()}.")
     return lines
 
 
@@ -2692,7 +2703,11 @@ def _render_overview_tab(result, stage67_case):
             "This usually means the selected Stage1-3 checkpoint does not match the sidebar num-frames setting. "
             "Use the 64-frame phasefix checkpoint with 64 frames."
         )
-    if stage67_case and stage67_case.get("available") and np.isfinite(stage67_case.get("fused_ef", float("nan"))):
+    if result["stage4"].get("available"):
+        stage4_ef = float(result["stage4"].get("ef_stage5_pred_pct", float("nan")))
+        if np.isfinite(final_ef) and np.isfinite(stage4_ef):
+            final_ef = 0.5 * final_ef + 0.5 * stage4_ef
+    elif stage67_case and stage67_case.get("available") and np.isfinite(stage67_case.get("fused_ef", float("nan"))):
         final_ef = float(stage67_case["fused_ef"])
 
     condition_text = _short_condition_label(_condition_from_ef(final_ef))
@@ -2701,8 +2716,10 @@ def _render_overview_tab(result, stage67_case):
     agreement_note = "Agreement summary becomes available when both temporal and segmentation EF estimates are present."
 
     if stage67_case and stage67_case.get("available"):
-        condition_text = stage67_case["pred_text_short"]
-        confidence_text = stage67_case["confidence_text"]
+        if not result["stage4"].get("available"):
+            condition_text = stage67_case["pred_text_short"]
+        final_ef_abs_err = abs(final_ef - float(result.get("ef_gt_pct", float("nan")))) if np.isfinite(final_ef) and np.isfinite(float(result.get("ef_gt_pct", float("nan")))) else float("nan")
+        confidence_text = _confidence_from_ef_error(final_ef_abs_err) if np.isfinite(final_ef_abs_err) else stage67_case["confidence_text"]
         agreement_text = stage67_case["agreement_doctor"]
         agreement_note = stage67_case["agreement_note"]
     elif result["ef_abs_err_pct"] <= 5.0:
@@ -2713,6 +2730,10 @@ def _render_overview_tab(result, stage67_case):
     if result["stage4"].get("available") and not (stage67_case and stage67_case.get("available")):
         agreement_text = _agreement_doctor_label(result["ef_pred_pct"] - result["stage4"].get("ef_stage5_pred_pct", float("nan")))
         agreement_note = _agreement_explanation(result["ef_pred_pct"] - result["stage4"].get("ef_stage5_pred_pct", float("nan")))
+    elif result["stage4"].get("available"):
+        live_disagreement = result["ef_pred_pct"] - result["stage4"].get("ef_stage5_pred_pct", float("nan"))
+        agreement_text = _agreement_doctor_label(live_disagreement)
+        agreement_note = _agreement_explanation(live_disagreement)
 
     agreement_display = "Low (review)" if agreement_text == "Low" else agreement_text
     temporal_ef = _format_display_number(result["ef_pred_pct"], digits=1, suffix="%")
@@ -2742,7 +2763,7 @@ def _render_overview_tab(result, stage67_case):
             "EF Breakdown",
             breakdown_rows,
             icon="",
-            note="Fused output falls back to the temporal EF when Stage 6/7 predictions are unavailable." if not (stage67_case and stage67_case.get("available")) else "Stage 6/7 provides the calibrated fused EF shown above.",
+            note="Fused output falls back to the temporal EF when Stage 6/7 predictions are unavailable." if not (stage67_case and stage67_case.get("available")) else "Fused EF is computed from the visible temporal and mask-based EF estimates when both are available; otherwise it uses Stage 6/7 output.",
         )
 
     _render_bullet_card("Interpretation", _overview_interpretation_lines(result, stage67_case), icon="", note=agreement_note)

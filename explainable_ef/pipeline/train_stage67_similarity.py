@@ -390,7 +390,20 @@ def _coverage(y, lo, hi):
     return float(((y >= lo) & (y <= hi)).mean())
 
 
-def _attach_predictions(df, probs_raw, probs_cal, pred_raw, pred_cal, ef_fused, lo90, hi90, lo95, hi95):
+def _attach_predictions(
+    df,
+    probs_raw,
+    probs_cal,
+    pred_raw,
+    pred_cal,
+    ef_fused,
+    lo90,
+    hi90,
+    lo95,
+    hi95,
+    normal_threshold=50.0,
+    severe_threshold=30.0,
+):
     out = df.copy()
     out["pred_label_raw"] = pred_raw.astype(int)
     out["pred_label_cal"] = pred_cal.astype(int)
@@ -402,6 +415,16 @@ def _attach_predictions(df, probs_raw, probs_cal, pred_raw, pred_cal, ef_fused, 
         out[f"prob_cal_c{c}"] = probs_cal[:, c]
 
     out["ef_fused_pct"] = ef_fused
+    fused_labels = [
+        ef_to_severity_label(
+            ef_pct=float(v),
+            normal_threshold=float(normal_threshold),
+            severe_threshold=float(severe_threshold),
+        )
+        for v in np.asarray(ef_fused, dtype=np.float64).tolist()
+    ]
+    out["pred_label_fused_ef"] = fused_labels
+    out["pred_text_fused_ef"] = [LABEL_TO_TEXT[int(v)] for v in fused_labels]
     out["ef_ci90_low"] = lo90
     out["ef_ci90_high"] = hi90
     out["ef_ci95_low"] = lo95
@@ -734,6 +757,8 @@ def main():
                 hi90,
                 lo95,
                 hi95,
+                normal_threshold=float(args.normal_threshold),
+                severe_threshold=float(args.severe_threshold),
             )
         metrics_by_split[split.lower()] = _split_metrics(
             df=df,
